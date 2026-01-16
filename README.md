@@ -1,78 +1,92 @@
-# RainyDesk
+#  🌧️ RainyDesk 💻
 
-A peaceful desktop rain simulation application for Windows and Linux. RainyDesk creates transparent overlays on all your monitors, simulating realistic rain with physics-based particles and procedural audio. Get your desktop wet! 🌧
+Ever wish it could rain on your desktop? Now it can, and you can use windows as umbrellas. ☔
 
-## Features
+RainyDesk is a peaceful desktop rain simulator that overlays semi-realistic rain on all your monitors. It's transparent, click-through, and never gets in your way — just some nice moist ambiance while you work, game, write, vibe, or relax.
 
-### Current (Phase 1)
-- **Multi-monitor support** — Works across all displays, including vertical/rotated monitors
-- **Click-through transparency** — Rain never interferes with your workflow
-- **Realistic physics** — Gravity, wind, air resistance, and splash effects
-- **System tray controls** — Adjust intensity and volume on the fly
-- **High refresh rate support** — Matches your monitor (120Hz, 144Hz+)
+## What does it do?
 
-### Planned
-- **Rainscapes** — Complete presets combining visuals and audio (Tin Roof, Forest, Urban, etc.)
-- **Custom rainscapes** — Edit and save your own perfect rain atmosphere
-- **Window detection** — Rain flows around your windows, never on top
-- **Procedural audio system** — Customizable rain sounds with spatial positioning
-- **Advanced audio controls** — 3-band EQ, reverb, surround sound with 3D positioning
-- **Visual options** — Adjustable trails, experimental gravity reversal
-- **Quality presets** — Low/Medium/High/Ultra for different performance needs
-- **Gentle startup** — Auto-loads last rainscape with peaceful fade-in
+It makes it rain on your screen! That's pretty much it! Physics-based raindrops fall across all your monitors, splash when they hit the bottom (or the tops of your windows), and sound like actual rain. You can adjust how heavy the rain is, how it sounds, and way, waaaay more.
+
+**Perfect for:**
+
+- *Working/vibing in a cozy atmosphere*
+- *Studying or reading with ambient rain sounds*
+- *Relaxing without leaving your desk*
+- *Pretending it's a rainy day when it's not and you're annoyed about it*
+
+## Current Status
+
+RainyDesk is in active development. Right now it works fine for basic rain simulation across multiple monitors with realistic physics. Lots of cool features are planned (see below).
+
+**What Works:**
+
+- Rain falls on all your monitors (including vertical/rotated ones)
+- Realistic physics with splishysplashies
+- Click-through transparency (rain never blocks your mouse)
+- System tray controls for intensity and volume
+- High refresh rate support (anywhere from 60–240Hz!)
+- Window detection (rain flows around your windows unless maximized)
+
+**What's Coming:**
+
+- **Rainscapes!** Full presets like "Tin Roof", "Forest", "Concrete" with matching audio
+- Custom rainscape editor to save your perfect rainy day vibes
+- Thunder (because we *gotta*)
+- Much improved physics engine with surface tension, cohesion/adhesion, dripping, pooling, etc.
+- Better audio system (currently being rebuilt from scratch... again)
+- 3D spatial audio with full 5.1/7.1 surround sound support (like Dolby Atmos for Headphones)
+- More visual effects (animated background rain, adjustable trails, colors, droplet styles, etc.)
+- Peaceful auto-start with gentle fade-in so you don't get jump-scared by fake water
+- Quality presets for different performance needs (runs physics sim at lower res, then upscales)
+- Auto-launch on startup/login to immediately soak your desktop
 
 ## Installation
 
-### Development
+RainyDesk isn't released just yet, but you can run it from source:
+
 ```bash
 npm install
 npm start
 ```
 
-### Building
-```bash
-npm run package    # Package for current platform
-npm run make       # Create distributable installer
-```
+Pre-built installers coming soon once it's more polished!
 
 ## Requirements
 
-- Node.js 16+
-- Windows 10/11 (Linux support coming soon!)
-- High refresh rate monitors supported (60Hz to 240Hz+)
+- Windows 10/11 (Linux support coming soon! I pinky promise!)
+- An audio device such as headphones, earbuds, or speakers (preferably with surround sound)
+- At least one monitor lmao
+- Node.js 16+ (if running from source)
 
-## Usage
+## How to use it
 
-RainyDesk runs in your system tray. Right-click the tray icon to:
-- Pause/resume rain mid-simulation
-- Adjust the current rainscape or pick a new one
-- Control volume and overall quality
-- Quit the application
+Once running, RainyDesk sits in your system tray. Click the icon to open controls or right-click for options. The rain is always there, transparent and out of the way, until you want to adjust it.
 
-## Architecture
+## Why does this exist?
 
-Built with Electron, RainyDesk creates one transparent overlay window per monitor. Each window runs an independent canvas-based particle simulation with delta-time physics for consistent behavior across different refresh rates.
+Sometimes you just want it to rain. I know I sure do. This scratches that itch.
 
-## Performance
+## Technical Details
 
-- Maintains native refresh rate on all monitors
-- Target: 2000+ particles per monitor at a minimum of 120fps
-- Memory footprint: <200MB total
-
-## Platform Support
-
-- **Current**: Windows 10/11
-- **Coming**: Linux (tested on Mint)
+For developers: RainyDesk is built with Electron, WebGL 2 instanced rendering, Matter.js physics, and tone.js audio synthesis. Each monitor gets its own transparent overlay window running an independent particle simulation. Kinda neat! 💦
 
 ## Third-Party Libraries
 
-- **Tone.js** (v15.1.22) - MIT License - Procedural audio synthesis - https://tonejs.github.io
-- **Matter.js** (v0.20.0) - MIT License - 2D physics engine - https://brm.io/matter-js
+- [Tone.js](https://tonejs.github.io) (v15.1.22) — MIT License — Audio synthesis
+- [Matter.js](https://brm.io/matter-js) (v0.20.0) — MIT License — Physics engine
+- [get-windows](https://github.com/sindresorhus/get-windows) — MIT License — Window detection
 
 ## License
 
 GPL-3.0
 
-## Author
+## The Fool Who Made It
 
-Sam Atwood
+**Sam Atwood**
+
+*Please don't sue me if rainwater starts pouring out of your motherboard, that's unintended behavior.*
+
+---
+
+*Get your desktop wet.* 🌧️
