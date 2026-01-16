@@ -86,6 +86,31 @@ function log(message) {
   }
 }
 
+// Global error handlers to prevent silent crashes
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  if (LOG_FILE) {
+    try {
+      const errorMsg = `[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${err.stack || err}\n`;
+      fs.appendFileSync(LOG_FILE, errorMsg);
+    } catch (logErr) {
+      // Fail silently if we can't log
+    }
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+  if (LOG_FILE) {
+    try {
+      const errorMsg = `[${new Date().toISOString()}] UNHANDLED REJECTION: ${reason}\n`;
+      fs.appendFileSync(LOG_FILE, errorMsg);
+    } catch (logErr) {
+      // Fail silently if we can't log
+    }
+  }
+});
+
 // Configuration defaults
 let config = {
   rainEnabled: true,
