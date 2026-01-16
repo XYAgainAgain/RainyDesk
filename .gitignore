@@ -37,6 +37,7 @@ yarn-error.log*
 .claude/
 CLAUDE.md
 .gemini/
+.gemini-clipboard/
 GEMINI.md
 
 # Development documentation (private)
