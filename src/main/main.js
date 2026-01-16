@@ -17,6 +17,10 @@ const LOG_DIR = path.join(__dirname, '..', '..', '.logs');
 const LOG_FILE = path.join(LOG_DIR, 'rainydesk.log');
 const MAX_LOG_SIZE = 1024 * 1024; // 1MB
 
+// Rainscape storage path (Initialized in whenReady)
+let RAINSCAPE_DIR;
+let USER_CONFIG_PATH;
+
 /**
  * Setup logging directory and rotate old logs on startup
  */
@@ -68,10 +72,11 @@ function log(message) {
 }
 
 // Configuration defaults
-const config = {
+let config = {
   rainEnabled: true,
   intensity: 50,
-  volume: 50
+  volume: 50,
+  rainscapeName: 'Glass Window' // Default
 };
 
 /**
@@ -112,9 +117,6 @@ function createOverlayWindow(display, index) {
 
   // Critical: Make the window click-through
   overlay.setIgnoreMouseEvents(true, { forward: true });
-
-  // Prevent the window from being captured in screenshots (optional)
-  // overlay.setContentProtection(true);
 
   // Load the renderer
   overlay.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -176,9 +178,20 @@ function createTray() {
   );
 
   tray = new Tray(icon);
-  tray.setToolTip('RainyDesk - Desktop Rain Simulation');
+  
+  // Left-click opens Rainscaper
+  tray.on('click', () => {
+    broadcastToOverlays('toggle-rainscaper');
+  });
 
+  updateTrayTooltip();
   updateTrayMenu();
+}
+
+function updateTrayTooltip() {
+  if (tray) {
+    tray.setToolTip(`RainyDesk: ${config.rainscapeName}`);
+  }
 }
 
 /**
@@ -196,23 +209,8 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: 'Intensity',
-      submenu: [
-        { label: 'Light (25%)', click: () => setIntensity(25) },
-        { label: 'Medium (50%)', click: () => setIntensity(50) },
-        { label: 'Heavy (75%)', click: () => setIntensity(75) },
-        { label: 'Downpour (100%)', click: () => setIntensity(100) }
-      ]
-    },
-    {
-      label: 'Volume',
-      submenu: [
-        { label: 'Mute', click: () => setVolume(0) },
-        { label: '25%', click: () => setVolume(25) },
-        { label: '50%', click: () => setVolume(50) },
-        { label: '75%', click: () => setVolume(75) },
-        { label: '100%', click: () => setVolume(100) }
-      ]
+      label: 'Open Rainscaper Panel',
+      click: () => broadcastToOverlays('toggle-rainscaper')
     },
     { type: 'separator' },
     {
@@ -229,10 +227,10 @@ function updateTrayMenu() {
 /**
  * Broadcast a message to all overlay windows
  */
-function broadcastToOverlays(channel, data) {
+function broadcastToOverlays(channel, ...args) {
   overlayWindows.forEach(({ window }) => {
     if (!window.isDestroyed()) {
-      window.webContents.send(channel, data);
+      window.webContents.send(channel, ...args);
     }
   });
 }
@@ -310,6 +308,25 @@ function startWindowDetection() {
 
 // App lifecycle
 app.whenReady().then(() => {
+  // Initialize paths
+  RAINSCAPE_DIR = path.join(app.getPath('userData'), 'rainscapes');
+  USER_CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
+
+  if (!fs.existsSync(RAINSCAPE_DIR)) {
+    fs.mkdirSync(RAINSCAPE_DIR, { recursive: true });
+  }
+
+  // Load saved config
+  try {
+    if (fs.existsSync(USER_CONFIG_PATH)) {
+      const saved = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, 'utf-8'));
+      config = { ...config, ...saved };
+      log(`Loaded config: ${config.rainscapeName}`);
+    }
+  } catch (err) {
+    console.error('Failed to load config:', err);
+  }
+
   setupLogging();
   createAllOverlays();
   createTray();
@@ -331,6 +348,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Save config on quit
+  try {
+    if (USER_CONFIG_PATH) fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(config, null, 2));
+  } catch (e) { console.error('Failed to save config:', e); }
+
   // Stop window detection
   windowDetector.stop();
 
@@ -342,11 +364,66 @@ app.on('before-quit', () => {
   });
 });
 
-// IPC handlers
+// --- IPC HANDLERS ---
+
 ipcMain.handle('get-config', () => {
   return config;
 });
 
 ipcMain.on('log', (event, message) => {
   log(`[Renderer] ${message}`);
+});
+
+ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) {
+    win.setIgnoreMouseEvents(ignore, options);
+  }
+});
+
+ipcMain.on('set-rainscape', (event, name) => {
+  if (config.rainscapeName !== name) {
+    config.rainscapeName = name;
+    updateTrayTooltip();
+    // Auto-save config
+    try {
+      if (USER_CONFIG_PATH) fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(config, null, 2));
+    } catch (e) {}
+  }
+});
+
+// Rainscape Sync: Broadcast parameter updates to ALL renderers
+ipcMain.on('update-rainscape-param', (event, paramPath, value) => {
+  broadcastToOverlays('update-rainscape-param', paramPath, value);
+});
+
+// Rainscape File I/O
+ipcMain.handle('save-rainscape', async (event, filename, data) => {
+  try {
+    if (!RAINSCAPE_DIR) return { success: false, error: 'Not ready' };
+    const filePath = path.join(RAINSCAPE_DIR, filename.endsWith('.json') ? filename : `${filename}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('load-rainscapes', async () => {
+  try {
+    if (!RAINSCAPE_DIR || !fs.existsSync(RAINSCAPE_DIR)) return [];
+    return fs.readdirSync(RAINSCAPE_DIR).filter(f => f.endsWith('.json'));
+  } catch (err) {
+    return [];
+  }
+});
+
+ipcMain.handle('read-rainscape', async (event, filename) => {
+  try {
+    const filePath = path.join(RAINSCAPE_DIR, filename);
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(content);
+  } catch (err) {
+    return null;
+  }
 });

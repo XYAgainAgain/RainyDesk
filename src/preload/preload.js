@@ -30,6 +30,31 @@ contextBridge.exposeInMainWorld('rainydesk', {
   // Get current configuration
   getConfig: () => ipcRenderer.invoke('get-config'),
 
+  // Notify main process of current rainscape (for tray tooltip)
+  setRainscape: (name) => ipcRenderer.send('set-rainscape', name),
+
+  // Toggle Rainscaper Debug Panel
+  onToggleRainscaper: (callback) => {
+    ipcRenderer.on('toggle-rainscaper', () => {
+      console.log('Preload: received toggle-rainscaper');
+      callback();
+    });
+  },
+
+  // Control mouse transparency
+  setIgnoreMouseEvents: (ignore, options) => {
+    ipcRenderer.send('set-ignore-mouse-events', ignore, options);
+  },
+
+  // Rainscape File I/O
+  saveRainscape: (filename, data) => ipcRenderer.invoke('save-rainscape', filename, data),
+  loadRainscapes: () => ipcRenderer.invoke('load-rainscapes'),
+  readRainscape: (filename) => ipcRenderer.invoke('read-rainscape', filename),
+
+  // Rainscape Parameter Sync
+  updateRainscapeParam: (path, value) => ipcRenderer.send('update-rainscape-param', path, value),
+  onUpdateRainscapeParam: (callback) => ipcRenderer.on('update-rainscape-param', (event, path, value) => callback(path, value)),
+
   // Log messages to main process console
   log: (message) => ipcRenderer.send('log', message)
 });

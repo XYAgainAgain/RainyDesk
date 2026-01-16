@@ -7,6 +7,7 @@ import audioSystem from './audioSystem.js';
 import RainPhysicsSystem from './physicsSystem.js';
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 import Canvas2DRenderer from './Canvas2DRenderer.js';
+import { rainscaper } from './rainscaper.js';
 
 // Canvas and context
 const canvas = document.getElementById('rain-canvas');
@@ -33,7 +34,7 @@ let config = {
   dropColor: 'rgba(160, 196, 232, 0.6)',
   dropMinSize: 2,
   dropMaxSize: 6,
-  useMatterJS: true // Toggle between custom physics and Matter.js
+  useMatterJS: true 
 };
 
 // Physics system (Matter.js)
@@ -167,20 +168,6 @@ function rectsOverlap(a, b) {
 }
 
 /**
- * Check if a point is inside any window exclusion zone
- */
-function isInsideWindow(x, y) {
-  for (let i = 0; i < windowZones.length; i++) {
-    const zone = windowZones[i];
-    if (x >= zone.x && x <= zone.x + zone.width &&
-        y >= zone.y && y <= zone.y + zone.height) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
  * Initialize audio system on first user interaction
  */
 async function initAudio() {
@@ -189,14 +176,39 @@ async function initAudio() {
   try {
     await audioSystem.init();
     await audioSystem.start();
+    
+    // Set initial levels
     audioSystem.setVolume(config.volume);
     audioSystem.setIntensity(config.intensity);
     audioSystem.setWind(config.wind);
+    
     audioInitialized = true;
-    window.rainydesk.log('Audio system initialized and started');
+    window.rainydesk.log('Audio engine started');
+    
+    // Check for an autosaved state to restore work
+    const autosave = await window.rainydesk.readRainscape('autosave.json');
+    if (autosave) {
+      window.rainydesk.log('Restoring autosaved rainscape');
+      rainscaper.applyPreset(autosave);
+    }
+
+    rainscaper.refresh();
   } catch (error) {
-    window.rainydesk.log(`Audio initialization failed: ${error.message}`);
+    window.rainydesk.log(`Audio init error: ${error.message}`);
   }
+}
+
+/**
+ * Periodically save state to autosave.json
+ */
+function startAutosave() {
+  setInterval(async () => {
+    if (audioInitialized && rainscaper.isVisible) {
+      const data = rainscaper.gatherPresetData();
+      data.name = "Autosave";
+      await window.rainydesk.saveRainscape('autosave.json', data);
+    }
+  }, 10000); // Every 10 seconds
 }
 
 /**
@@ -205,15 +217,13 @@ async function initAudio() {
 function spawnRaindrops(dt) {
   if (!config.enabled) return;
 
-  // Particle limits - focus on functionality before optimization
-  const MAX_PARTICLES = 1000; // Per monitor - testing before presets
+  const MAX_PARTICLES = 1000; 
   const currentParticles = config.useMatterJS && physicsSystem
     ? physicsSystem.getParticleCount()
     : raindrops.length + splashParticles.length;
 
   if (currentParticles >= MAX_PARTICLES) return;
 
-  // Spawn rate: 40 particles/sec at 50% intensity, 80 at 100%
   const baseRate = (config.intensity / 100) * 80;
   const spawnCount = baseRate * dt;
   const actualSpawn = Math.floor(spawnCount + Math.random());
@@ -235,16 +245,6 @@ function spawnRaindrops(dt) {
 }
 
 /**
- * Create splash effect
- */
-function createSplash(x, velocity) {
-  const count = 3 + Math.floor(Math.random() * 5);
-  for (let i = 0; i < count; i++) {
-    splashParticles.push(new SplashParticle(x, canvasHeight, velocity));
-  }
-}
-
-/**
  * Update all particles
  */
 function update(dt) {
@@ -256,19 +256,11 @@ function update(dt) {
     // Legacy custom physics
     raindrops = raindrops.filter(drop => {
       const alive = drop.update(dt);
-
-      if (!alive && drop.y >= canvasHeight) {
-        createSplash(drop.x, drop.vy);
-      }
-
       return alive;
     });
-
     splashParticles = splashParticles.filter(particle => particle.update(dt));
   }
 }
-
-
 
 /**
  * Render all particles
@@ -277,7 +269,6 @@ function render() {
   if (config.useMatterJS && physicsSystem && renderer) {
     renderer.render(physicsSystem);
   } else if (!config.useMatterJS) {
-    // Legacy rendering (Canvas 2D only, rarely used)
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     raindrops.forEach(drop => drop.render(ctx));
@@ -289,16 +280,13 @@ function render() {
  * Main game loop with delta time
  */
 function gameLoop(currentTime) {
-  deltaTime = (currentTime - lastTime) / 1000;
+  const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
   lastTime = currentTime;
 
-  // Cap delta time only for extreme cases (tab switching, etc)
-  deltaTime = Math.min(deltaTime, 0.033); // Max ~30fps delta
-
-  update(deltaTime);
+  update(dt);
   render();
 
-  // FPS monitoring (log every 5 seconds)
+  // FPS monitoring
   fpsCounter++;
   if (currentTime - fpsTime > 5000) {
     const fps = Math.round(fpsCounter / 5);
@@ -322,65 +310,43 @@ function resizeCanvas() {
   canvasWidth = width;
   canvasHeight = height;
 
-  // Delegate canvas sizing to renderer
-  if (renderer) {
-    renderer.resize(width, height, dpr);
-  }
+  if (renderer) renderer.resize(width, height, dpr);
 
-  // Calculate floor Y based on workArea (to avoid splashing on taskbar)
   let floorY = height;
   if (displayInfo && displayInfo.workArea && displayInfo.bounds) {
-    // Floor relative to window top (which is at displayInfo.bounds.y)
     const globalFloorY = displayInfo.workArea.y + displayInfo.workArea.height;
     floorY = globalFloorY - displayInfo.bounds.y;
-    // Clamp to ensure it's not off-screen in weird ways
     floorY = Math.min(Math.max(0, floorY), height);
   }
 
-  if (physicsSystem) {
-    physicsSystem.resize(width, height, floorY);
-  }
-
-  window.rainydesk.log(`Canvas resized: ${width}x${height} (FloorY: ${floorY})`);
+  if (physicsSystem) physicsSystem.resize(width, height, floorY);
 }
 
 /**
  * Initialize the rain simulation
  */
 async function init() {
-  window.rainydesk.log('Initializing RainyDesk renderer (with tone.js + matter.js)...');
+  window.rainydesk.log('Initializing RainyDesk renderer...');
 
   // Register IPC listeners
   window.rainydesk.onDisplayInfo((info) => {
     displayInfo = info;
-    window.rainydesk.log(`Display ${info.index}: ${info.bounds.width}x${info.bounds.height} @ ${info.refreshRate}Hz`);
-    resizeCanvas(); // Apply workArea to physics floor
+    resizeCanvas();
   });
 
-  window.rainydesk.onToggleRain((enabled) => {
-    config.enabled = enabled;
-    window.rainydesk.log(`Rain ${enabled ? 'enabled' : 'disabled'}`);
-  });
+  window.rainydesk.onToggleRain((enabled) => { config.enabled = enabled; });
 
   window.rainydesk.onSetIntensity((value) => {
     config.intensity = value;
-    if (audioInitialized) {
-      audioSystem.setIntensity(value);
-    }
-    window.rainydesk.log(`Intensity set to ${value}%`);
+    if (audioInitialized) audioSystem.setIntensity(value);
   });
 
   window.rainydesk.onSetVolume((value) => {
     config.volume = value;
-    if (audioInitialized) {
-      audioSystem.setVolume(value);
-    }
-    window.rainydesk.log(`Volume set to ${value}%`);
+    if (audioInitialized) audioSystem.setVolume(value);
   });
 
-  // Register window data listener for exclusion zones
   window.rainydesk.onWindowData((data) => {
-    // Filter to windows that overlap this monitor and transform to local coords
     windowZones = data.windows
       .filter(w => rectsOverlap(w.bounds, displayInfo.bounds))
       .map(w => ({
@@ -390,50 +356,68 @@ async function init() {
         height: w.bounds.height
       }));
     windowZoneCount = windowZones.length;
+    if (physicsSystem) physicsSystem.setWindowZones(windowZones);
+  });
 
-    // Pass zones to physics system for collision detection
-    if (physicsSystem) {
-      physicsSystem.setWindowZones(windowZones);
+  // Handle Parameter Sync
+  window.rainydesk.onUpdateRainscapeParam((path, value) => {
+    if (path.startsWith('physics.')) {
+      const param = path.split('.')[1];
+      if (param === 'gravity' && physicsSystem) physicsSystem.setGravity(value);
+      if (param === 'wind' && physicsSystem) physicsSystem.setWind(value);
+      if (param === 'intensity') {
+        config.intensity = value;
+        if (audioSystem.isInitialized) audioSystem.setIntensity(value);
+      }
+      if (param === 'dropMinSize') config.dropMinSize = value;
+      if (param === 'dropMaxSize') config.dropMaxSize = value;
+    } else if (audioSystem.isInitialized) {
+      audioSystem.updateParam(path, value);
     }
   });
 
-  // Initialize renderer (WebGL with Canvas2D fallback)
+  // Hook up Debug Panel toggle
+  window.rainydesk.onToggleRainscaper(() => {
+    if (displayInfo.index === 0) rainscaper.toggle();
+  });
+
+  // Initialize renderer
   try {
     renderer = new WebGLRainRenderer(canvas);
     renderer.init();
-    window.rainydesk.log('WebGL 2 renderer initialized');
   } catch (error) {
-    window.rainydesk.log(`WebGL 2 failed: ${error.message}, falling back to Canvas 2D`);
     renderer = new Canvas2DRenderer(canvas);
     renderer.init();
   }
 
-  // Set up canvas
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
-  // Initialize physics system
   if (config.useMatterJS) {
     physicsSystem = new RainPhysicsSystem(canvasWidth, canvasHeight);
-    window.rainydesk.log('Matter.js physics system enabled');
   }
 
-  // Get initial config
+  audioSystem.onRainscapeChange = (name) => {
+    window.rainydesk.setRainscape(name);
+  };
+
   const initialConfig = await window.rainydesk.getConfig();
   config.enabled = initialConfig.rainEnabled;
   config.intensity = initialConfig.intensity;
   config.volume = initialConfig.volume;
 
-  // Initialize audio on first click/interaction
+  // Init Debug Tool
+  try {
+    rainscaper.init(physicsSystem, config);
+    window.rainydesk.log('Rainscaper initialized');
+  } catch (err) {
+    window.rainydesk.log(`Rainscaper init failed: ${err.message}`);
+  }
+
+  startAutosave();
+
   document.addEventListener('click', initAudio, { once: true });
-  window.addEventListener('keydown', initAudio, { once: true });
 
-  // Try to init audio immediately (may fail due to autoplay policy)
-  initAudio().catch(() => {
-    window.rainydesk.log('Audio will start on first user interaction');
-  });
-
-  window.rainydesk.log(`Starting rain simulation... Canvas: ${canvasWidth}x${canvasHeight}`);
   requestAnimationFrame(gameLoop);
 }
 

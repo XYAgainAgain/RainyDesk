@@ -4,6 +4,7 @@
  */
 
 import Matter from 'https://cdn.skypack.dev/matter-js@0.20.0';
+import audioSystem from './audioSystem.js';
 
 class RainPhysicsSystem {
   constructor(width, height) {
@@ -143,32 +144,45 @@ class RainPhysicsSystem {
     this.raindrops = this.raindrops.filter(drop => {
       const pos = drop.body.position;
 
-      // Check if hit any window top (windows act as umbrellas)
-      for (let i = 0; i < this.windowZones.length; i++) {
-        const zone = this.windowZones[i];
-        // Check if raindrop is horizontally within window bounds
-        if (pos.x >= zone.x && pos.x <= zone.x + zone.width) {
-          // Check if raindrop has reached or crossed the window's top edge
-          if (pos.y >= zone.y) {
-            const velocity = drop.body.velocity;
-            const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
-            this.createSplash(pos.x, zone.y, speed);
-            Matter.World.remove(this.engine.world, drop.body);
-            return false;
-          }
-        }
-      }
-
-      // Check if hit ground (remove early to prevent pileup)
-      // Dynamically detect taskbar position/height via this.floorY
-      if (pos.y >= this.floorY) {
-        const velocity = drop.body.velocity;
-        const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
-        this.createSplash(pos.x, this.floorY, speed);
-        Matter.World.remove(this.engine.world, drop.body);
-        return false;
-      }
-
+            // Check if hit any window top (windows act as umbrellas)
+            for (let i = 0; i < this.windowZones.length; i++) {
+              const zone = this.windowZones[i];
+              // Check if raindrop is horizontally within window bounds
+              if (pos.x >= zone.x && pos.x <= zone.x + zone.width) {
+                // Check if raindrop has reached or crossed the window's top edge
+                if (pos.y >= zone.y) {
+                  const velocity = drop.body.velocity;
+                  const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
+                  
+                  // Visual splash
+                  this.createSplash(pos.x, zone.y, speed);
+                  
+                  // Audio impact
+                  const velocityScale = Math.min(speed / this.config.terminalVelocity, 1.0);
+                  audioSystem.triggerImpact(drop.mass, velocityScale);
+      
+                  Matter.World.remove(this.engine.world, drop.body);
+                  return false;
+                }
+              }
+            }
+      
+            // Check if hit ground (remove early to prevent pileup)
+            // Dynamically detect taskbar position/height via this.floorY
+            if (pos.y >= this.floorY) {
+              const velocity = drop.body.velocity;
+              const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
+              
+              // Visual splash
+              this.createSplash(pos.x, this.floorY, speed);
+              
+              // Audio impact
+              const velocityScale = Math.min(speed / this.config.terminalVelocity, 1.0);
+              audioSystem.triggerImpact(drop.mass, velocityScale);
+      
+              Matter.World.remove(this.engine.world, drop.body);
+              return false;
+            }
       // Check if off-screen horizontally
       if (pos.x < -50 || pos.x > this.width + 50) {
         Matter.World.remove(this.engine.world, drop.body);

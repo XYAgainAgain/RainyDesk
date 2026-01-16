@@ -45,6 +45,9 @@ GEMINI.md
 # Development documentation (private)
 .dev/
 
+# Backup
+.backup/
+
 # Temporary files
 *.tmp
 *.temp
