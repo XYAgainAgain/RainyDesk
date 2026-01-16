@@ -8,16 +8,29 @@ if (require('electron-squirrel-startup')) {
   app.quit();
 }
 
+// Single instance lock: prevent multiple app launches
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.log('Another instance is already running. Exiting.');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // Someone tried to run a second instance
+    // We could focus a window or show a tray notification here
+    console.log('Second instance blocked: RainyDesk is already running');
+  });
+}
+
 // Keep references to prevent garbage collection
 let tray = null;
 const overlayWindows = [];
 
-// Logging configuration
-const LOG_DIR = path.join(__dirname, '..', '..', '.logs');
-const LOG_FILE = path.join(LOG_DIR, 'rainydesk.log');
+// Logging configuration (initialized in whenReady)
+let LOG_DIR = null;
+let LOG_FILE = null;
 const MAX_LOG_SIZE = 1024 * 1024; // 1MB
 
-// Rainscape storage path (Initialized in whenReady)
+// Rainscape storage path (initialized in whenReady)
 let RAINSCAPE_DIR;
 let USER_CONFIG_PATH;
 
@@ -59,15 +72,17 @@ function setupLogging() {
 function log(message) {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] ${message}`;
-  
+
   // Console output
   console.log(message);
-  
-  // File output
-  try {
-    fs.appendFileSync(LOG_FILE, logMessage + '\n');
-  } catch (err) {
-    // Fail silently to avoid infinite loops if logging fails
+
+  // File output (only if LOG_FILE is initialized)
+  if (LOG_FILE) {
+    try {
+      fs.appendFileSync(LOG_FILE, logMessage + '\n');
+    } catch (err) {
+      // Fail silently to avoid infinite loops if logging fails
+    }
   }
 }
 
@@ -115,8 +130,9 @@ function createOverlayWindow(display, index) {
     height: display.bounds.height
   });
 
-  // Critical: Make the window click-through
-  overlay.setIgnoreMouseEvents(true, { forward: true });
+  // Start with clicks enabled for first audio interaction
+  // Renderer will switch to click-through after audio starts
+  overlay.setIgnoreMouseEvents(false);
 
   // Load the renderer
   overlay.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -308,10 +324,17 @@ function startWindowDetection() {
 
 // App lifecycle
 app.whenReady().then(() => {
-  // Initialize paths
-  RAINSCAPE_DIR = path.join(app.getPath('userData'), 'rainscapes');
-  USER_CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
+  // Initialize paths using userData directory
+  const USER_DATA = app.getPath('userData');
+  LOG_DIR = path.join(USER_DATA, 'logs');
+  LOG_FILE = path.join(LOG_DIR, 'rainydesk.log');
+  RAINSCAPE_DIR = path.join(USER_DATA, 'rainscapes');
+  USER_CONFIG_PATH = path.join(USER_DATA, 'config.json');
 
+  // Setup logging first
+  setupLogging();
+
+  // Create rainscape directory
   if (!fs.existsSync(RAINSCAPE_DIR)) {
     fs.mkdirSync(RAINSCAPE_DIR, { recursive: true });
   }
@@ -326,8 +349,6 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('Failed to load config:', err);
   }
-
-  setupLogging();
   createAllOverlays();
   createTray();
 
@@ -395,6 +416,12 @@ ipcMain.on('set-rainscape', (event, name) => {
 // Rainscape Sync: Broadcast parameter updates to ALL renderers
 ipcMain.on('update-rainscape-param', (event, paramPath, value) => {
   broadcastToOverlays('update-rainscape-param', paramPath, value);
+});
+
+// Audio Start Sync: When one monitor clicks, start audio on all monitors
+ipcMain.on('trigger-audio-start', () => {
+  log('Audio start triggered - broadcasting to all monitors');
+  broadcastToOverlays('start-audio');
 });
 
 // Rainscape File I/O

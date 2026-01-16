@@ -44,6 +44,9 @@ let physicsSystem = null;
 let raindrops = [];
 let splashParticles = [];
 
+// Autosave data (loaded during init, applied after audio starts)
+let pendingAutosave = null;
+
 // Timing
 let lastTime = performance.now();
 let deltaTime = 0;
@@ -168,29 +171,56 @@ function rectsOverlap(a, b) {
 }
 
 /**
- * Initialize audio system on first user interaction
+ * Initialize audio system with gentle 5-second fade-in
+ * Applies full autosave config BEFORE fade-in to avoid surprise sounds
  */
 async function initAudio() {
   if (audioInitialized) return;
 
   try {
+    // Step 1: Initialize audio system (creates all audio nodes)
     await audioSystem.init();
-    await audioSystem.start();
-    
-    // Set initial levels
-    audioSystem.setVolume(config.volume);
-    audioSystem.setIntensity(config.intensity);
-    audioSystem.setWind(config.wind);
-    
-    audioInitialized = true;
-    window.rainydesk.log('Audio engine started');
-    
-    // Check for an autosaved state to restore work
-    const autosave = await window.rainydesk.readRainscape('autosave.json');
-    if (autosave) {
-      window.rainydesk.log('Restoring autosaved rainscape');
-      rainscaper.applyPreset(autosave);
+    window.rainydesk.log('Audio system initialized');
+
+    // Step 2: Apply full autosaved preset BEFORE starting fade-in
+    if (pendingAutosave) {
+      window.rainydesk.log('Applying autosaved rainscape before fade-in');
+      rainscaper.applyPreset(pendingAutosave);
+      pendingAutosave = null; // Clear after applying
     }
+
+    // Step 3: Capture target values (now includes autosave settings)
+    const targetVolume = config.volume;
+    const targetIntensity = config.intensity;
+    const targetWind = config.wind;
+
+    // Step 4: Set everything to 0 for fade-in
+    audioSystem.setVolume(0);
+    audioSystem.setIntensity(0);
+
+    // Step 5: Start audio playback
+    await audioSystem.start();
+
+    // Step 6: Gentle 5-second fade-in to target values
+    const fadeDuration = 5000;
+    const fadeSteps = 50;
+    const stepDuration = fadeDuration / fadeSteps;
+
+    for (let i = 0; i <= fadeSteps; i++) {
+      const progress = i / fadeSteps;
+      const easedProgress = progress * progress; // Ease-in curve
+
+      audioSystem.setVolume(targetVolume * easedProgress);
+      audioSystem.setIntensity(targetIntensity * easedProgress);
+      audioSystem.setWind(targetWind * easedProgress);
+
+      if (i < fadeSteps) {
+        await new Promise(resolve => setTimeout(resolve, stepDuration));
+      }
+    }
+
+    audioInitialized = true;
+    window.rainydesk.log('Audio fade-in complete');
 
     rainscaper.refresh();
   } catch (error) {
@@ -406,6 +436,24 @@ async function init() {
   config.intensity = initialConfig.intensity;
   config.volume = initialConfig.volume;
 
+  // Load autosave config before audio starts (so fade-in uses correct values)
+  try {
+    pendingAutosave = await window.rainydesk.readRainscape('autosave.json');
+    if (pendingAutosave) {
+      window.rainydesk.log('Loading autosaved rainscape settings');
+
+      // Extract basic config values for fade-in
+      if (pendingAutosave.physics) {
+        if (pendingAutosave.physics.intensity !== undefined) config.intensity = pendingAutosave.physics.intensity;
+        if (pendingAutosave.physics.wind !== undefined) config.wind = pendingAutosave.physics.wind;
+      }
+
+      // Full preset will be applied after audio initializes
+    }
+  } catch (err) {
+    window.rainydesk.log(`Autosave load failed: ${err.message}`);
+  }
+
   // Init Debug Tool
   try {
     rainscaper.init(physicsSystem, config);
@@ -416,7 +464,23 @@ async function init() {
 
   startAutosave();
 
-  document.addEventListener('click', initAudio, { once: true });
+  // Audio starts on first click anywhere (browser policy requirement)
+  // Clicking on ANY monitor triggers audio on ALL monitors
+  document.addEventListener('click', () => {
+    window.rainydesk.log('First click detected - triggering audio start on all monitors');
+
+    // Switch to click-through mode immediately so clicks pass through
+    window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
+
+    // Trigger audio start on all monitors via main process
+    window.rainydesk.triggerAudioStart();
+  }, { once: true });
+
+  // Listen for audio start broadcast from main process
+  window.rainydesk.onStartAudio(async () => {
+    window.rainydesk.log('Received audio start signal');
+    await initAudio();
+  });
 
   requestAnimationFrame(gameLoop);
 }

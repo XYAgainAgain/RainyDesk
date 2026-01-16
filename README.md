@@ -79,7 +79,11 @@ For developers: RainyDesk is built with Electron, WebGL 2 instanced rendering, M
 
 ## License
 
-GPL-3.0
+RainyDesk is currently source-available under the Business Source License 1.1 (BSL-1.1). That means you are welcome to use, tinker with, and modify RainyDesk for personal, educational, and non-commercial purposes. I've chosen a BSL so I can keep the project freely available while preventing third parties from repackaging and selling it as a commercial product without permission. Don't want that, now do we?
+
+**Change Date: 2029-01-01** — on or after this date RainyDesk will automatically be relicensed under the MIT License, making it fully permissive and open-source.
+
+If you'd like to use RainyDesk commercially before the Change Date (for example to bundle or sell it), please contact me to discuss a commercial license. If you jive with the project, tips and small donations are hugely appreciated — Ko-fi: https://ko-fi.com/xyagain
 
 ## The Fool Who Made It
 

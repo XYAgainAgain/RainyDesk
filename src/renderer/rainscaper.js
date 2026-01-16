@@ -140,16 +140,6 @@ export class Rainscaper {
       return;
     }
 
-    if (!audioSystem.isInitialized) {
-      const msg = document.createElement('div');
-      msg.innerText = 'Audio not initialized.\nClick the window to start audio engine.';
-      msg.style.color = '#ff5555';
-      msg.style.textAlign = 'center';
-      msg.style.padding = '20px';
-      container.appendChild(msg);
-      return;
-    }
-
     if (this.activeTab === 'audio') {
       this.renderAudioControls(container);
     } else if (this.activeTab === 'synths') {
@@ -158,6 +148,11 @@ export class Rainscaper {
   }
 
   renderAudioControls(container) {
+    if (!audioSystem.isInitialized) {
+      container.innerHTML = '<div style="padding: 20px; color: #999; text-align: center;">Audio is initializing...</div>';
+      return;
+    }
+
     // SPLASH LAYER (Cyan)
     this.renderControlGroup(container, 'Splash Layer', 'group-splash', [
       { id: 'layers.splash.vol', label: 'Volume', min: -100, max: 10, val: audioSystem.splashNoise.volume.value,
@@ -204,8 +199,13 @@ export class Rainscaper {
   }
 
   renderSynthControls(container) {
+    if (!audioSystem.isInitialized) {
+      container.innerHTML = '<div style="padding: 20px; color: #999; text-align: center;">Audio is initializing...</div>';
+      return;
+    }
+
     const oscTypes = ['sine', 'square', 'triangle', 'sawtooth', 'pwm', 'pulse'];
-    
+
     // BUBBLE SYNTH (Pink)
     this.renderControlGroup(container, 'Bubble Synth', 'group-bubble', [
       { id: 'synths.bubble.osc',   label: 'Osc',    type: 'select', options: oscTypes, val: audioSystem.bubbleSynth.oscillator.type },

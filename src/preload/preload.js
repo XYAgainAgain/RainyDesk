@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld('rainydesk', {
   updateRainscapeParam: (path, value) => ipcRenderer.send('update-rainscape-param', path, value),
   onUpdateRainscapeParam: (callback) => ipcRenderer.on('update-rainscape-param', (event, path, value) => callback(path, value)),
 
+  // Audio start synchronization across monitors
+  triggerAudioStart: () => ipcRenderer.send('trigger-audio-start'),
+  onStartAudio: (callback) => ipcRenderer.on('start-audio', () => callback()),
+
   // Log messages to main process console
   log: (message) => ipcRenderer.send('log', message)
 });
