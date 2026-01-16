@@ -1,0 +1,352 @@
+const { app, BrowserWindow, screen, Tray, Menu, ipcMain, nativeImage } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const windowDetector = require('./windowDetector');
+
+// Handle creating/removing shortcuts on Windows when installing/uninstalling.
+if (require('electron-squirrel-startup')) {
+  app.quit();
+}
+
+// Keep references to prevent garbage collection
+let tray = null;
+const overlayWindows = [];
+
+// Logging configuration
+const LOG_DIR = path.join(__dirname, '..', '..', '.logs');
+const LOG_FILE = path.join(LOG_DIR, 'rainydesk.log');
+const MAX_LOG_SIZE = 1024 * 1024; // 1MB
+
+/**
+ * Setup logging directory and rotate old logs on startup
+ */
+function setupLogging() {
+  try {
+    if (!fs.existsSync(LOG_DIR)) {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+    }
+
+    if (fs.existsSync(LOG_FILE)) {
+      const stats = fs.statSync(LOG_FILE);
+      if (stats.size > MAX_LOG_SIZE) {
+        const oldLog = path.join(LOG_DIR, 'rainydesk.old.log');
+        try {
+          if (fs.existsSync(oldLog)) {
+            fs.unlinkSync(oldLog);
+          }
+          fs.renameSync(LOG_FILE, oldLog);
+          console.log('Rotated old log file');
+        } catch (err) {
+          console.error('Failed to rotate log file:', err);
+        }
+      }
+    }
+    
+    // Write session start marker
+    fs.appendFileSync(LOG_FILE, `\n=== Session Started: ${new Date().toISOString()} ===\n`);
+  } catch (err) {
+    console.error('Logging setup failed:', err);
+  }
+}
+
+/**
+ * Write to log file and console
+ */
+function log(message) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] ${message}`;
+  
+  // Console output
+  console.log(message);
+  
+  // File output
+  try {
+    fs.appendFileSync(LOG_FILE, logMessage + '\n');
+  } catch (err) {
+    // Fail silently to avoid infinite loops if logging fails
+  }
+}
+
+// Configuration defaults
+const config = {
+  rainEnabled: true,
+  intensity: 50,
+  volume: 50
+};
+
+/**
+ * Creates a transparent overlay window for a specific display
+ */
+function createOverlayWindow(display, index) {
+  const overlay = new BrowserWindow({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    transparent: true,
+    frame: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: false,
+    focusable: false,
+    fullscreenable: false,
+    enableLargerThanScreen: true,  // Allow windows larger than screen
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  // Force exact bounds (Electron sometimes constrains window size)
+  overlay.setBounds({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height
+  });
+
+  // Critical: Make the window click-through
+  overlay.setIgnoreMouseEvents(true, { forward: true });
+
+  // Prevent the window from being captured in screenshots (optional)
+  // overlay.setContentProtection(true);
+
+  // Load the renderer
+  overlay.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // Pass display info to renderer once loaded
+  overlay.webContents.on('did-finish-load', () => {
+    // Log actual window bounds after creation
+    const actualBounds = overlay.getBounds();
+    log(`  Window ${index} actual bounds: x=${actualBounds.x}, y=${actualBounds.y}, w=${actualBounds.width}, h=${actualBounds.height}`);
+
+    overlay.webContents.send('display-info', {
+      index,
+      bounds: display.bounds,
+      workArea: display.workArea,
+      scaleFactor: display.scaleFactor,
+      refreshRate: display.displayFrequency || 60 // Default to 60 if not available
+    });
+  });
+
+  // Store reference
+  overlayWindows.push({
+    window: overlay,
+    display,
+    index,
+    isPaused: false
+  });
+
+  return overlay;
+}
+
+/**
+ * Creates overlay windows for all displays
+ */
+function createAllOverlays() {
+  const displays = screen.getAllDisplays();
+  log(`Found ${displays.length} display(s)`);
+
+  displays.forEach((display, index) => {
+    log(`Display ${index} details:`);
+    log(`  Bounds: x=${display.bounds.x}, y=${display.bounds.y}, w=${display.bounds.width}, h=${display.bounds.height}`);
+    log(`  Work Area: x=${display.workArea.x}, y=${display.workArea.y}, w=${display.workArea.width}, h=${display.workArea.height}`);
+    log(`  Scale Factor: ${display.scaleFactor}`);
+    log(`  Rotation: ${display.rotation}`);
+    log(`  Refresh Rate: ${display.displayFrequency || '?'}Hz`);
+    createOverlayWindow(display, index);
+  });
+}
+
+/**
+ * Creates the system tray icon and menu
+ */
+function createTray() {
+  // Create a simple colored icon (will be replaced with proper icon later)
+  const iconPath = path.join(__dirname, '..', '..', 'assets', 'icons', 'tray-icon.png');
+
+  // Create a simple 16x16 blue icon as fallback
+  const icon = nativeImage.createFromDataURL(
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAADASURBVDiNtZKxDYMwEEWfIzogTZYgDRuwQUagpGYJaFkgDRuwQcYgBQVFGkqKKFBYwYkCSvKl086+/+8u2AbqQEQWwBl4A47W2o2I+EBSrXJ9oAn1sBVLwKXBnwJxNaEFXIE7MAJO/tCpgFMABMAAB+AB3IAd0AUaVYBZBQT8BwFPQAZkTQWogCwHQsAXSP6vglhXKAJ2/gFE/LYoAt6AL5DWNvgA0rpG/oAP8ABSrXL1gDu1AN1KIMkB+dACvgGXe2I/Mj7HDAAAAABJRU5ErkJggg=='
+  );
+
+  tray = new Tray(icon);
+  tray.setToolTip('RainyDesk - Desktop Rain Simulation');
+
+  updateTrayMenu();
+}
+
+/**
+ * Updates the tray menu with current state
+ */
+function updateTrayMenu() {
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: config.rainEnabled ? 'Pause Rain' : 'Resume Rain',
+      click: () => {
+        config.rainEnabled = !config.rainEnabled;
+        broadcastToOverlays('toggle-rain', config.rainEnabled);
+        updateTrayMenu();
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Intensity',
+      submenu: [
+        { label: 'Light (25%)', click: () => setIntensity(25) },
+        { label: 'Medium (50%)', click: () => setIntensity(50) },
+        { label: 'Heavy (75%)', click: () => setIntensity(75) },
+        { label: 'Downpour (100%)', click: () => setIntensity(100) }
+      ]
+    },
+    {
+      label: 'Volume',
+      submenu: [
+        { label: 'Mute', click: () => setVolume(0) },
+        { label: '25%', click: () => setVolume(25) },
+        { label: '50%', click: () => setVolume(50) },
+        { label: '75%', click: () => setVolume(75) },
+        { label: '100%', click: () => setVolume(100) }
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit RainyDesk',
+      click: () => {
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setContextMenu(contextMenu);
+}
+
+/**
+ * Broadcast a message to all overlay windows
+ */
+function broadcastToOverlays(channel, data) {
+  overlayWindows.forEach(({ window }) => {
+    if (!window.isDestroyed()) {
+      window.webContents.send(channel, data);
+    }
+  });
+}
+
+/**
+ * Set rain intensity
+ */
+function setIntensity(value) {
+  config.intensity = value;
+  broadcastToOverlays('set-intensity', value);
+}
+
+/**
+ * Set audio volume
+ */
+function setVolume(value) {
+  config.volume = value;
+  broadcastToOverlays('set-volume', value);
+}
+
+/**
+ * Handle display changes (monitors added/removed)
+ */
+function handleDisplayChange() {
+  log('Display configuration changed');
+
+  // Stop window detection temporarily
+  windowDetector.stop();
+
+  // Close all existing overlay windows
+  overlayWindows.forEach(({ window }) => {
+    if (!window.isDestroyed()) {
+      window.close();
+    }
+  });
+  overlayWindows.length = 0;
+
+  // Recreate overlays for new display configuration
+  createAllOverlays();
+
+  // Restart window detection after overlays are ready
+  setTimeout(startWindowDetection, 1000);
+}
+
+/**
+ * Start window detection and broadcast window positions to renderers
+ */
+function startWindowDetection() {
+  // Get native window IDs for overlay windows to exclude them from detection
+  const overlayIds = overlayWindows.map(({ window }) => {
+    try {
+      // Get the native window handle and read as 32-bit integer
+      const handle = window.getNativeWindowHandle();
+      return handle.readInt32LE(0);
+    } catch (err) {
+      log(`Warning: Could not get native handle for overlay: ${err.message}`);
+      return null;
+    }
+  }).filter(id => id !== null);
+
+  log(`Starting window detection, excluding ${overlayIds.length} overlay window(s)`);
+
+  // Start detector with 250ms poll rate
+  windowDetector.start(overlayIds, (windows) => {
+    broadcastToOverlays('window-data', {
+      timestamp: Date.now(),
+      windows: windows.map(w => ({
+        id: w.id,
+        bounds: w.bounds,
+        title: w.title
+      }))
+    });
+  }, 250);
+}
+
+// App lifecycle
+app.whenReady().then(() => {
+  setupLogging();
+  createAllOverlays();
+  createTray();
+
+  // Start window detection after a short delay to ensure overlays are ready
+  setTimeout(startWindowDetection, 1000);
+
+  // Listen for display changes
+  screen.on('display-added', handleDisplayChange);
+  screen.on('display-removed', handleDisplayChange);
+  screen.on('display-metrics-changed', handleDisplayChange);
+
+  log('RainyDesk started');
+});
+
+// Keep the app running even when all windows are "closed"
+app.on('window-all-closed', () => {
+  // Don't quit on window close - we want to stay in tray
+});
+
+app.on('before-quit', () => {
+  // Stop window detection
+  windowDetector.stop();
+
+  // Clean up overlay windows
+  overlayWindows.forEach(({ window }) => {
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+  });
+});
+
+// IPC handlers
+ipcMain.handle('get-config', () => {
+  return config;
+});
+
+ipcMain.on('log', (event, message) => {
+  log(`[Renderer] ${message}`);
+});
