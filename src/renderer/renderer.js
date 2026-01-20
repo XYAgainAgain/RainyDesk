@@ -5,6 +5,43 @@
 
 import audioSystem from './audioSystem.js';
 import RainPhysicsSystem from './physicsSystem.js';
+
+// Test: Load new TypeScript audio system bundle (after DOM ready so IPC is available)
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const { AUDIO_SYSTEM_VERSION, AudioSystem } = await import('./audio.bundle.js');
+    window.rainydesk.log(`[TS Audio] Loaded v${AUDIO_SYSTEM_VERSION}`);
+
+    // Test AudioSystem orchestrator
+    const audio = new AudioSystem({ impactPoolSize: 8, bubblePoolSize: 6 });
+    window.rainydesk.log(`[TS Audio] Created AudioSystem, state=${audio.state}`);
+
+    // Test component access
+    const materials = audio.getMaterialManager();
+    const mapper = audio.getPhysicsMapper();
+    window.rainydesk.log(`[TS Audio] Materials: ${materials.getMaterialIds().length}, Mapper config OK`);
+
+    // Test collision mapping (without init, just mapper)
+    const glass = materials.getMaterial('glass_window');
+    const testCollision = {
+      dropRadius: 2,
+      velocity: 10,
+      mass: 0.1,
+      surfaceType: 'glass_window',
+      position: { x: 100, y: 200 },
+      impactAngle: 0
+    };
+    const audioParams = mapper.mapCollision(testCollision, glass);
+    window.rainydesk.log(`[TS Audio] Mapper: vol=${audioParams.volume.toFixed(1)}dB, freq=${audioParams.frequency.toFixed(0)}Hz`);
+
+    // Dispose without starting (no audio context needed for this test)
+    audio.dispose();
+    window.rainydesk.log(`[TS Audio] Phase 3 AudioSystem PASSED`);
+  } catch (err) {
+    window.rainydesk.log(`[TS Audio] FAILED: ${err.message}`);
+    console.error('[TS Audio] Full error:', err);
+  }
+}, { once: true });
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 import Canvas2DRenderer from './Canvas2DRenderer.js';
 import { rainscaper } from './rainscaper.js';

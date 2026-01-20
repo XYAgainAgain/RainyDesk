@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RainyDesk</title>
   <link rel="stylesheet" href="styles.css">
+  <!-- Import map for ES module resolution (lets browser resolve bare 'tone' import) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "tone": "https://cdn.skypack.dev/tone@15.1.22"
+      }
+    }
+  </script>
 </head>
 <body>
   <canvas id="rain-canvas"></canvas>

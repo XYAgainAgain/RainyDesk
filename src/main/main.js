@@ -11,15 +11,17 @@ if (require('electron-squirrel-startup')) {
 // Single instance lock: prevent multiple app launches
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
+  // CRITICAL: Exit immediately if another instance is running
+  // app.quit() is async, so we also use process.exit() as a fallback
   console.log('Another instance is already running. Exiting.');
   app.quit();
-} else {
-  app.on('second-instance', () => {
-    // Someone tried to run a second instance
-    // We could focus a window or show a tray notification here
-    console.log('Second instance blocked: RainyDesk is already running');
-  });
+  process.exit(0);
 }
+
+// Only register handlers if we got the lock
+app.on('second-instance', () => {
+  console.log('Second instance blocked: RainyDesk is already running');
+});
 
 // Keep references to prevent garbage collection
 let tray = null;
@@ -28,14 +30,17 @@ const overlayWindows = [];
 // Logging configuration (initialized in whenReady)
 let LOG_DIR = null;
 let LOG_FILE = null;
-const MAX_LOG_SIZE = 1024 * 1024; // 1MB
+const MAX_SESSION_LOGS = 10;  // Keep only the last 10 session logs
+const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+let currentLogLevel = LOG_LEVELS.INFO;  // Default: INFO and above
 
 // Rainscape storage path (initialized in whenReady)
 let RAINSCAPE_DIR;
 let USER_CONFIG_PATH;
 
 /**
- * Setup logging directory and rotate old logs on startup
+ * Setup logging directory with session-based log files
+ * Each app launch gets its own timestamped log file
  */
 function setupLogging() {
   try {
@@ -43,52 +48,115 @@ function setupLogging() {
       fs.mkdirSync(LOG_DIR, { recursive: true });
     }
 
-    if (fs.existsSync(LOG_FILE)) {
-      const stats = fs.statSync(LOG_FILE);
-      if (stats.size > MAX_LOG_SIZE) {
-        const oldLog = path.join(LOG_DIR, 'rainydesk.old.log');
-        try {
-          if (fs.existsSync(oldLog)) {
-            fs.unlinkSync(oldLog);
-          }
-          fs.renameSync(LOG_FILE, oldLog);
-          console.log('Rotated old log file');
-        } catch (err) {
-          console.error('Failed to rotate log file:', err);
-        }
-      }
-    }
-    
-    // Write session start marker
-    fs.appendFileSync(LOG_FILE, `\n=== Session Started: ${new Date().toISOString()} ===\n`);
+    // Create session log file with timestamp
+    const sessionTime = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    LOG_FILE = path.join(LOG_DIR, `session-${sessionTime}.log`);
+
+    // Clean up old session logs (keep only MAX_SESSION_LOGS most recent)
+    cleanupOldLogs();
+
+    // Write session header
+    const header = [
+      '═'.repeat(60),
+      `RainyDesk Session Log`,
+      `Started: ${new Date().toLocaleString()}`,
+      `Platform: ${process.platform} | Electron: ${process.versions.electron}`,
+      '═'.repeat(60),
+      ''
+    ].join('\n');
+    fs.writeFileSync(LOG_FILE, header);
+
   } catch (err) {
     console.error('Logging setup failed:', err);
   }
 }
 
 /**
- * Write to log file and console
+ * Remove old session logs, keeping only the most recent ones
  */
-function log(message) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${message}`;
+function cleanupOldLogs() {
+  try {
+    const files = fs.readdirSync(LOG_DIR)
+      .filter(f => f.startsWith('session-') && f.endsWith('.log'))
+      .map(f => ({ name: f, path: path.join(LOG_DIR, f), mtime: fs.statSync(path.join(LOG_DIR, f)).mtime }))
+      .sort((a, b) => b.mtime - a.mtime);  // Newest first
 
-  // Console output
-  console.log(message);
+    // Delete files beyond the limit (leave room for current session)
+    const toDelete = files.slice(MAX_SESSION_LOGS - 1);
+    for (const file of toDelete) {
+      try {
+        fs.unlinkSync(file.path);
+      } catch (e) {
+        // Ignore deletion errors
+      }
+    }
 
-  // File output (only if LOG_FILE is initialized)
-  if (LOG_FILE) {
+    if (toDelete.length > 0) {
+      console.log(`Cleaned up ${toDelete.length} old log file(s)`);
+    }
+  } catch (err) {
+    // Ignore cleanup errors
+  }
+}
+
+/**
+ * Format log message with level and timestamp
+ */
+function formatLogMessage(level, message) {
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const levelStr = level.padEnd(5);
+  return `[${time}] ${levelStr} ${message}`;
+}
+
+/**
+ * Core logging function with level support
+ */
+function logWithLevel(level, levelNum, message, consoleOnly = false) {
+  const formatted = formatLogMessage(level, message);
+
+  // Console output (always, regardless of level)
+  if (level === 'ERROR') {
+    console.error(message);
+  } else if (level === 'WARN') {
+    console.warn(message);
+  } else {
+    console.log(message);
+  }
+
+  // File output (only if level >= currentLogLevel and not console-only)
+  if (!consoleOnly && LOG_FILE && levelNum >= currentLogLevel) {
     try {
-      fs.appendFileSync(LOG_FILE, logMessage + '\n');
+      fs.appendFileSync(LOG_FILE, formatted + '\n');
     } catch (err) {
-      // Fail silently to avoid infinite loops if logging fails
+      // Fail silently
     }
   }
 }
 
+// Convenience logging functions
+function log(message) { logWithLevel('INFO', LOG_LEVELS.INFO, message); }
+function logDebug(message) { logWithLevel('DEBUG', LOG_LEVELS.DEBUG, message); }
+function logWarn(message) { logWithLevel('WARN', LOG_LEVELS.WARN, message); }
+function logError(message) { logWithLevel('ERROR', LOG_LEVELS.ERROR, message); }
+
+// For high-frequency logs (FPS, etc.) - console only, no file
+function logConsoleOnly(message) { logWithLevel('INFO', LOG_LEVELS.INFO, message, true); }
+
 // Global error handlers to prevent silent crashes
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
+  // Ignore EPIPE errors (caused by piping output to commands that close early)
+  // These are expected when running with pipes like `npm start | head`
+  if (err.code === 'EPIPE') {
+    return;
+  }
+
+  // Use process.stderr.write to avoid console.error which can cause more EPIPEs
+  try {
+    process.stderr.write(`Uncaught exception: ${err.stack || err}\n`);
+  } catch (e) {
+    // Ignore write errors
+  }
+
   if (LOG_FILE) {
     try {
       const errorMsg = `[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${err.stack || err}\n`;
@@ -100,7 +168,12 @@ process.on('uncaughtException', (err) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+  try {
+    process.stderr.write(`Unhandled rejection: ${reason}\n`);
+  } catch (e) {
+    // Ignore write errors
+  }
+
   if (LOG_FILE) {
     try {
       const errorMsg = `[${new Date().toISOString()}] UNHANDLED REJECTION: ${reason}\n`;
@@ -352,11 +425,10 @@ app.whenReady().then(() => {
   // Initialize paths using userData directory
   const USER_DATA = app.getPath('userData');
   LOG_DIR = path.join(USER_DATA, 'logs');
-  LOG_FILE = path.join(LOG_DIR, 'rainydesk.log');
   RAINSCAPE_DIR = path.join(USER_DATA, 'rainscapes');
   USER_CONFIG_PATH = path.join(USER_DATA, 'config.json');
 
-  // Setup logging first
+  // Setup logging first (creates session-based log file)
   setupLogging();
 
   // Create rainscape directory
@@ -417,7 +489,12 @@ ipcMain.handle('get-config', () => {
 });
 
 ipcMain.on('log', (event, message) => {
-  log(`[Renderer] ${message}`);
+  // High-frequency logs (FPS, particles) go to console only to avoid bloating log files
+  if (message.includes('FPS:') || message.includes('Particles:')) {
+    logConsoleOnly(`[Renderer] ${message}`);
+  } else {
+    log(`[Renderer] ${message}`);
+  }
 });
 
 ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
