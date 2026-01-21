@@ -12,6 +12,9 @@ class RainPhysicsSystem {
     this.height = height;
     this.floorY = height; // Default floor to bottom of canvas
 
+    // New TypeScript audio system (set externally)
+    this.newAudioSystem = null;
+
     // Create Matter.js engine
     this.engine = Matter.Engine.create({
       gravity: { x: 0, y: 1 } // Will be scaled for rain
@@ -156,11 +159,10 @@ class RainPhysicsSystem {
                   
                   // Visual splash
                   this.createSplash(pos.x, zone.y, speed);
-                  
-                  // Audio impact
-                  const velocityScale = Math.min(speed / this.config.terminalVelocity, 1.0);
-                  audioSystem.triggerImpact(drop.mass, velocityScale);
-      
+
+                  // Audio impact (both old and new systems)
+                  this.triggerAudioImpact(drop, speed, 'window');
+
                   Matter.World.remove(this.engine.world, drop.body);
                   return false;
                 }
@@ -175,11 +177,10 @@ class RainPhysicsSystem {
               
               // Visual splash
               this.createSplash(pos.x, this.floorY, speed);
-              
-              // Audio impact
-              const velocityScale = Math.min(speed / this.config.terminalVelocity, 1.0);
-              audioSystem.triggerImpact(drop.mass, velocityScale);
-      
+
+              // Audio impact (both old and new systems)
+              this.triggerAudioImpact(drop, speed, 'ground');
+
               Matter.World.remove(this.engine.world, drop.body);
               return false;
             }
@@ -231,6 +232,41 @@ class RainPhysicsSystem {
    */
   setWindowZones(zones) {
     this.windowZones = zones;
+  }
+
+  /**
+   * Set the new TypeScript audio system for collision events
+   */
+  setNewAudioSystem(audioSystem) {
+    this.newAudioSystem = audioSystem;
+  }
+
+  /**
+   * Trigger audio impact on both old and new systems
+   */
+  triggerAudioImpact(drop, speed, surfaceType = 'default') {
+    // Old system
+    const velocityScale = Math.min(speed / this.config.terminalVelocity, 1.0);
+    audioSystem.triggerImpact(drop.mass, velocityScale);
+
+    // New system (if available)
+    if (this.newAudioSystem) {
+      // Convert to collision event for new system
+      const collisionEvent = {
+        dropRadius: drop.radius || 2, // radius in pixels, convert to mm
+        velocity: speed, // speed in pixels/second, convert to m/s (roughly /100)
+        mass: drop.mass,
+        surfaceType: surfaceType,
+        position: { x: drop.body.position.x, y: drop.body.position.y },
+        impactAngle: Math.atan2(drop.body.velocity.y, drop.body.velocity.x)
+      };
+
+      try {
+        this.newAudioSystem.handleCollision(collisionEvent);
+      } catch (err) {
+        console.error('[New Audio] Collision error:', err);
+      }
+    }
   }
 
   /**

@@ -6,42 +6,9 @@
 import audioSystem from './audioSystem.js';
 import RainPhysicsSystem from './physicsSystem.js';
 
-// Test: Load new TypeScript audio system bundle (after DOM ready so IPC is available)
-document.addEventListener('DOMContentLoaded', async () => {
-  try {
-    const { AUDIO_SYSTEM_VERSION, AudioSystem } = await import('./audio.bundle.js');
-    window.rainydesk.log(`[TS Audio] Loaded v${AUDIO_SYSTEM_VERSION}`);
-
-    // Test AudioSystem orchestrator
-    const audio = new AudioSystem({ impactPoolSize: 8, bubblePoolSize: 6 });
-    window.rainydesk.log(`[TS Audio] Created AudioSystem, state=${audio.state}`);
-
-    // Test component access
-    const materials = audio.getMaterialManager();
-    const mapper = audio.getPhysicsMapper();
-    window.rainydesk.log(`[TS Audio] Materials: ${materials.getMaterialIds().length}, Mapper config OK`);
-
-    // Test collision mapping (without init, just mapper)
-    const glass = materials.getMaterial('glass_window');
-    const testCollision = {
-      dropRadius: 2,
-      velocity: 10,
-      mass: 0.1,
-      surfaceType: 'glass_window',
-      position: { x: 100, y: 200 },
-      impactAngle: 0
-    };
-    const audioParams = mapper.mapCollision(testCollision, glass);
-    window.rainydesk.log(`[TS Audio] Mapper: vol=${audioParams.volume.toFixed(1)}dB, freq=${audioParams.frequency.toFixed(0)}Hz`);
-
-    // Dispose without starting (no audio context needed for this test)
-    audio.dispose();
-    window.rainydesk.log(`[TS Audio] Phase 3 AudioSystem PASSED`);
-  } catch (err) {
-    window.rainydesk.log(`[TS Audio] FAILED: ${err.message}`);
-    console.error('[TS Audio] Full error:', err);
-  }
-}, { once: true });
+// New TypeScript audio system (Phase 4.5 integration)
+let newAudioSystem = null;
+let useNewAudio = true; // Using new system exclusively now
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 import Canvas2DRenderer from './Canvas2DRenderer.js';
 import { rainscaper } from './rainscaper.js';
@@ -215,49 +182,91 @@ async function initAudio() {
   if (audioInitialized) return;
 
   try {
-    // Step 1: Initialize audio system (creates all audio nodes)
-    await audioSystem.init();
-    window.rainydesk.log('Audio system initialized');
-
-    // Step 2: Apply full autosaved preset BEFORE starting fade-in
-    if (pendingAutosave) {
-      window.rainydesk.log('Applying autosaved rainscape before fade-in');
-      rainscaper.applyPreset(pendingAutosave);
-      pendingAutosave = null; // Clear after applying
+    // Step 0: Load and initialize new TypeScript audio system
+    try {
+      const { AudioSystem } = await import('./audio.bundle.js');
+      newAudioSystem = new AudioSystem({
+        impactPoolSize: 12,
+        bubblePoolSize: 12
+      });
+      await newAudioSystem.init();
+      window.rainydesk.log('[New Audio] TypeScript AudioSystem initialized');
+    } catch (err) {
+      window.rainydesk.log(`[New Audio] Failed to initialize: ${err.message}`);
+      console.error('[New Audio] Error:', err);
     }
 
-    // Step 3: Capture target values (now includes autosave settings)
-    const targetVolume = config.volume;
-    const targetIntensity = config.intensity;
-    const targetWind = config.wind;
+    // Step 1: Initialize old audio system (only if not using new one)
+    if (!useNewAudio) {
+      await audioSystem.init();
+      window.rainydesk.log('Audio system initialized');
 
-    // Step 4: Set everything to 0 for fade-in
-    audioSystem.setVolume(0);
-    audioSystem.setIntensity(0);
+      // Step 2: Apply full autosaved preset BEFORE starting fade-in
+      if (pendingAutosave) {
+        window.rainydesk.log('Applying autosaved rainscape before fade-in');
+        rainscaper.applyPreset(pendingAutosave);
+        pendingAutosave = null; // Clear after applying
+      }
 
-    // Step 5: Start audio playback
-    await audioSystem.start();
+      // Step 3: Capture target values (now includes autosave settings)
+      const targetVolume = config.volume;
+      const targetIntensity = config.intensity;
+      const targetWind = config.wind;
 
-    // Step 6: Gentle 5-second fade-in to target values
-    const fadeDuration = 5000;
-    const fadeSteps = 50;
-    const stepDuration = fadeDuration / fadeSteps;
+      // Step 4: Set everything to 0 for fade-in
+      audioSystem.setVolume(0);
+      audioSystem.setIntensity(0);
 
-    for (let i = 0; i <= fadeSteps; i++) {
-      const progress = i / fadeSteps;
-      const easedProgress = progress * progress; // Ease-in curve
+      // Step 5: Start audio playback
+      await audioSystem.start();
+    } else {
+      window.rainydesk.log('[New Audio] Old system disabled - using new TypeScript system only');
+    }
 
-      audioSystem.setVolume(targetVolume * easedProgress);
-      audioSystem.setIntensity(targetIntensity * easedProgress);
-      audioSystem.setWind(targetWind * easedProgress);
+    // Step 5.5: Start new audio system
+    if (newAudioSystem) {
+      try {
+        await newAudioSystem.start(true); // true = enable fade-in
+        window.rainydesk.log('[New Audio] Started with fade-in');
 
-      if (i < fadeSteps) {
-        await new Promise(resolve => setTimeout(resolve, stepDuration));
+        // Pass new audio system to physics for collision events
+        if (physicsSystem) {
+          physicsSystem.setNewAudioSystem(newAudioSystem);
+          window.rainydesk.log('[New Audio] Connected to physics system');
+        }
+      } catch (err) {
+        window.rainydesk.log(`[New Audio] Failed to start: ${err.message}`);
       }
     }
 
+    // Step 6: Gentle 5-second fade-in to target values (old system only)
+    if (!useNewAudio) {
+      const targetVolume = config.volume;
+      const targetIntensity = config.intensity;
+      const targetWind = config.wind;
+
+      const fadeDuration = 5000;
+      const fadeSteps = 50;
+      const stepDuration = fadeDuration / fadeSteps;
+
+      for (let i = 0; i <= fadeSteps; i++) {
+        const progress = i / fadeSteps;
+        const easedProgress = progress * progress; // Ease-in curve
+
+        audioSystem.setVolume(targetVolume * easedProgress);
+        audioSystem.setIntensity(targetIntensity * easedProgress);
+        audioSystem.setWind(targetWind * easedProgress);
+
+        if (i < fadeSteps) {
+          await new Promise(resolve => setTimeout(resolve, stepDuration));
+        }
+      }
+      window.rainydesk.log('Audio fade-in complete');
+    } else {
+      window.rainydesk.log('[New Audio] Fade-in handled by AudioSystem.start()');
+    }
+
     audioInitialized = true;
-    window.rainydesk.log('Audio fade-in complete');
 
     rainscaper.refresh();
   } catch (error) {
@@ -352,6 +361,12 @@ function gameLoop(currentTime) {
 
   update(dt);
   render();
+
+  // Feed particle count to new audio system
+  if (newAudioSystem && physicsSystem) {
+    const particleCount = physicsSystem.getParticleCount();
+    newAudioSystem.setParticleCount(particleCount);
+  }
 
   // FPS monitoring
   fpsCounter++;

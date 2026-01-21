@@ -10,7 +10,10 @@
     "build:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap",
     "watch:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap --watch",
     "package": "npm run build && electron-forge package",
-    "make": "npm run build && electron-forge make"
+    "make": "npm run build && electron-forge make",
+    "tauri": "tauri",
+    "tauri:dev": "npm run build && tauri dev",
+    "tauri:build": "npm run build && tauri build"
   },
   "keywords": [
     "rain",
@@ -30,6 +33,7 @@
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@electron-forge/plugin-fuses": "^7.11.1",
     "@electron/fuses": "^1.8.0",
+    "@tauri-apps/cli": "^2.9.6",
     "@types/node": "^25.0.9",
     "electron": "^40.0.0",
     "esbuild": "^0.27.2",
