@@ -5,10 +5,12 @@
   "scripts": {
     "start": "npm run build && electron-forge start",
     "start:dev": "electron-forge start",
-    "build": "npm run build:types && npm run build:audio",
+    "build": "npm run build:types && npm run build:audio && npm run build:rainscaper",
     "build:types": "tsc --noEmit",
     "build:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap",
+    "build:rainscaper": "esbuild src/renderer/rainscaper/index.ts --bundle --format=esm --outfile=src/renderer/rainscaper.bundle.js --sourcemap",
     "watch:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap --watch",
+    "watch:rainscaper": "esbuild src/renderer/rainscaper/index.ts --bundle --format=esm --outfile=src/renderer/rainscaper.bundle.js --sourcemap --watch",
     "package": "npm run build && electron-forge package",
     "make": "npm run build && electron-forge make",
     "tauri": "tauri",

@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('rainydesk', {
     ipcRenderer.on('toggle-rain', (event, enabled) => callback(enabled));
   },
 
+  // Receive audio toggle commands (pause/resume audio system)
+  onToggleAudio: (callback) => {
+    ipcRenderer.on('toggle-audio', (event, enabled) => callback(enabled));
+  },
+
   // Receive intensity changes
   onSetIntensity: (callback) => {
     ipcRenderer.on('set-intensity', (event, value) => callback(value));
@@ -58,6 +63,12 @@ contextBridge.exposeInMainWorld('rainydesk', {
   // Audio start synchronization across monitors
   triggerAudioStart: () => ipcRenderer.send('trigger-audio-start'),
   onStartAudio: (callback) => ipcRenderer.on('start-audio', () => callback()),
+
+  // Fullscreen detection: hide rain on this monitor when fullscreen window detected
+  onFullscreenStatus: (callback) => ipcRenderer.on('fullscreen-status', (event, isFullscreen) => callback(isFullscreen)),
+
+  // Audio muffling: triggered when ANY monitor has fullscreen (since audio is global)
+  onAudioMuffle: (callback) => ipcRenderer.on('audio-muffle', (event, shouldMuffle) => callback(shouldMuffle)),
 
   // Log messages to main process console
   log: (message) => ipcRenderer.send('log', message)

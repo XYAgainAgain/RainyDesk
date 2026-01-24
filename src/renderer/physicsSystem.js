@@ -7,10 +7,18 @@ import Matter from 'https://cdn.skypack.dev/matter-js@0.20.0';
 import audioSystem from './audioSystem.js';
 
 class RainPhysicsSystem {
-  constructor(width, height) {
-    this.width = width;
-    this.height = height;
-    this.floorY = height; // Default floor to bottom of canvas
+  constructor(width, height, scaleFactor = 1.0) {
+    // Display (screen) dimensions
+    this.displayWidth = width;
+    this.displayHeight = height;
+
+    // Scale factor for pixelated rendering (0.25 = 25% resolution)
+    this.scaleFactor = scaleFactor;
+
+    // Physics dimensions (scaled down)
+    this.width = Math.floor(width * scaleFactor);
+    this.height = Math.floor(height * scaleFactor);
+    this.floorY = this.height; // Default floor to bottom of physics space
 
     // New TypeScript audio system (set externally)
     this.newAudioSystem = null;
@@ -36,23 +44,46 @@ class RainPhysicsSystem {
     this.raindrops = [];
     this.splashParticles = [];
 
-    // Window exclusion zones (for collision detection)
+    // Window exclusion zones (for collision detection, in physics space)
     this.windowZones = [];
 
     // No ground body needed - using position-based removal instead
 
-    console.log('Physics system initialized with Matter.js');
+    console.log(`Physics system initialized at ${this.width}x${this.height} (${scaleFactor * 100}% scale)`);
+  }
+
+  /**
+   * Get display scale factor for rendering (inverse of physics scale)
+   * Used by renderer to upscale from physics coords to screen coords
+   */
+  getDisplayScale() {
+    return 1 / this.scaleFactor;
+  }
+
+  /**
+   * Get the physics scale factor
+   */
+  getScaleFactor() {
+    return this.scaleFactor;
   }
 
   /**
    * Create a raindrop body
+   * x, y should be in screen coordinates (will be scaled to physics space)
    */
   createRaindrop(x, y, mass = 1) {
-    const radius = 2 + (mass * 3);
+    // Scale position from screen space to physics space
+    const scaledX = x * this.scaleFactor;
+    const scaledY = y * this.scaleFactor;
+
+    // Calculate base radius (unscaled) - used for audio calculations
+    const baseRadius = 2 + (mass * 3);
+    // Scale radius for physics/rendering space
+    const radius = baseRadius * this.scaleFactor;
     const length = radius * (4 + Math.random() * 4);
 
-    // Create circular body for physics
-    const body = Matter.Bodies.circle(x, y, radius, {
+    // Create circular body for physics (in scaled coordinates)
+    const body = Matter.Bodies.circle(scaledX, scaledY, radius, {
       density: this.config.dropDensity,
       friction: this.config.dropFriction,
       frictionAir: this.config.dropFrictionAir,
@@ -60,19 +91,22 @@ class RainPhysicsSystem {
       label: 'raindrop'
     });
 
-    // Initial velocity - slower start
+    // Initial velocity (scaled for physics space)
+    const baseVelX = (this.config.wind / 100) * 50 + (Math.random() - 0.5) * 20;
+    const baseVelY = 100 + Math.random() * 100;
     Matter.Body.setVelocity(body, {
-      x: (this.config.wind / 100) * 50 + (Math.random() - 0.5) * 20,
-      y: 100 + Math.random() * 100
+      x: baseVelX * this.scaleFactor,
+      y: baseVelY * this.scaleFactor
     });
 
     Matter.World.add(this.engine.world, body);
 
-    // Store with visual properties
+    // Store with visual AND audio properties
     const raindrop = {
       body,
       mass,
-      radius,
+      radius,           // Scaled radius for rendering
+      audioRadius: baseRadius,  // Unscaled radius for audio (Minnaert frequency)
       length,
       opacity: 0.3 + Math.random() * 0.4,
       trailPoints: [] // For smooth trails
@@ -84,20 +118,26 @@ class RainPhysicsSystem {
 
   /**
    * Create splash particles
+   * x, y are already in physics space (from particle collision)
    */
   createSplash(x, y, impactVelocity) {
     const count = 5 + Math.floor(Math.random() * 8); // More particles
 
     for (let i = 0; i < count; i++) {
       const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI;
-      const speed = 80 + Math.random() * impactVelocity * 0.5; // Faster/bigger splash
+      // Scale speed for physics space
+      const baseSpeed = 80 + Math.random() * impactVelocity * 0.5;
+      const speed = baseSpeed * this.scaleFactor;
+
+      // Scale radius for physics space
+      const baseRadius = 1.5 + Math.random() * 2.5;
 
       const splash = {
         x,
         y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        radius: 1.5 + Math.random() * 2.5, // Bigger particles
+        radius: baseRadius * this.scaleFactor,
         opacity: 0.7,
         life: 0.4 + Math.random() * 0.4 // Last longer
       };
@@ -116,7 +156,12 @@ class RainPhysicsSystem {
     Matter.Engine.update(this.engine, deltaMs);
 
     // Apply wind force and terminal velocity to raindrops
-    const windForce = (this.config.wind / 100) * 0.001;
+    // Scale wind force for physics space
+    const windForce = (this.config.wind / 100) * 0.001 * this.scaleFactor;
+
+    // Scale terminal velocity for physics space
+    const scaledTerminalVelocity = this.config.terminalVelocity * this.scaleFactor;
+
     this.raindrops.forEach(drop => {
       // Lighter drops affected more by wind
       const windEffect = windForce * (1 / drop.mass);
@@ -128,8 +173,8 @@ class RainPhysicsSystem {
       // Apply terminal velocity cap (like legacy physics)
       const velocity = drop.body.velocity;
       const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
-      if (speed > this.config.terminalVelocity) {
-        const scale = this.config.terminalVelocity / speed;
+      if (speed > scaledTerminalVelocity) {
+        const scale = scaledTerminalVelocity / speed;
         Matter.Body.setVelocity(drop.body, {
           x: velocity.x * scale,
           y: velocity.y * scale
@@ -147,25 +192,54 @@ class RainPhysicsSystem {
     this.raindrops = this.raindrops.filter(drop => {
       const pos = drop.body.position;
 
-            // Check if hit any window top (windows act as umbrellas)
+            // Check if hit any window (top or sides, with pass-through for wind-blown drops)
             for (let i = 0; i < this.windowZones.length; i++) {
               const zone = this.windowZones[i];
-              // Check if raindrop is horizontally within window bounds
-              if (pos.x >= zone.x && pos.x <= zone.x + zone.width) {
-                // Check if raindrop has reached or crossed the window's top edge
-                if (pos.y >= zone.y) {
-                  const velocity = drop.body.velocity;
+              const velocity = drop.body.velocity;
+              const zoneRight = zone.x + zone.width;
+              const zoneBottom = zone.y + zone.height;
+
+              // Check if raindrop is inside window bounds
+              const insideX = pos.x >= zone.x && pos.x <= zoneRight;
+              const insideY = pos.y >= zone.y && pos.y <= zoneBottom;
+
+              if (insideX && insideY) {
+                // Calculate distance from each edge to find likely entry point
+                const distFromTop = pos.y - zone.y;
+                const distFromBottom = zoneBottom - pos.y;
+                const distFromLeft = pos.x - zone.x;
+                const distFromRight = zoneRight - pos.x;
+
+                const minDist = Math.min(distFromTop, distFromBottom, distFromLeft, distFromRight);
+
+                let shouldCollide = false;
+                let splashX = pos.x;
+                let splashY = pos.y;
+
+                // Only collide if drop is moving toward its closest edge
+                if (minDist === distFromTop && velocity.y > 0) {
+                  // Entered from top, moving down → hit top
+                  shouldCollide = true;
+                  splashY = zone.y;
+                } else if (minDist === distFromLeft && velocity.x > 0) {
+                  // Entered from left, moving right → hit left side
+                  shouldCollide = true;
+                  splashX = zone.x;
+                } else if (minDist === distFromRight && velocity.x < 0) {
+                  // Entered from right, moving left → hit right side
+                  shouldCollide = true;
+                  splashX = zoneRight;
+                }
+                // If closest to bottom or moving away from entry edge → pass through
+
+                if (shouldCollide) {
                   const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
-                  
-                  // Visual splash
-                  this.createSplash(pos.x, zone.y, speed);
-
-                  // Audio impact (both old and new systems)
+                  this.createSplash(splashX, splashY, speed);
                   this.triggerAudioImpact(drop, speed, 'window');
-
                   Matter.World.remove(this.engine.world, drop.body);
                   return false;
                 }
+                // Drop passes through (blown under/through the window)
               }
             }
       
@@ -194,9 +268,12 @@ class RainPhysicsSystem {
     });
 
     // Update splash particles (not physics-based, just visual)
+    // Scale gravity for physics space
+    const scaledGravity = this.config.gravity * this.scaleFactor;
+
     this.splashParticles = this.splashParticles.filter(particle => {
-      // Simple gravity
-      particle.vy += this.config.gravity * 0.5 * dt;
+      // Simple gravity (scaled for physics space)
+      particle.vy += scaledGravity * 0.5 * dt;
 
       // Update position
       particle.x += particle.vx * dt;
@@ -228,10 +305,16 @@ class RainPhysicsSystem {
 
   /**
    * Set window exclusion zones for collision detection
-   * Each zone: { x, y, width, height } in local canvas coordinates
+   * Each zone: { x, y, width, height } in screen coordinates (will be scaled to physics space)
    */
   setWindowZones(zones) {
-    this.windowZones = zones;
+    // Scale from screen space to physics space
+    this.windowZones = zones.map(z => ({
+      x: Math.floor(z.x * this.scaleFactor),
+      y: Math.floor(z.y * this.scaleFactor),
+      width: Math.floor(z.width * this.scaleFactor),
+      height: Math.floor(z.height * this.scaleFactor)
+    }));
   }
 
   /**
@@ -245,16 +328,18 @@ class RainPhysicsSystem {
    * Trigger audio impact on both old and new systems
    */
   triggerAudioImpact(drop, speed, surfaceType = 'default') {
-    // Old system
-    const velocityScale = Math.min(speed / this.config.terminalVelocity, 1.0);
+    // Old system - use unscaled velocity for consistent audio
+    const unscaledSpeed = speed / this.scaleFactor;
+    const velocityScale = Math.min(unscaledSpeed / this.config.terminalVelocity, 1.0);
     audioSystem.triggerImpact(drop.mass, velocityScale);
 
     // New system (if available)
     if (this.newAudioSystem) {
       // Convert to collision event for new system
+      // Use audioRadius (unscaled) for consistent sound regardless of pixelation
       const collisionEvent = {
-        dropRadius: drop.radius || 2, // radius in pixels, convert to mm
-        velocity: speed, // speed in pixels/second, convert to m/s (roughly /100)
+        dropRadius: drop.audioRadius || drop.radius || 2, // Unscaled radius for Minnaert frequency
+        velocity: unscaledSpeed, // Unscaled speed for consistent impact energy
         mass: drop.mass,
         surfaceType: surfaceType,
         position: { x: drop.body.position.x, y: drop.body.position.y },
@@ -271,16 +356,37 @@ class RainPhysicsSystem {
 
   /**
    * Resize physics world
+   * Input dimensions are in screen space (will be scaled to physics space)
    */
   resize(width, height, floorY = null) {
-    this.width = width;
-    this.height = height;
+    // Store display dimensions
+    this.displayWidth = width;
+    this.displayHeight = height;
+
+    // Scale to physics dimensions
+    this.width = Math.floor(width * this.scaleFactor);
+    this.height = Math.floor(height * this.scaleFactor);
+
+    // Scale floorY from screen space to physics space
     if (floorY !== null) {
-      this.floorY = floorY;
+      this.floorY = Math.floor(floorY * this.scaleFactor);
     } else {
-      this.floorY = height;
+      this.floorY = this.height;
     }
     // No ground body to update
+  }
+
+  /**
+   * Update the render scale factor at runtime
+   * Requires a resize call afterward to apply new dimensions
+   */
+  setScaleFactor(scaleFactor) {
+    this.scaleFactor = scaleFactor;
+    // Recalculate physics dimensions
+    this.width = Math.floor(this.displayWidth * this.scaleFactor);
+    this.height = Math.floor(this.displayHeight * this.scaleFactor);
+    this.floorY = Math.floor(this.floorY / this.scaleFactor * scaleFactor); // Preserve relative position
+    console.log(`Physics scale updated to ${scaleFactor * 100}% (${this.width}x${this.height})`);
   }
 
   /**

@@ -216,7 +216,8 @@ function createOverlayWindow(display, index) {
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required'  // Allow audio without click
     }
   });
 
@@ -314,10 +315,12 @@ function updateTrayTooltip() {
 function updateTrayMenu() {
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: config.rainEnabled ? 'Pause Rain' : 'Resume Rain',
+      label: config.rainEnabled ? 'Pause RainyDesk' : 'Resume RainyDesk',
       click: () => {
         config.rainEnabled = !config.rainEnabled;
+        // Pause/resume both rain and audio
         broadcastToOverlays('toggle-rain', config.rainEnabled);
+        broadcastToOverlays('toggle-audio', config.rainEnabled);
         updateTrayMenu();
       }
     },
@@ -389,6 +392,10 @@ function handleDisplayChange() {
   setTimeout(startWindowDetection, 1000);
 }
 
+// Track fullscreen state to avoid spamming updates
+// Initialize to null so first poll always broadcasts (fixes startup detection)
+let lastFullscreenDisplays = null;
+
 /**
  * Start window detection and broadcast window positions to renderers
  */
@@ -405,10 +412,15 @@ function startWindowDetection() {
     }
   }).filter(id => id !== null);
 
+  // Pass display info to detector for fullscreen detection
+  const displays = screen.getAllDisplays();
+  windowDetector.setDisplays(displays);
+
   log(`Starting window detection, excluding ${overlayIds.length} overlay window(s)`);
 
   // Start detector with 250ms poll rate
   windowDetector.start(overlayIds, (windows) => {
+    // Broadcast window positions for collision detection
     broadcastToOverlays('window-data', {
       timestamp: Date.now(),
       windows: windows.map(w => ({
@@ -417,6 +429,29 @@ function startWindowDetection() {
         title: w.title
       }))
     });
+
+    // Detect fullscreen windows and broadcast status changes
+    const fullscreenDisplays = windowDetector.detectFullscreenDisplays(windows);
+    const changed = lastFullscreenDisplays === null ||  // First poll always broadcasts
+                    fullscreenDisplays.length !== lastFullscreenDisplays.length ||
+                    !fullscreenDisplays.every((v) => lastFullscreenDisplays.includes(v));
+
+    if (changed) {
+      lastFullscreenDisplays = fullscreenDisplays;
+      log(`Fullscreen displays changed: [${fullscreenDisplays.join(', ')}]`);
+
+      // Broadcast to each overlay whether it should be hidden
+      overlayWindows.forEach(({ window, index }) => {
+        if (!window.isDestroyed()) {
+          const isFullscreen = fullscreenDisplays.includes(index);
+          window.webContents.send('fullscreen-status', isFullscreen);
+        }
+      });
+
+      // Broadcast global muffling state (muffle if ANY display is fullscreen)
+      const shouldMuffle = fullscreenDisplays.length > 0;
+      broadcastToOverlays('audio-muffle', shouldMuffle);
+    }
   }, 250);
 }
 

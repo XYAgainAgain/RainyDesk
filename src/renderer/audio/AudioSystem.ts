@@ -55,10 +55,13 @@ export class AudioSystem {
   // Effects chain
   private _eq: Tone.EQ3 | null = null;
   private _reverb: Tone.Reverb | null = null;
+  private _muffleFilter: Tone.Filter | null = null;
+  private _muffleGain: Tone.Gain | null = null;
   private _masterGain: Tone.Gain | null = null;
 
   // State tracking
   private _isMuted = false;
+  private _isMuffled = false;
   private _currentRainscape: RainscapeConfig | null = null;
   private _collisionCount = 0;
   private _droppedCollisions = 0;
@@ -104,6 +107,17 @@ export class AudioSystem {
   private createEffectsChain(): void {
     this._eq = new Tone.EQ3({ low: 0, mid: 0, high: 0 });
     this._reverb = new Tone.Reverb({ decay: 2, wet: 0.3 });
+
+    // Muffle filter: low-pass at 20kHz by default (fully open), drops to 800Hz when muffled
+    this._muffleFilter = new Tone.Filter({
+      type: 'lowpass',
+      frequency: 20000,
+      rolloff: -24,
+    });
+
+    // Muffle gain: 0 dB by default, drops by 6 dB when muffled
+    this._muffleGain = new Tone.Gain(1);
+
     this._masterGain = new Tone.Gain(Tone.dbToGain(this._config.masterVolume));
   }
 
@@ -126,15 +140,17 @@ export class AudioSystem {
 
   private connectAudioGraph(): void {
     if (!this._impactPool || !this._bubblePool || !this._sheetLayer) return;
-    if (!this._eq || !this._reverb || !this._masterGain) return;
+    if (!this._eq || !this._reverb || !this._muffleFilter || !this._muffleGain || !this._masterGain) return;
 
-    // Pools → EQ → Reverb → Master → Destination
+    // Pools → EQ → Reverb → MuffleFilter → MuffleGain → Master → Destination
     this._impactPool.connect(this._eq);
     this._bubblePool.connect(this._eq);
     this._sheetLayer.connect(this._eq);
 
     this._eq.connect(this._reverb);
-    this._reverb.connect(this._masterGain);
+    this._reverb.connect(this._muffleFilter);
+    this._muffleFilter.connect(this._muffleGain);
+    this._muffleGain.connect(this._masterGain);
     this._masterGain.toDestination();
   }
 
@@ -232,6 +248,34 @@ export class AudioSystem {
     return this._isMuted;
   }
 
+  /**
+   * Set muffled state (for fullscreen detection).
+   * When muffled, reduces volume by 6 dB and applies low-pass filter at 800 Hz
+   * to simulate rain heard through a layer of insulation.
+   */
+  setMuffled(muffled: boolean): void {
+    if (this._isMuffled === muffled) return;
+    this._isMuffled = muffled;
+
+    const rampTime = 0.5; // Smooth transition over 500ms
+
+    if (this._muffleFilter) {
+      const targetFreq = muffled ? 800 : 20000;
+      this._muffleFilter.frequency.rampTo(targetFreq, rampTime);
+    }
+
+    if (this._muffleGain) {
+      const targetGain = muffled ? Tone.dbToGain(-6) : 1;
+      this._muffleGain.gain.rampTo(targetGain, rampTime);
+    }
+
+    console.log(`[AudioSystem] Muffle ${muffled ? 'ON' : 'OFF'}`);
+  }
+
+  get isMuffled(): boolean {
+    return this._isMuffled;
+  }
+
   // Effects
 
   setEQ(settings: Partial<EQSettings>): void {
@@ -292,6 +336,113 @@ export class AudioSystem {
 
   getCurrentRainscape(): RainscapeConfig | null {
     return this._currentRainscape;
+  }
+
+  /** Update a single parameter by path (e.g. "effects.reverb.decay"). */
+  updateParam(path: string, value: unknown): void {
+    const parts = path.split('.');
+    const category = parts[0];
+
+    // Helper to safely get path segment
+    const getPart = (index: number): string | undefined => parts[index];
+
+    // Validation helpers
+    const isValidEQKey = (key: string): key is keyof EQSettings =>
+      ['low', 'mid', 'high'].includes(key);
+    const isValidReverbKey = (key: string): key is keyof ReverbSettings =>
+      ['decay', 'wetness'].includes(key);
+    const isValidOscillatorType = (v: unknown): v is 'sine' | 'triangle' =>
+      v === 'sine' || v === 'triangle';
+    const isValidNoiseType = (v: unknown): v is 'white' | 'pink' | 'brown' =>
+      v === 'white' || v === 'pink' || v === 'brown';
+
+    switch (category) {
+      case 'effects': {
+        const subKey = getPart(1);
+        if (!subKey) break;
+
+        if (subKey === 'masterVolume') {
+          this.setMasterVolume(Number(value));
+        } else if (subKey === 'eq') {
+          const eqKey = getPart(2);
+          if (eqKey && isValidEQKey(eqKey)) {
+            this.setEQ({ [eqKey]: Number(value) });
+          }
+        } else if (subKey === 'reverb') {
+          const reverbKey = getPart(2);
+          if (reverbKey && isValidReverbKey(reverbKey)) {
+            this.setReverb({ [reverbKey]: Number(value) });
+          }
+        }
+        break;
+      }
+
+      case 'material': {
+        const matKey = getPart(1);
+        if (!matKey) break;
+
+        if (matKey === 'id') {
+          this._materialManager.setDefaultMaterial(String(value));
+        } else {
+          const currentMat = this._materialManager.getDefaultMaterial();
+          this._materialManager.updateMaterial(currentMat.id, { [matKey]: value });
+        }
+        break;
+      }
+
+      case 'sheetLayer': {
+        const sheetKey = getPart(1);
+        if (sheetKey) {
+          this._sheetLayer?.updateConfig({ [sheetKey]: value });
+        }
+        break;
+      }
+
+      case 'bubble': {
+        const bubbleKey = getPart(1);
+        if (!bubbleKey) break;
+
+        if (bubbleKey === 'probability') {
+          const currentMat = this._materialManager.getDefaultMaterial();
+          this._materialManager.updateMaterial(currentMat.id, { bubbleProbability: Number(value) });
+        } else if (bubbleKey === 'oscillatorType') {
+          if (isValidOscillatorType(value)) {
+            const currentMat = this._materialManager.getDefaultMaterial();
+            this._materialManager.updateMaterial(currentMat.id, { bubbleOscillatorType: value });
+            this._bubblePool?.updateConfig({ oscillatorType: value });
+          }
+        } else {
+          // Route other params (chirp, freq range) to the pool directly
+          this._bubblePool?.updateConfig({ [bubbleKey]: Number(value) });
+        }
+        break;
+      }
+
+      case 'impact': {
+        const impactKey = getPart(1);
+        if (!impactKey) break;
+
+        if (impactKey === 'noiseType') {
+          if (isValidNoiseType(value)) {
+            this._impactPool?.updateConfig({ noiseType: value });
+          }
+        } else {
+          this._impactPool?.updateConfig({ [impactKey]: Number(value) });
+        }
+        break;
+      }
+
+      case 'voicePools': {
+        const poolKey = getPart(1);
+        if (poolKey === 'impactPoolSize' || poolKey === 'bubblePoolSize') {
+          this.setVoicePoolSizes({ [poolKey]: Number(value) });
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
   }
 
   // Voice Pools
@@ -365,6 +516,8 @@ export class AudioSystem {
     this._sheetLayer?.dispose();
     this._eq?.dispose();
     this._reverb?.dispose();
+    this._muffleFilter?.dispose();
+    this._muffleGain?.dispose();
     this._masterGain?.dispose();
 
     this._impactPool = null;
@@ -372,6 +525,8 @@ export class AudioSystem {
     this._sheetLayer = null;
     this._eq = null;
     this._reverb = null;
+    this._muffleFilter = null;
+    this._muffleGain = null;
     this._masterGain = null;
 
     this._state = 'uninitialized';

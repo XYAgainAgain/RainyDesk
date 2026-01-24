@@ -179,6 +179,33 @@ void main() {
 }
 `;
 
+// Upscale shader for pixelated rendering (nearest-neighbor)
+const UPSCALE_VERT = `#version 300 es
+precision highp float;
+
+in vec2 a_position;
+out vec2 v_texCoord;
+
+void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    // Map clip space (-1 to 1) to texture coords (0 to 1)
+    // No Y flip needed - framebuffer already has correct orientation
+    v_texCoord = a_position * 0.5 + 0.5;
+}
+`;
+
+const UPSCALE_FRAG = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_texture;
+in vec2 v_texCoord;
+out vec4 fragColor;
+
+void main() {
+    fragColor = texture(u_texture, v_texCoord);
+}
+`;
+
 class WebGLRainRenderer {
     constructor(canvas) {
         this.canvas = canvas;
@@ -187,20 +214,28 @@ class WebGLRainRenderer {
         // Shader programs
         this.raindropProgram = null;
         this.splashProgram = null;
+        this.upscaleProgram = null;
 
         // Vertex Array Objects
         this.raindropVAO = null;
         this.splashVAO = null;
+        this.upscaleVAO = null;
 
         // Buffers
         this.raindropVertexBuffer = null;
         this.raindropInstanceBuffer = null;
         this.splashVertexBuffer = null;
         this.splashInstanceBuffer = null;
+        this.upscaleVertexBuffer = null;
+
+        // Framebuffer for low-res rendering
+        this.framebuffer = null;
+        this.fbTexture = null;
 
         // Uniform locations
         this.raindropResolutionLoc = null;
         this.splashResolutionLoc = null;
+        this.upscaleTextureLoc = null;
 
         // Pre-allocated typed arrays for instance data
         this.maxRaindrops = 2000;
@@ -208,10 +243,15 @@ class WebGLRainRenderer {
         this.raindropData = new Float32Array(this.maxRaindrops * 7);
         this.splashData = new Float32Array(this.maxSplashes * 4);
 
-        // Canvas dimensions
+        // Canvas dimensions (display resolution)
         this.logicalWidth = 0;
         this.logicalHeight = 0;
         this.dpr = 1;
+
+        // Low-res rendering dimensions (physics space)
+        this.lowResWidth = 0;
+        this.lowResHeight = 0;
+        this.scaleFactor = 1.0;
     }
 
     /**
@@ -237,20 +277,102 @@ class WebGLRainRenderer {
         // Compile shaders and create programs
         this.raindropProgram = this._createProgram(RAINDROP_VERT, RAINDROP_FRAG);
         this.splashProgram = this._createProgram(SPLASH_VERT, SPLASH_FRAG);
+        this.upscaleProgram = this._createProgram(UPSCALE_VERT, UPSCALE_FRAG);
 
         // Get uniform locations
         this.raindropResolutionLoc = gl.getUniformLocation(this.raindropProgram, 'u_resolution');
         this.splashResolutionLoc = gl.getUniformLocation(this.splashProgram, 'u_resolution');
+        this.upscaleTextureLoc = gl.getUniformLocation(this.upscaleProgram, 'u_texture');
 
         // Create buffers and VAOs
         this._initRaindropBuffers();
         this._initSplashBuffers();
+        this._initUpscaleBuffers();
 
         // Setup blending for transparency
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
         return true;
+    }
+
+    /**
+     * Initialize framebuffer for low-res rendering
+     */
+    _initFramebuffer() {
+        const gl = this.gl;
+
+        // Clean up existing framebuffer if any
+        if (this.framebuffer) {
+            gl.deleteFramebuffer(this.framebuffer);
+            gl.deleteTexture(this.fbTexture);
+        }
+
+        // Create framebuffer
+        this.framebuffer = gl.createFramebuffer();
+
+        // Create texture for framebuffer
+        this.fbTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.fbTexture);
+        gl.texImage2D(
+            gl.TEXTURE_2D, 0, gl.RGBA,
+            this.lowResWidth, this.lowResHeight, 0,
+            gl.RGBA, gl.UNSIGNED_BYTE, null
+        );
+
+        // CRITICAL: Nearest-neighbor filtering for pixelated look
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        // Attach texture to framebuffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+        gl.framebufferTexture2D(
+            gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+            gl.TEXTURE_2D, this.fbTexture, 0
+        );
+
+        // Check framebuffer status
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+            console.error('Framebuffer not complete:', status);
+        }
+
+        // Unbind
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    /**
+     * Initialize upscale fullscreen quad buffers
+     */
+    _initUpscaleBuffers() {
+        const gl = this.gl;
+        const program = this.upscaleProgram;
+
+        // Create VAO
+        this.upscaleVAO = gl.createVertexArray();
+        gl.bindVertexArray(this.upscaleVAO);
+
+        // Fullscreen quad (clip space coordinates)
+        const quadVerts = new Float32Array([
+            -1.0, -1.0,  // bottom-left
+             1.0, -1.0,  // bottom-right
+            -1.0,  1.0,  // top-left
+             1.0,  1.0   // top-right
+        ]);
+
+        // Vertex buffer (static)
+        this.upscaleVertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.upscaleVertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+        const posLoc = gl.getAttribLocation(program, 'a_position');
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindVertexArray(null);
     }
 
     /**
@@ -477,20 +599,71 @@ class WebGLRainRenderer {
     }
 
     /**
+     * Clear the canvas to transparent
+     */
+    clear() {
+        const gl = this.gl;
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
+    /**
+     * Render the upscale pass (framebuffer texture to screen)
+     */
+    _renderUpscale() {
+        const gl = this.gl;
+
+        gl.useProgram(this.upscaleProgram);
+
+        // Bind framebuffer texture
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.fbTexture);
+        gl.uniform1i(this.upscaleTextureLoc, 0);
+
+        // Draw fullscreen quad
+        gl.bindVertexArray(this.upscaleVAO);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    /**
      * Render all particles from physics system
+     * Uses two-pass rendering: low-res framebuffer -> upscale to display
      */
     render(physicsSystem) {
         const gl = this.gl;
 
-        // Clear with transparent black
-        gl.clearColor(0, 0, 0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
+        // Skip framebuffer path if not using scaled rendering
+        if (this.scaleFactor >= 1.0 || !this.framebuffer) {
+            // Direct rendering (no scaling)
+            this.clear();
+            this._renderParticles(physicsSystem);
+            return;
+        }
 
-        // Render raindrops
+        // PASS 1: Render to low-res framebuffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+        gl.viewport(0, 0, this.lowResWidth, this.lowResHeight);
+        this.clear();
+        this._renderParticles(physicsSystem);
+
+        // PASS 2: Upscale to display
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        this.clear();
+        this._renderUpscale();
+    }
+
+    /**
+     * Render particles (used by both direct and framebuffer paths)
+     */
+    _renderParticles(physicsSystem) {
+        const gl = this.gl;
+
+        // Render raindrops (use low-res dimensions for coordinate conversion)
         const raindropCount = this._updateRaindropBuffer(physicsSystem.raindrops);
         if (raindropCount > 0) {
             gl.useProgram(this.raindropProgram);
-            gl.uniform2f(this.raindropResolutionLoc, this.logicalWidth, this.logicalHeight);
+            gl.uniform2f(this.raindropResolutionLoc, this.lowResWidth, this.lowResHeight);
             gl.bindVertexArray(this.raindropVAO);
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, raindropCount);
         }
@@ -499,7 +672,7 @@ class WebGLRainRenderer {
         const splashCount = this._updateSplashBuffer(physicsSystem.splashParticles);
         if (splashCount > 0) {
             gl.useProgram(this.splashProgram);
-            gl.uniform2f(this.splashResolutionLoc, this.logicalWidth, this.logicalHeight);
+            gl.uniform2f(this.splashResolutionLoc, this.lowResWidth, this.lowResHeight);
             gl.bindVertexArray(this.splashVAO);
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, splashCount);
         }
@@ -507,19 +680,38 @@ class WebGLRainRenderer {
 
     /**
      * Handle canvas resize
+     * @param {number} width - Display width in CSS pixels
+     * @param {number} height - Display height in CSS pixels
+     * @param {number} dpr - Device pixel ratio
+     * @param {number} scaleFactor - Render scale (0.25 = 25% resolution)
      */
-    resize(width, height, dpr) {
+    resize(width, height, dpr, scaleFactor = 1.0) {
         this.logicalWidth = width;
         this.logicalHeight = height;
         this.dpr = dpr;
+        this.scaleFactor = scaleFactor;
 
-        // Set canvas buffer size
+        // Set canvas buffer size (display resolution)
         this.canvas.width = width * dpr;
         this.canvas.height = height * dpr;
         this.canvas.style.width = width + 'px';
         this.canvas.style.height = height + 'px';
 
-        // Update viewport
+        // Calculate low-res rendering dimensions (physics space)
+        this.lowResWidth = Math.floor(width * scaleFactor);
+        this.lowResHeight = Math.floor(height * scaleFactor);
+
+        // Ensure minimum size of 1 pixel
+        this.lowResWidth = Math.max(1, this.lowResWidth);
+        this.lowResHeight = Math.max(1, this.lowResHeight);
+
+        // Initialize/resize framebuffer for scaled rendering
+        if (scaleFactor < 1.0) {
+            this._initFramebuffer();
+            console.log(`Renderer: ${this.lowResWidth}x${this.lowResHeight} -> ${width}x${height} (${scaleFactor * 100}% scale)`);
+        }
+
+        // Update viewport for display resolution
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     }
 
@@ -530,14 +722,28 @@ class WebGLRainRenderer {
         const gl = this.gl;
         if (!gl) return;
 
+        // Clean up VAOs
         gl.deleteVertexArray(this.raindropVAO);
         gl.deleteVertexArray(this.splashVAO);
+        gl.deleteVertexArray(this.upscaleVAO);
+
+        // Clean up buffers
         gl.deleteBuffer(this.raindropVertexBuffer);
         gl.deleteBuffer(this.raindropInstanceBuffer);
         gl.deleteBuffer(this.splashVertexBuffer);
         gl.deleteBuffer(this.splashInstanceBuffer);
+        gl.deleteBuffer(this.upscaleVertexBuffer);
+
+        // Clean up programs
         gl.deleteProgram(this.raindropProgram);
         gl.deleteProgram(this.splashProgram);
+        gl.deleteProgram(this.upscaleProgram);
+
+        // Clean up framebuffer
+        if (this.framebuffer) {
+            gl.deleteFramebuffer(this.framebuffer);
+            gl.deleteTexture(this.fbTexture);
+        }
 
         this.gl = null;
     }

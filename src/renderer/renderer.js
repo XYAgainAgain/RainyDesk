@@ -11,11 +11,19 @@ let newAudioSystem = null;
 let useNewAudio = true; // Using new system exclusively now
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 import Canvas2DRenderer from './Canvas2DRenderer.js';
-import { rainscaper } from './rainscaper.js';
+
+// New TypeScript Rainscaper (Phase 4 panel rewrite)
+let rainscaper = null;
+let useNewRainscaper = true;
 
 // Canvas and context
 const canvas = document.getElementById('rain-canvas');
 let renderer = null;  // Will be WebGLRainRenderer or Canvas2DRenderer
+
+// Render scale for pixelated 8-bit aesthetic (0.25 = 25% resolution)
+// Physics runs at this scale, then upscaled with nearest-neighbor for blocky look
+// Mutable so it can be adjusted via Rainscaper
+let renderScale = 0.25;
 
 // Display info (set by main process)
 let displayInfo = {
@@ -63,6 +71,9 @@ let audioInitialized = false;
 // Window exclusion zones (local canvas coordinates)
 let windowZones = [];
 let windowZoneCount = 0;
+
+// Fullscreen detection: hide rain when this monitor has a fullscreen window
+let isFullscreenActive = false;
 
 /**
  * Legacy Raindrop class (for non-Matter.js mode)
@@ -234,6 +245,12 @@ async function initAudio() {
           physicsSystem.setNewAudioSystem(newAudioSystem);
           window.rainydesk.log('[New Audio] Connected to physics system');
         }
+
+        // Connect new audio system to new rainscaper
+        if (useNewRainscaper && rainscaper && rainscaper.setAudioSystem) {
+          rainscaper.setAudioSystem(newAudioSystem);
+          window.rainydesk.log('[New Audio] Connected to Rainscaper');
+        }
       } catch (err) {
         window.rainydesk.log(`[New Audio] Failed to start: ${err.message}`);
       }
@@ -359,13 +376,21 @@ function gameLoop(currentTime) {
   const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
   lastTime = currentTime;
 
-  update(dt);
-  render();
+  // Skip physics/rendering when fullscreen window detected on this monitor
+  if (!isFullscreenActive) {
+    update(dt);
+    render();
 
-  // Feed particle count to new audio system
-  if (newAudioSystem && physicsSystem) {
-    const particleCount = physicsSystem.getParticleCount();
-    newAudioSystem.setParticleCount(particleCount);
+    // Feed particle count to new audio system
+    if (newAudioSystem && physicsSystem) {
+      const particleCount = physicsSystem.getParticleCount();
+      newAudioSystem.setParticleCount(particleCount);
+    }
+  } else {
+    // When fullscreen, feed zero particles to quiet the sheet layer
+    if (newAudioSystem) {
+      newAudioSystem.setParticleCount(0);
+    }
   }
 
   // FPS monitoring
@@ -373,7 +398,7 @@ function gameLoop(currentTime) {
   if (currentTime - fpsTime > 5000) {
     const fps = Math.round(fpsCounter / 5);
     const particles = physicsSystem ? physicsSystem.getParticleCount() : raindrops.length;
-    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}`);
+    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}${isFullscreenActive ? ', FULLSCREEN' : ''}`);
     fpsCounter = 0;
     fpsTime = currentTime;
   }
@@ -392,7 +417,8 @@ function resizeCanvas() {
   canvasWidth = width;
   canvasHeight = height;
 
-  if (renderer) renderer.resize(width, height, dpr);
+  // Pass scale factor to renderer for pixelated rendering
+  if (renderer) renderer.resize(width, height, dpr, renderScale);
 
   let floorY = height;
   if (displayInfo && displayInfo.workArea && displayInfo.bounds) {
@@ -401,6 +427,7 @@ function resizeCanvas() {
     floorY = Math.min(Math.max(0, floorY), height);
   }
 
+  // Physics system handles its own scaling internally
   if (physicsSystem) physicsSystem.resize(width, height, floorY);
 }
 
@@ -417,6 +444,19 @@ async function init() {
   });
 
   window.rainydesk.onToggleRain((enabled) => { config.enabled = enabled; });
+
+  // Audio pause/resume (from tray menu "Pause RainyDesk")
+  window.rainydesk.onToggleAudio((enabled) => {
+    if (newAudioSystem) {
+      if (enabled) {
+        newAudioSystem.start();
+        window.rainydesk.log('Audio resumed');
+      } else {
+        newAudioSystem.stop();
+        window.rainydesk.log('Audio paused');
+      }
+    }
+  });
 
   window.rainydesk.onSetIntensity((value) => {
     config.intensity = value;
@@ -449,11 +489,21 @@ async function init() {
       if (param === 'wind' && physicsSystem) physicsSystem.setWind(value);
       if (param === 'intensity') {
         config.intensity = value;
-        if (audioSystem.isInitialized) audioSystem.setIntensity(value);
+        // Old audio system uses intensity directly; new system uses particle count from game loop
+        if (!useNewAudio && audioSystem.isInitialized) audioSystem.setIntensity(value);
       }
       if (param === 'dropMinSize') config.dropMinSize = value;
       if (param === 'dropMaxSize') config.dropMaxSize = value;
-    } else if (audioSystem.isInitialized) {
+      if (param === 'renderScale') {
+        // Update render scale and resize both systems
+        renderScale = Math.max(0.125, Math.min(1.0, value));
+        if (physicsSystem) physicsSystem.setScaleFactor(renderScale);
+        resizeCanvas(); // Triggers renderer.resize with new scale
+        window.rainydesk.log(`Render scale set to ${renderScale * 100}%`);
+      }
+    } else if (newAudioSystem) {
+      newAudioSystem.updateParam(path, value);
+    } else if (!useNewAudio && audioSystem.isInitialized) {
       audioSystem.updateParam(path, value);
     }
   });
@@ -461,6 +511,29 @@ async function init() {
   // Hook up Debug Panel toggle
   window.rainydesk.onToggleRainscaper(() => {
     if (displayInfo.index === 0) rainscaper.toggle();
+  });
+
+  // Fullscreen detection: hide rain on this monitor when fullscreen window detected
+  window.rainydesk.onFullscreenStatus((isFullscreen) => {
+    isFullscreenActive = isFullscreen;
+    if (isFullscreen) {
+      window.rainydesk.log(`[Monitor ${displayInfo.index}] Fullscreen detected - hiding rain`);
+      // Clear the canvas when going fullscreen
+      if (renderer) renderer.clear();
+    } else {
+      window.rainydesk.log(`[Monitor ${displayInfo.index}] Fullscreen ended - showing rain`);
+    }
+  });
+
+  // Audio muffling: triggered when ANY monitor has fullscreen
+  window.rainydesk.onAudioMuffle((shouldMuffle) => {
+    // Only handle on primary monitor to avoid duplicate processing
+    if (displayInfo.index !== 0) return;
+
+    if (newAudioSystem) {
+      newAudioSystem.setMuffled(shouldMuffle);
+      window.rainydesk.log(`Audio muffling: ${shouldMuffle ? 'ON' : 'OFF'}`);
+    }
   });
 
   // Initialize renderer
@@ -476,7 +549,8 @@ async function init() {
   window.addEventListener('resize', resizeCanvas);
 
   if (config.useMatterJS) {
-    physicsSystem = new RainPhysicsSystem(canvasWidth, canvasHeight);
+    // Create physics system with render scale for pixelated effect
+    physicsSystem = new RainPhysicsSystem(canvasWidth, canvasHeight, renderScale);
   }
 
   audioSystem.onRainscapeChange = (name) => {
@@ -506,33 +580,44 @@ async function init() {
     window.rainydesk.log(`Autosave load failed: ${err.message}`);
   }
 
-  // Init Debug Tool
+  // Init Rainscaper (new TypeScript version or legacy fallback)
   try {
-    rainscaper.init(physicsSystem, config);
-    window.rainydesk.log('Rainscaper initialized');
+    if (useNewRainscaper) {
+      const { rainscaper: newRainscaper } = await import('./rainscaper.bundle.js');
+      rainscaper = newRainscaper;
+      await rainscaper.init(physicsSystem, config);
+      window.rainydesk.log('[New Rainscaper] TypeScript Rainscaper initialized');
+    } else {
+      // Legacy rainscaper fallback
+      const { rainscaper: legacyRainscaper } = await import('./rainscaper.js');
+      rainscaper = legacyRainscaper;
+      await rainscaper.init(physicsSystem, config);
+      window.rainydesk.log('Legacy Rainscaper initialized');
+    }
   } catch (err) {
     window.rainydesk.log(`Rainscaper init failed: ${err.message}`);
+    console.error('[Rainscaper] Error:', err);
   }
 
   startAutosave();
 
-  // Audio starts on first click anywhere (browser policy requirement)
-  // Clicking on ANY monitor triggers audio on ALL monitors
-  document.addEventListener('click', () => {
-    window.rainydesk.log('First click detected - triggering audio start on all monitors');
-
-    // Switch to click-through mode immediately so clicks pass through
-    window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
-
-    // Trigger audio start on all monitors via main process
-    window.rainydesk.triggerAudioStart();
-  }, { once: true });
+  // Enable click-through immediately (autoplay policy bypassed in Electron)
+  window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
 
   // Listen for audio start broadcast from main process
   window.rainydesk.onStartAudio(async () => {
     window.rainydesk.log('Received audio start signal');
     await initAudio();
   });
+
+  // Auto-start audio after a short delay (primary monitor triggers all)
+  // No click required since autoplayPolicy: 'no-user-gesture-required' is set
+  if (displayInfo.index === 0) {
+    setTimeout(() => {
+      window.rainydesk.log('Auto-triggering audio start on all monitors');
+      window.rainydesk.triggerAudioStart();
+    }, 500);  // Small delay to ensure all renderers are ready
+  }
 
   requestAnimationFrame(gameLoop);
 }

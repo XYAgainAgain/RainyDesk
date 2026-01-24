@@ -1,0 +1,81 @@
+/**
+ * Rainscaper CSS Custom Properties
+ * "Nocturnal Control Room" theme - mixing console inspired
+ */
+
+:root {
+  /* Base Colors */
+  --rs-bg-primary: #1a1a1e;
+  --rs-bg-secondary: #242428;
+  --rs-bg-tertiary: #2e2e34;
+  --rs-bg-elevated: #38383f;
+
+  /* Text Colors */
+  --rs-text-primary: #f8f8f2;
+  --rs-text-secondary: #a8a8b3;
+  --rs-text-muted: #6272a4;
+
+  /* Functional Accent Colors */
+  --rs-accent-water: #8be9fd;      /* Cyan - Impact/splash sounds */
+  --rs-accent-resonance: #ff79c6;  /* Pink - Bubble/frequency */
+  --rs-accent-earth: #ffb86c;      /* Orange - Physics/gravity */
+  --rs-accent-air: #bd93f9;        /* Purple - Wind/sheet layer */
+  --rs-accent-positive: #50fa7b;   /* Green - Save/success */
+  --rs-accent-negative: #ff5555;   /* Red - Delete/warning */
+  --rs-accent-neutral: #6272a4;    /* Blue-grey - Neutral/reverb */
+
+  /* Panel Dimensions */
+  --rs-panel-width: 520px;
+  --rs-panel-height: 700px;
+  --rs-panel-radius: 12px;
+  --rs-panel-padding: 16px;
+
+  /* Control Sizing */
+  --rs-control-height: 32px;
+  --rs-slider-track-height: 6px;
+  --rs-slider-thumb-size: 16px;
+  --rs-toggle-width: 44px;
+  --rs-toggle-height: 24px;
+
+  /* Spacing */
+  --rs-spacing-xs: 4px;
+  --rs-spacing-sm: 8px;
+  --rs-spacing-md: 12px;
+  --rs-spacing-lg: 16px;
+  --rs-spacing-xl: 24px;
+
+  /* Typography */
+  --rs-font-body: 'Convergence', sans-serif;
+  --rs-font-mono: 'JetBrains Mono', 'Consolas', monospace;
+  --rs-font-size-xs: 10px;
+  --rs-font-size-sm: 12px;
+  --rs-font-size-md: 14px;
+  --rs-font-size-lg: 16px;
+  --rs-font-size-xl: 18px;
+
+  /* Borders */
+  --rs-border-color: #444450;
+  --rs-border-radius-sm: 4px;
+  --rs-border-radius-md: 8px;
+  --rs-border-radius-lg: 12px;
+
+  /* Shadows */
+  --rs-shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.2);
+  --rs-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --rs-shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --rs-shadow-glow: 0 0 12px currentColor;
+
+  /* Transitions */
+  --rs-transition-fast: 0.1s ease;
+  --rs-transition-normal: 0.2s ease;
+  --rs-transition-slow: 0.3s ease;
+
+  /* LED Indicator */
+  --rs-led-size: 8px;
+  --rs-led-glow: 0 0 6px currentColor;
+
+  /* Z-index layers */
+  --rs-z-panel: 99999;
+  --rs-z-dropdown: 100000;
+  --rs-z-tooltip: 100001;
+}
