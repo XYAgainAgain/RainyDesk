@@ -7,7 +7,7 @@
 import type { RainscapeConfig, AudioSystemStats } from '../../types/audio';
 
 export type RainscaperMode = 'user' | 'admin';
-export type RainscaperTab = 'presets' | 'effects' | 'physics' | 'material' | 'impact' | 'bubble' | 'sheet';
+export type RainscaperTab = 'presets' | 'effects' | 'physics' | 'material' | 'impact' | 'bubble' | 'sheet' | 'mapper' | 'system';
 
 export interface RainscaperStateData {
   mode: RainscaperMode;
@@ -202,7 +202,7 @@ export class RainscaperState {
 
   /** Get admin-mode tabs */
   getAdminTabs(): RainscaperTab[] {
-    return ['material', 'impact', 'bubble', 'sheet', 'effects', 'physics'];
+    return ['material', 'impact', 'bubble', 'sheet', 'mapper', 'effects', 'physics', 'system'];
   }
 
   /** Get tabs for current mode */
@@ -220,6 +220,8 @@ export class RainscaperState {
       impact: 'Impact',
       bubble: 'Bubble',
       sheet: 'Sheet',
+      mapper: 'Mapper',
+      system: 'System',
     };
     return labels[tab];
   }

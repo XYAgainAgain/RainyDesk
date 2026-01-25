@@ -178,11 +178,25 @@ class SplashParticle {
 }
 
 /**
- * Check if two rectangles overlap
+ * Check if two rectangles truly overlap (not just touching edges)
  */
 function rectsOverlap(a, b) {
-  return !(a.x + a.width < b.x || a.x > b.x + b.width ||
-           a.y + a.height < b.y || a.y > b.y + b.height);
+  // Use strict inequality to exclude windows that merely touch the boundary
+  return !(a.x + a.width <= b.x || a.x >= b.x + b.width ||
+           a.y + a.height <= b.y || a.y >= b.y + b.height);
+}
+
+/**
+ * Calculate what percentage of rectangle 'a' overlaps with rectangle 'b'
+ * Returns 0-1 (0% to 100%)
+ */
+function overlapPercentage(a, b) {
+  // Find overlap rectangle
+  const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+  const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+  const overlapArea = overlapX * overlapY;
+  const aArea = a.width * a.height;
+  return aArea > 0 ? overlapArea / aArea : 0;
 }
 
 /**
@@ -427,6 +441,8 @@ function resizeCanvas() {
     floorY = Math.min(Math.max(0, floorY), height);
   }
 
+  window.rainydesk.log(`[Monitor ${displayInfo?.index ?? '?'}] Resize: ${width}x${height}, floorY=${floorY}`);
+
   // Physics system handles its own scaling internally
   if (physicsSystem) physicsSystem.resize(width, height, floorY);
 }
@@ -437,9 +453,22 @@ function resizeCanvas() {
 async function init() {
   window.rainydesk.log('Initializing RainyDesk renderer...');
 
-  // Register IPC listeners
-  window.rainydesk.onDisplayInfo((info) => {
+  // Get display info via command (more reliable than event timing)
+  try {
+    const info = await window.rainydesk.getDisplayInfo();
+    console.log('[DEBUG] Got display-info via command:', JSON.stringify(info));
     displayInfo = info;
+    displayInfo.fromTauri = true;
+    resizeCanvas();
+  } catch (e) {
+    console.warn('[DEBUG] getDisplayInfo command failed, falling back to event:', e);
+  }
+
+  // Also listen for display-info events (fallback/updates)
+  window.rainydesk.onDisplayInfo((info) => {
+    console.log('[DEBUG] Received display-info event:', JSON.stringify(info));
+    displayInfo = info;
+    displayInfo.fromTauri = true;
     resizeCanvas();
   });
 
@@ -468,15 +497,81 @@ async function init() {
     if (audioInitialized) audioSystem.setVolume(value);
   });
 
+  // Track if we've logged window info for this session (log once per startup)
+  let windowDataLogged = false;
+
   window.rainydesk.onWindowData((data) => {
-    windowZones = data.windows
-      .filter(w => rectsOverlap(w.bounds, displayInfo.bounds))
-      .map(w => ({
-        x: w.bounds.x - displayInfo.bounds.x,
-        y: w.bounds.y - displayInfo.bounds.y,
-        width: w.bounds.width,
-        height: w.bounds.height
-      }));
+    // Skip processing until we have valid displayInfo from Tauri
+    // (default bounds are 1920x1080, real monitors are different)
+    if (!displayInfo.fromTauri) {
+      return;
+    }
+
+    // DEBUG: Log ALL detected windows once per session (to log file for autonomous debugging)
+    if (!windowDataLogged) {
+      windowDataLogged = true;
+      const allWindowInfo = data.windows.map(w =>
+        `"${w.title?.substring(0, 25) || '?'}" at (${w.bounds.x},${w.bounds.y}) ${w.bounds.width}x${w.bounds.height}`
+      );
+      window.rainydesk.log(`[WindowDebug] Monitor ${displayInfo.index} at (${displayInfo.bounds.x},${displayInfo.bounds.y}) ${displayInfo.bounds.width}x${displayInfo.bounds.height}`);
+      window.rainydesk.log(`[WindowDebug] All ${data.windows.length} detected windows:`);
+      allWindowInfo.forEach((info, i) => window.rainydesk.log(`  [${i}] ${info}`));
+    }
+
+    // First, find windows that overlap this monitor
+    const overlappingWindows = data.windows
+      .filter(w => !w.title || !w.title.includes('RainyDesk'))
+      .filter(w => !w.title || !w.title.includes('DevTools'))
+      .filter(w => rectsOverlap(w.bounds, displayInfo.bounds));
+
+    // Convert to local coordinates and CLIP to monitor bounds
+    // This allows windows spanning multiple monitors to create zones on each
+    const monitorWidth = displayInfo.bounds.width;
+    const monitorHeight = displayInfo.bounds.height;
+
+    windowZones = overlappingWindows.map(w => {
+      // Convert to local coordinates
+      let x = w.bounds.x - displayInfo.bounds.x;
+      let y = w.bounds.y - displayInfo.bounds.y;
+      let width = w.bounds.width;
+      let height = w.bounds.height;
+
+      // Clip left edge
+      if (x < 0) {
+        width += x;  // Reduce width by the negative amount
+        x = 0;
+      }
+      // Clip top edge
+      if (y < 0) {
+        height += y;  // Reduce height by the negative amount
+        y = 0;
+      }
+      // Clip right edge
+      if (x + width > monitorWidth) {
+        width = monitorWidth - x;
+      }
+      // Clip bottom edge
+      if (y + height > monitorHeight) {
+        height = monitorHeight - y;
+      }
+
+      return { x, y, width, height, title: w.title };
+    }).filter(z => z.width > 0 && z.height > 0);  // Remove zones that clipped to nothing
+
+    // Log final zones ONCE for this monitor
+    if (!windowDataLogged || windowZones.length !== windowZoneCount) {
+      if (windowZones.length > 0) {
+        const zoneDetails = windowZones.map(z =>
+          `"${z.title?.substring(0, 20) || '?'}" local:(${z.x},${z.y}) ${z.width}x${z.height}`
+        );
+        window.rainydesk.log(`[WindowDebug] Monitor ${displayInfo.index} final zones (${windowZones.length}):`);
+        zoneDetails.forEach((d, i) => window.rainydesk.log(`  zone[${i}]: ${d}`));
+      }
+    }
+
+    // Remove title from zones (not needed for physics)
+    windowZones = windowZones.map(z => ({ x: z.x, y: z.y, width: z.width, height: z.height }));
+
     windowZoneCount = windowZones.length;
     if (physicsSystem) physicsSystem.setWindowZones(windowZones);
   });
@@ -486,11 +581,21 @@ async function init() {
     if (path.startsWith('physics.')) {
       const param = path.split('.')[1];
       if (param === 'gravity' && physicsSystem) physicsSystem.setGravity(value);
-      if (param === 'wind' && physicsSystem) physicsSystem.setWind(value);
+      if (param === 'wind' && physicsSystem) {
+        physicsSystem.setWind(value);
+        // Also update background rain wind (normalize to -1..1)
+        if (renderer && renderer.setBackgroundRainWind) {
+          renderer.setBackgroundRainWind(value / 100);
+        }
+      }
       if (param === 'intensity') {
         config.intensity = value;
         // Old audio system uses intensity directly; new system uses particle count from game loop
         if (!useNewAudio && audioSystem.isInitialized) audioSystem.setIntensity(value);
+        // Update background rain intensity (normalize to 0..1)
+        if (renderer && renderer.setBackgroundRainIntensity) {
+          renderer.setBackgroundRainIntensity(value / 100);
+        }
       }
       if (param === 'dropMinSize') config.dropMinSize = value;
       if (param === 'dropMaxSize') config.dropMaxSize = value;
@@ -500,6 +605,17 @@ async function init() {
         if (physicsSystem) physicsSystem.setScaleFactor(renderScale);
         resizeCanvas(); // Triggers renderer.resize with new scale
         window.rainydesk.log(`Render scale set to ${renderScale * 100}%`);
+      }
+    } else if (path.startsWith('backgroundRain.')) {
+      // Handle background rain shader parameters
+      const param = path.split('.')[1];
+      if (renderer && renderer.setBackgroundRainConfig) {
+        const configUpdate = {};
+        if (param === 'intensity') configUpdate.intensity = value / 100;
+        else if (param === 'layerCount') configUpdate.layerCount = value;
+        else if (param === 'speed') configUpdate.speed = value;
+        else if (param === 'enabled') configUpdate.enabled = value;
+        renderer.setBackgroundRainConfig(configUpdate);
       }
     } else if (newAudioSystem) {
       newAudioSystem.updateParam(path, value);
@@ -543,6 +659,17 @@ async function init() {
   } catch (error) {
     renderer = new Canvas2DRenderer(canvas);
     renderer.init();
+  }
+
+  // Set initial background rain config (matches physics defaults)
+  if (renderer.setBackgroundRainConfig) {
+    renderer.setBackgroundRainConfig({
+      intensity: config.intensity / 100,
+      wind: config.wind / 100,
+      layerCount: 3,
+      speed: 1.0,
+      enabled: true
+    });
   }
 
   resizeCanvas();

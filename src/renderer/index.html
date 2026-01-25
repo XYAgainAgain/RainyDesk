@@ -16,6 +16,8 @@
 </head>
 <body>
   <canvas id="rain-canvas"></canvas>
+  <!-- Tauri API compatibility layer (loads before renderer.js) -->
+  <script type="module" src="tauri-api.bundle.js"></script>
   <script type="module" src="renderer.js"></script>
 </body>
 </html>

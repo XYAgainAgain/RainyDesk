@@ -60,7 +60,7 @@ export interface IVoicePool<T extends SynthType = SynthType> {
 export type ImpactSynthType = 'noise' | 'membrane' | 'metal';
 
 /** Types of oscillators used for bubble sounds */
-export type BubbleOscillatorType = 'sine' | 'triangle';
+export type BubbleOscillatorType = 'sine' | 'triangle' | 'square' | 'sawtooth';
 
 /** Configuration for a surface material's audio characteristics */
 export interface MaterialConfig {

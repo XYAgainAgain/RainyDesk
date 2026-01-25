@@ -10,7 +10,7 @@ import { VoicePool } from './VoicePool';
 import type { VoicePoolConfig, AudioParams, Voice } from '../../types/audio';
 
 export interface BubbleSynthConfig {
-  oscillatorType: 'sine' | 'triangle';
+  oscillatorType: 'sine' | 'triangle' | 'square' | 'sawtooth';
   attack: number;
   decayMin: number;
   decayMax: number;

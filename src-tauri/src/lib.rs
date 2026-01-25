@@ -1,6 +1,77 @@
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+mod window_detector;
+
+// Global pause state
+static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
+
+// Load theme-aware tray icon (white for dark theme, black for light theme)
+fn load_theme_icon() -> tauri::image::Image<'static> {
+    let is_dark = is_dark_theme();
+    let icon_bytes: &[u8] = if is_dark {
+        include_bytes!("../../assets/icons/RainyDeskIconWhite.png")
+    } else {
+        include_bytes!("../../assets/icons/RainyDeskIconBlack.png")
+    };
+
+    // Decode PNG to RGBA
+    let img = image::load_from_memory(icon_bytes).expect("valid icon PNG");
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    tauri::image::Image::new_owned(rgba.into_raw(), width, height)
+}
+
+#[cfg(target_os = "windows")]
+fn is_dark_theme() -> bool {
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+    };
+    use windows::core::PCWSTR;
+
+    unsafe {
+        let mut hkey = std::mem::zeroed();
+        let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+            .encode_utf16().collect();
+
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut hkey).is_ok() {
+            let value_name: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+            let mut data: u32 = 1;
+            let mut data_size = std::mem::size_of::<u32>() as u32;
+            let mut data_type = REG_DWORD;
+
+            if RegQueryValueExW(
+                hkey,
+                PCWSTR(value_name.as_ptr()),
+                None,
+                Some(&mut data_type),
+                Some(&mut data as *mut u32 as *mut u8),
+                Some(&mut data_size),
+            ).is_ok() {
+                return data == 0; // 0 = dark theme, 1 = light theme
+            }
+        }
+    }
+    true // Default to dark theme
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_dark_theme() -> bool {
+    true // Default to dark theme on other platforms
+}
+
+// App state for configuration
+struct AppState {
+    config: Mutex<serde_json::Value>,
+}
 
 #[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DisplayInfo {
     index: usize,
     bounds: Bounds,
@@ -10,11 +81,109 @@ struct DisplayInfo {
 }
 
 #[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Bounds {
     x: i32,
     y: i32,
     width: u32,
     height: u32,
+}
+
+// Tauri commands (invoked from renderer via window.__TAURI__.core.invoke)
+
+#[tauri::command]
+fn log_message(message: String) {
+    log::info!("[Renderer] {}", message);
+}
+
+#[tauri::command]
+fn get_config(state: tauri::State<AppState>) -> Result<serde_json::Value, String> {
+    let config = state.config.lock().unwrap();
+    Ok(config.clone())
+}
+
+#[tauri::command]
+fn set_rainscape(name: String) {
+    log::info!("Current rainscape: {}", name);
+}
+
+#[tauri::command]
+fn set_ignore_mouse_events(window: tauri::Window, ignore: bool) {
+    if let Err(e) = window.set_ignore_cursor_events(ignore) {
+        log::error!("Failed to set cursor events: {}", e);
+    }
+}
+
+#[tauri::command]
+fn save_rainscape(_filename: String, _data: serde_json::Value) -> Result<(), String> {
+    // TODO: Implement rainscape persistence
+    Ok(())
+}
+
+#[tauri::command]
+fn load_rainscapes() -> Result<Vec<String>, String> {
+    log::info!("load_rainscapes called - returning empty list (TODO)");
+    // TODO: Load saved rainscapes
+    Ok(vec![])
+}
+
+#[tauri::command]
+fn read_rainscape(_filename: String) -> Result<serde_json::Value, String> {
+    // TODO: Read rainscape file
+    Ok(serde_json::json!({}))
+}
+
+#[tauri::command]
+fn update_rainscape_param(path: String, value: serde_json::Value, app: tauri::AppHandle) {
+    // Broadcast to all windows
+    let _ = app.emit("update-rainscape-param", serde_json::json!({ "path": path, "value": value }));
+}
+
+#[tauri::command]
+fn trigger_audio_start(app: tauri::AppHandle) {
+    let _ = app.emit("start-audio", ());
+}
+
+#[tauri::command]
+fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
+    // Extract monitor index from window label (e.g., "overlay-0" -> 0)
+    let label = window.label();
+    let index: usize = label
+        .strip_prefix("overlay-")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // Get the monitor for this window
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+
+        log::info!(
+            "[get_display_info] Monitor {}: {}x{} at ({}, {})",
+            index, size.width, size.height, pos.x, pos.y
+        );
+
+        Ok(DisplayInfo {
+            index,
+            bounds: Bounds {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+            },
+            work_area: Bounds {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height - 48, // Approximate taskbar height, TODO: get actual work area
+            },
+            scale_factor: scale,
+            refresh_rate: 60,
+        })
+    } else {
+        Err("Could not get monitor info".to_string())
+    }
 }
 
 fn create_overlay_window(
@@ -48,6 +217,12 @@ fn create_overlay_window(
 
     // Enable click-through
     window.set_ignore_cursor_events(true)?;
+
+    // Open DevTools only for primary monitor (index 0) in dev mode
+    #[cfg(debug_assertions)]
+    if index == 0 {
+        window.open_devtools();
+    }
 
     // Prepare display info for renderer
     let display_info = DisplayInfo {
@@ -85,7 +260,30 @@ fn create_overlay_window(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize app state
+    let default_config = serde_json::json!({
+        "rainEnabled": true,
+        "intensity": 50,
+        "volume": 50,
+        "wind": 0
+    });
+
     tauri::Builder::default()
+        .manage(AppState {
+            config: Mutex::new(default_config),
+        })
+        .invoke_handler(tauri::generate_handler![
+            log_message,
+            get_config,
+            get_display_info,
+            set_rainscape,
+            set_ignore_mouse_events,
+            save_rainscape,
+            load_rainscapes,
+            read_rainscape,
+            update_rainscape_param,
+            trigger_audio_start
+        ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("overlay-0") {
                 let _ = window.set_focus();
@@ -95,6 +293,10 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                ])
                 .build(),
         )
         .setup(|app| {
@@ -103,19 +305,78 @@ pub fn run() {
             let monitors = app.available_monitors()?;
             log::info!("Found {} monitor(s)", monitors.len());
 
-            // Phase 1: Create overlay on primary monitor only
-            if let Some(primary) = app.primary_monitor()? {
-                create_overlay_window(app, &primary, 0)?;
-            } else if let Some(first) = monitors.first() {
-                log::warn!("No primary monitor found, using first available");
-                create_overlay_window(app, first, 0)?;
-            } else {
-                log::error!("No monitors found!");
+            // Create overlays on all monitors
+            for (index, monitor) in monitors.iter().enumerate() {
+                if let Err(e) = create_overlay_window(app, monitor, index) {
+                    log::error!("Failed to create overlay {}: {}", index, e);
+                }
             }
 
-            // TODO Phase 2: Create overlays on all monitors
-            // TODO Phase 3: Set up system tray
-            // TODO Phase 4: Start window detection polling
+            // Start window detection polling (250ms interval like Electron)
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+
+                    match window_detector::get_visible_windows() {
+                        Ok(window_data) => {
+                            if let Err(e) = app_handle.emit("window-data", &window_data) {
+                                log::error!("Failed to emit window-data: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to get windows: {}", e);
+                        }
+                    }
+                }
+            });
+
+            log::info!("Window detection polling started");
+
+            // Set up system tray
+            let quit_item = MenuItem::with_id(app, "quit", "Quit RainyDesk", true, None::<&str>)?;
+            let pause_item = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
+            let rainscaper_item = MenuItem::with_id(app, "rainscaper", "Open Rainscaper", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&pause_item, &rainscaper_item, &quit_item])?;
+
+            // Load theme-aware icon (white for dark theme, black for light theme)
+            let icon = load_theme_icon();
+
+            let pause_item_clone = pause_item.clone();
+            let _tray = TrayIconBuilder::new()
+                .icon(icon)
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .tooltip("RainyDesk")
+                .on_menu_event(move |app, event| {
+                    match event.id.as_ref() {
+                        "quit" => {
+                            log::info!("Quit requested via tray");
+                            app.exit(0);
+                        }
+                        "pause" => {
+                            let paused = !RAIN_PAUSED.load(Ordering::Relaxed);
+                            RAIN_PAUSED.store(paused, Ordering::Relaxed);
+                            let _ = pause_item_clone.set_text(if paused { "Resume" } else { "Pause" });
+                            let _ = app.emit("toggle-rain", !paused);
+                            log::info!("Rain {}", if paused { "paused" } else { "resumed" });
+                        }
+                        "rainscaper" => {
+                            let _ = app.emit("toggle-rainscaper", ());
+                            log::info!("Open Rainscaper requested");
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        let app = tray.app_handle();
+                        let _ = app.emit("toggle-rainscaper", ());
+                    }
+                })
+                .build(app)?;
+
+            log::info!("System tray initialized");
 
             Ok(())
         })

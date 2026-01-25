@@ -70,6 +70,8 @@ export class MaterialSection {
       options: [
         { value: 'sine', label: 'Sine' },
         { value: 'triangle', label: 'Triangle' },
+        { value: 'square', label: 'Square' },
+        { value: 'sawtooth', label: 'Sawtooth' },
       ],
       value: this._config.bubbleOscillatorType,
     });

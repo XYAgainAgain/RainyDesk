@@ -351,8 +351,8 @@ export class AudioSystem {
       ['low', 'mid', 'high'].includes(key);
     const isValidReverbKey = (key: string): key is keyof ReverbSettings =>
       ['decay', 'wetness'].includes(key);
-    const isValidOscillatorType = (v: unknown): v is 'sine' | 'triangle' =>
-      v === 'sine' || v === 'triangle';
+    const isValidOscillatorType = (v: unknown): v is 'sine' | 'triangle' | 'square' | 'sawtooth' =>
+      v === 'sine' || v === 'triangle' || v === 'square' || v === 'sawtooth';
     const isValidNoiseType = (v: unknown): v is 'white' | 'pink' | 'brown' =>
       v === 'white' || v === 'pink' || v === 'brown';
 
@@ -440,6 +440,31 @@ export class AudioSystem {
         break;
       }
 
+      case 'physicsMapper': {
+        const mapperKey = getPart(1);
+        if (mapperKey) {
+          this._physicsMapper.updateConfig({ [mapperKey]: Number(value) });
+        }
+        break;
+      }
+
+      case 'system': {
+        const sysKey = getPart(1);
+        if (!sysKey) break;
+
+        if (sysKey === 'fadeInTime') {
+          this._config.fadeInTime = Number(value);
+        } else if (sysKey === 'fadeOutTime') {
+          this._config.fadeOutTime = Number(value);
+        } else if (sysKey === 'enableVoiceStealing') {
+          const enabled = Boolean(value);
+          this._config.enableVoiceStealing = enabled;
+          this._impactPool?.setVoiceStealing(enabled);
+          this._bubblePool?.setVoiceStealing(enabled);
+        }
+        break;
+      }
+
       default:
         break;
     }
@@ -483,6 +508,18 @@ export class AudioSystem {
 
   getPhysicsMapper(): PhysicsMapper {
     return this._physicsMapper;
+  }
+
+  getSystemConfig(): {
+    fadeInTime: number;
+    fadeOutTime: number;
+    enableVoiceStealing: boolean;
+  } {
+    return {
+      fadeInTime: this._config.fadeInTime,
+      fadeOutTime: this._config.fadeOutTime,
+      enableVoiceStealing: this._config.enableVoiceStealing,
+    };
   }
 
   // Stats & Cleanup

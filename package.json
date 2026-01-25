@@ -5,8 +5,9 @@
   "scripts": {
     "start": "npm run build && electron-forge start",
     "start:dev": "electron-forge start",
-    "build": "npm run build:types && npm run build:audio && npm run build:rainscaper",
+    "build": "npm run build:types && npm run build:tauri-api && npm run build:audio && npm run build:rainscaper",
     "build:types": "tsc --noEmit",
+    "build:tauri-api": "esbuild src/renderer/tauri-api.js --bundle --format=esm --outfile=src/renderer/tauri-api.bundle.js --sourcemap",
     "build:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap",
     "build:rainscaper": "esbuild src/renderer/rainscaper/index.ts --bundle --format=esm --outfile=src/renderer/rainscaper.bundle.js --sourcemap",
     "watch:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap --watch",
@@ -42,6 +43,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.9.1",
     "electron-squirrel-startup": "^1.0.1",
     "get-windows": "^9.2.3",
     "matter-js": "^0.20.0",

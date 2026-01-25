@@ -9,10 +9,11 @@ import { ControlGroup, Slider, Select } from '../components/controls';
 export interface ImpactPoolConfig {
   poolSize: number;
   noiseType: string;
-  attackTime: number;
+  attack: number;
   decayMin: number;
   decayMax: number;
-  filterFreq: number;
+  filterFreqMin: number;
+  filterFreqMax: number;
   filterQ: number;
 }
 
@@ -79,19 +80,19 @@ export class ImpactPoolSection {
     });
     envGroup.create();
 
-    this._controls.attackTime = new Slider({
+    this._controls.attack = new Slider({
       id: 'impact-attack',
       label: 'Attack',
-      path: 'impact.attackTime',
+      path: 'impact.attack',
       min: 0.001,
       max: 0.05,
       step: 0.001,
-      value: this._config.attackTime,
+      value: this._config.attack,
       unit: 's',
       variant: 'water',
       formatValue: (v) => (v * 1000).toFixed(0) + 'ms',
     });
-    envGroup.addControl(this._controls.attackTime.create());
+    envGroup.addControl(this._controls.attack.create());
 
     this._controls.decayMin = new Slider({
       id: 'impact-decay-min',
@@ -131,18 +132,31 @@ export class ImpactPoolSection {
     });
     filterGroup.create();
 
-    this._controls.filterFreq = new Slider({
-      id: 'impact-filter-freq',
-      label: 'Frequency',
-      path: 'impact.filterFreq',
+    this._controls.filterFreqMin = new Slider({
+      id: 'impact-filter-freq-min',
+      label: 'Freq Min',
+      path: 'impact.filterFreqMin',
       min: 500,
       max: 8000,
       step: 100,
-      value: this._config.filterFreq,
+      value: this._config.filterFreqMin,
       unit: 'Hz',
       variant: 'water',
     });
-    filterGroup.addControl(this._controls.filterFreq.create());
+    filterGroup.addControl(this._controls.filterFreqMin.create());
+
+    this._controls.filterFreqMax = new Slider({
+      id: 'impact-filter-freq-max',
+      label: 'Freq Max',
+      path: 'impact.filterFreqMax',
+      min: 500,
+      max: 12000,
+      step: 100,
+      value: this._config.filterFreqMax,
+      unit: 'Hz',
+      variant: 'water',
+    });
+    filterGroup.addControl(this._controls.filterFreqMax.create());
 
     this._controls.filterQ = new Slider({
       id: 'impact-filter-q',
@@ -168,8 +182,8 @@ export class ImpactPoolSection {
     if (config.noiseType !== undefined) {
       (this._controls.noiseType as Select)?.setValue(config.noiseType);
     }
-    if (config.attackTime !== undefined) {
-      (this._controls.attackTime as Slider)?.setValue(config.attackTime);
+    if (config.attack !== undefined) {
+      (this._controls.attack as Slider)?.setValue(config.attack);
     }
     if (config.decayMin !== undefined) {
       (this._controls.decayMin as Slider)?.setValue(config.decayMin);
@@ -177,8 +191,11 @@ export class ImpactPoolSection {
     if (config.decayMax !== undefined) {
       (this._controls.decayMax as Slider)?.setValue(config.decayMax);
     }
-    if (config.filterFreq !== undefined) {
-      (this._controls.filterFreq as Slider)?.setValue(config.filterFreq);
+    if (config.filterFreqMin !== undefined) {
+      (this._controls.filterFreqMin as Slider)?.setValue(config.filterFreqMin);
+    }
+    if (config.filterFreqMax !== undefined) {
+      (this._controls.filterFreqMax as Slider)?.setValue(config.filterFreqMax);
     }
     if (config.filterQ !== undefined) {
       (this._controls.filterQ as Slider)?.setValue(config.filterQ);

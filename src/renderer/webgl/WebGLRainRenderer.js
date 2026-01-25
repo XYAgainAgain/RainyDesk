@@ -3,6 +3,8 @@
  * Renders all raindrops and splashes with minimal draw calls
  */
 
+import BackgroundRainShader from './BackgroundRainShader.js';
+
 // Shader source code (embedded as strings)
 const RAINDROP_VERT = `#version 300 es
 precision highp float;
@@ -252,6 +254,10 @@ class WebGLRainRenderer {
         this.lowResWidth = 0;
         this.lowResHeight = 0;
         this.scaleFactor = 1.0;
+
+        // Background rain shader (atmospheric layer)
+        this.backgroundRain = null;
+        this.lastFrameTime = performance.now();
     }
 
     /**
@@ -292,6 +298,10 @@ class WebGLRainRenderer {
         // Setup blending for transparency
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+        // Initialize background rain shader
+        this.backgroundRain = new BackgroundRainShader(gl);
+        this.backgroundRain.init();
 
         return true;
     }
@@ -632,10 +642,21 @@ class WebGLRainRenderer {
     render(physicsSystem) {
         const gl = this.gl;
 
+        // Calculate delta time for background rain animation
+        const currentTime = performance.now();
+        const dt = (currentTime - this.lastFrameTime) / 1000;
+        this.lastFrameTime = currentTime;
+
+        // Update background rain animation
+        if (this.backgroundRain) {
+            this.backgroundRain.update(dt);
+        }
+
         // Skip framebuffer path if not using scaled rendering
         if (this.scaleFactor >= 1.0 || !this.framebuffer) {
             // Direct rendering (no scaling)
             this.clear();
+            this._renderBackground();
             this._renderParticles(physicsSystem);
             return;
         }
@@ -644,6 +665,7 @@ class WebGLRainRenderer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
         gl.viewport(0, 0, this.lowResWidth, this.lowResHeight);
         this.clear();
+        this._renderBackground();
         this._renderParticles(physicsSystem);
 
         // PASS 2: Upscale to display
@@ -651,6 +673,15 @@ class WebGLRainRenderer {
         gl.viewport(0, 0, this.canvas.width, this.canvas.height);
         this.clear();
         this._renderUpscale();
+    }
+
+    /**
+     * Render background rain layer (before particles)
+     */
+    _renderBackground() {
+        if (this.backgroundRain) {
+            this.backgroundRain.render(this.lowResWidth, this.lowResHeight);
+        }
     }
 
     /**
@@ -716,6 +747,43 @@ class WebGLRainRenderer {
     }
 
     /**
+     * Update background rain configuration
+     * @param {object} config - { intensity, wind, layerCount, speed, enabled }
+     */
+    setBackgroundRainConfig(config) {
+        if (this.backgroundRain) {
+            this.backgroundRain.updateConfig(config);
+        }
+    }
+
+    /**
+     * Set background rain intensity (0-1)
+     * Links to physics intensity for visual harmony
+     */
+    setBackgroundRainIntensity(value) {
+        if (this.backgroundRain) {
+            this.backgroundRain.setIntensity(value);
+        }
+    }
+
+    /**
+     * Set background rain wind direction (-1 to 1)
+     * Links to physics wind for visual harmony
+     */
+    setBackgroundRainWind(value) {
+        if (this.backgroundRain) {
+            this.backgroundRain.setWind(value);
+        }
+    }
+
+    /**
+     * Get background rain configuration
+     */
+    getBackgroundRainConfig() {
+        return this.backgroundRain ? this.backgroundRain.getConfig() : null;
+    }
+
+    /**
      * Cleanup WebGL resources
      */
     dispose() {
@@ -743,6 +811,12 @@ class WebGLRainRenderer {
         if (this.framebuffer) {
             gl.deleteFramebuffer(this.framebuffer);
             gl.deleteTexture(this.fbTexture);
+        }
+
+        // Clean up background rain shader
+        if (this.backgroundRain) {
+            this.backgroundRain.dispose();
+            this.backgroundRain = null;
         }
 
         this.gl = null;

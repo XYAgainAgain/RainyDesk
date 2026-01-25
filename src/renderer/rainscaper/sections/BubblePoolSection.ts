@@ -9,6 +9,9 @@ import { ControlGroup, Slider, Select } from '../components/controls';
 export interface BubblePoolConfig {
   poolSize: number;
   oscillatorType: string;
+  attack: number;
+  decayMin: number;
+  decayMax: number;
   chirpAmount: number;
   chirpTime: number;
   freqMin: number;
@@ -63,6 +66,8 @@ export class BubblePoolSection {
       options: [
         { value: 'sine', label: 'Sine' },
         { value: 'triangle', label: 'Triangle' },
+        { value: 'square', label: 'Square' },
+        { value: 'sawtooth', label: 'Sawtooth' },
       ],
       value: this._config.oscillatorType,
     });
@@ -82,6 +87,58 @@ export class BubblePoolSection {
     poolGroup.addControl(this._controls.probability.create());
 
     this._element.appendChild(poolGroup.element!);
+
+    // Envelope Group
+    const envGroup = new ControlGroup({
+      id: 'bubble-envelope',
+      title: 'Envelope',
+      variant: 'resonance',
+    });
+    envGroup.create();
+
+    this._controls.attack = new Slider({
+      id: 'bubble-attack',
+      label: 'Attack',
+      path: 'bubble.attack',
+      min: 0.001,
+      max: 0.1,
+      step: 0.001,
+      value: this._config.attack,
+      unit: 's',
+      variant: 'resonance',
+      formatValue: (v) => (v * 1000).toFixed(0) + 'ms',
+    });
+    envGroup.addControl(this._controls.attack.create());
+
+    this._controls.decayMin = new Slider({
+      id: 'bubble-decay-min',
+      label: 'Decay Min',
+      path: 'bubble.decayMin',
+      min: 0.01,
+      max: 0.3,
+      step: 0.01,
+      value: this._config.decayMin,
+      unit: 's',
+      variant: 'resonance',
+      formatValue: (v) => (v * 1000).toFixed(0) + 'ms',
+    });
+    envGroup.addControl(this._controls.decayMin.create());
+
+    this._controls.decayMax = new Slider({
+      id: 'bubble-decay-max',
+      label: 'Decay Max',
+      path: 'bubble.decayMax',
+      min: 0.01,
+      max: 0.5,
+      step: 0.01,
+      value: this._config.decayMax,
+      unit: 's',
+      variant: 'resonance',
+      formatValue: (v) => (v * 1000).toFixed(0) + 'ms',
+    });
+    envGroup.addControl(this._controls.decayMax.create());
+
+    this._element.appendChild(envGroup.element!);
 
     // Chirp Group (frequency modulation)
     const chirpGroup = new ControlGroup({
@@ -168,6 +225,15 @@ export class BubblePoolSection {
     }
     if (config.probability !== undefined) {
       (this._controls.probability as Slider)?.setValue(config.probability);
+    }
+    if (config.attack !== undefined) {
+      (this._controls.attack as Slider)?.setValue(config.attack);
+    }
+    if (config.decayMin !== undefined) {
+      (this._controls.decayMin as Slider)?.setValue(config.decayMin);
+    }
+    if (config.decayMax !== undefined) {
+      (this._controls.decayMax as Slider)?.setValue(config.decayMax);
     }
     if (config.chirpAmount !== undefined) {
       (this._controls.chirpAmount as Slider)?.setValue(config.chirpAmount);

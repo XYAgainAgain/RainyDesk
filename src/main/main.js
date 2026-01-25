@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, Tray, Menu, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, screen, Tray, Menu, ipcMain, nativeImage, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const windowDetector = require('./windowDetector');
@@ -281,19 +281,52 @@ function createAllOverlays() {
 }
 
 /**
+ * Gets the appropriate tray icon path based on system theme.
+ * Dark taskbar = white icon, Light taskbar = black icon
+ */
+function getTrayIconPath() {
+  const iconName = nativeTheme.shouldUseDarkColors
+    ? 'RainyDeskIconWhite.ico'
+    : 'RainyDeskIconBlack.ico';
+  return path.join(__dirname, '..', '..', 'assets', 'icons', iconName);
+}
+
+/**
+ * Updates the tray icon based on current system theme
+ */
+function updateTrayIcon() {
+  if (!tray) return;
+  const iconPath = getTrayIconPath();
+  try {
+    const icon = nativeImage.createFromPath(iconPath);
+    if (!icon.isEmpty()) {
+      tray.setImage(icon);
+    }
+  } catch (err) {
+    console.error('Failed to update tray icon:', err);
+  }
+}
+
+/**
  * Creates the system tray icon and menu
  */
 function createTray() {
-  // Create a simple colored icon (will be replaced with proper icon later)
-  const iconPath = path.join(__dirname, '..', '..', 'assets', 'icons', 'tray-icon.png');
+  const iconPath = getTrayIconPath();
+  let icon = nativeImage.createFromPath(iconPath);
 
-  // Create a simple 16x16 blue icon as fallback
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAADASURBVDiNtZKxDYMwEEWfIzogTZYgDRuwQUagpGYJaFkgDRuwQcYgBQVFGkqKKFBYwYkCSvKl086+/+8u2AbqQEQWwBl4A47W2o2I+EBSrXJ9oAn1sBVLwKXBnwJxNaEFXIE7MAJO/tCpgFMABMAAB+AB3IAd0AUaVYBZBQT8BwFPQAZkTQWogCwHQsAXSP6vglhXKAJ2/gFE/LYoAt6AL5DWNvgA0rpG/oAP8ABSrXL1gDu1AN1KIMkB+dACvgGXe2I/Mj7HDAAAAABJRU5ErkJggg=='
-  );
+  // Fallback to a simple blue icon if file not found
+  if (icon.isEmpty()) {
+    console.warn('Tray icon not found at:', iconPath);
+    icon = nativeImage.createFromDataURL(
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAdgAAAHYBTnsmCAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAADASURBVDiNtZKxDYMwEEWfIzogTZYgDRuwQUagpGYJaFkgDRuwQcYgBQVFGkqKKFBYwYkCSvKl086+/+8u2AbqQEQWwBl4A47W2o2I+EBSrXJ9oAn1sBVLwKXBnwJxNaEFXIE7MAJO/tCpgFMABMAAB+AB3IAd0AUaVYBZBQT8BwFPQAZkTQWogCwHQsAXSP6vglhXKAJ2/gFE/LYoAt6AL5DWNvgA0rpG/oAP8ABSrXL1gDu1AN1KIMkB+dACvgGXe2I/Mj7HDAAAAABJRU5ErkJggg=='
+    );
+  }
 
   tray = new Tray(icon);
-  
+
+  // Listen for theme changes and update icon accordingly
+  nativeTheme.on('updated', updateTrayIcon);
+
   // Left-click opens Rainscaper
   tray.on('click', () => {
     broadcastToOverlays('toggle-rainscaper');

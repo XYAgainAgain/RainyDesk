@@ -130,6 +130,10 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     this._synthConfig = { ...this._synthConfig, ...config };
   }
 
+  getSynthConfig(): ImpactSynthConfig {
+    return { ...this._synthConfig };
+  }
+
   override dispose(): void {
     for (const filter of this._filters.values()) {
       filter.dispose();

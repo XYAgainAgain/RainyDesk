@@ -22,3 +22,9 @@ export type { BubblePoolConfig, BubblePoolSectionCallbacks } from './BubblePoolS
 
 export { SheetLayerSection } from './SheetLayerSection';
 export type { SheetLayerSectionCallbacks } from './SheetLayerSection';
+
+export { PhysicsMapperSection } from './PhysicsMapperSection';
+export type { PhysicsMapperConfig, PhysicsMapperSectionCallbacks } from './PhysicsMapperSection';
+
+export { SystemSection } from './SystemSection';
+export type { SystemConfig, SystemSectionCallbacks } from './SystemSection';

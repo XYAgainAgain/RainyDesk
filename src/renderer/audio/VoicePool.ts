@@ -144,4 +144,9 @@ export abstract class VoicePool<T extends SynthType> implements IVoicePool<T> {
       idle: this._voices.length - active,
     };
   }
+
+  /** Enable or disable voice stealing. */
+  setVoiceStealing(enabled: boolean): void {
+    this._config.enableStealing = enabled;
+  }
 }

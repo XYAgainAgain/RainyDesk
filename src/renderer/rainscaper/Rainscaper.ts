@@ -19,6 +19,8 @@ import {
   ImpactPoolSection,
   BubblePoolSection,
   SheetLayerSection,
+  PhysicsMapperSection,
+  SystemSection,
 } from './sections';
 import type { RainscapeConfig, AudioSystemStats, MaterialConfig, SheetLayerConfig } from '../../types/audio';
 
@@ -68,6 +70,47 @@ export interface RainscaperConfig {
     getReverb: () => { decay: number; wetness: number };
     getMasterVolume: () => number;
     loadRainscape: (config: RainscapeConfig) => void;
+    getPhysicsMapper: () => {
+      getConfig: () => {
+        velocityMin: number;
+        velocityMax: number;
+        volumeMin: number;
+        volumeMax: number;
+        minnaertBase: number;
+        freqMin: number;
+        freqMax: number;
+        decayBase: number;
+        decayRadiusScale: number;
+      };
+    };
+    getSystemConfig: () => {
+      fadeInTime: number;
+      fadeOutTime: number;
+      enableVoiceStealing: boolean;
+    };
+    getImpactPool: () => {
+      getSynthConfig?: () => {
+        noiseType: string;
+        attack: number;
+        decayMin: number;
+        decayMax: number;
+        filterFreqMin: number;
+        filterFreqMax: number;
+        filterQ: number;
+      };
+    } | null;
+    getBubblePool: () => {
+      getSynthConfig: () => {
+        oscillatorType: string;
+        attack: number;
+        decayMin: number;
+        decayMax: number;
+        chirpAmount: number;
+        chirpTime: number;
+        freqMin: number;
+        freqMax: number;
+      };
+    } | null;
   };
 }
 
@@ -176,12 +219,14 @@ export class Rainscaper {
   /** Show the panel */
   show(): void {
     state.setVisible(true);
+    window.rainydesk?.setIgnoreMouseEvents?.(false);
     window.rainydesk?.updateRainscapeParam?.('manualMode', true);
   }
 
   /** Hide the panel */
   hide(): void {
     state.setVisible(false);
+    window.rainydesk?.setIgnoreMouseEvents?.(true);
   }
 
   /** Toggle panel visibility */
@@ -271,11 +316,17 @@ export class Rainscaper {
       case 'sheet':
         return new SheetLayerSection(this.getSheetLayerConfig()).create();
 
+      case 'mapper':
+        return new PhysicsMapperSection(this.getPhysicsMapperConfig()).create();
+
       case 'effects':
         return new EffectsSection(this.getEffectsConfig()).create();
 
       case 'physics':
         return new PhysicsSection(this.getPhysicsConfig(), {}, true).create();
+
+      case 'system':
+        return new SystemSection(this.getSystemConfig()).create();
 
       default:
         return null;
@@ -304,6 +355,10 @@ export class Rainscaper {
       dropMaxSize: renderer?.dropMaxSize ?? 6,
       terminalVelocity: physics?.config?.terminalVelocity ?? 800,
       renderScale: renderer?.renderScale ?? physics?.scaleFactor ?? 0.25,
+      // Background rain shader defaults
+      backgroundRainEnabled: true,
+      backgroundRainLayers: 3,
+      backgroundRainSpeed: 1.0,
     };
   }
 
@@ -327,27 +382,33 @@ export class Rainscaper {
 
   private getImpactPoolConfig() {
     const audio = this._config?.audioSystem;
+    const synthConfig = audio?.getImpactPool?.()?.getSynthConfig?.();
     return {
       poolSize: audio?.getVoicePoolSizes?.().impactPoolSize ?? 12,
-      noiseType: 'white',
-      attackTime: 0.005,
-      decayMin: 0.02,
-      decayMax: 0.1,
-      filterFreq: 3000,
-      filterQ: 1.0,
+      noiseType: synthConfig?.noiseType ?? 'pink',
+      attack: synthConfig?.attack ?? 0.001,
+      decayMin: synthConfig?.decayMin ?? 0.03,
+      decayMax: synthConfig?.decayMax ?? 0.08,
+      filterFreqMin: synthConfig?.filterFreqMin ?? 2000,
+      filterFreqMax: synthConfig?.filterFreqMax ?? 8000,
+      filterQ: synthConfig?.filterQ ?? 1,
     };
   }
 
   private getBubblePoolConfig() {
     const audio = this._config?.audioSystem;
     const material = this.getMaterialConfig();
+    const synthConfig = audio?.getBubblePool?.()?.getSynthConfig?.();
     return {
       poolSize: audio?.getVoicePoolSizes?.().bubblePoolSize ?? 8,
-      oscillatorType: material.bubbleOscillatorType,
-      chirpAmount: 0.5,
-      chirpTime: 0.05,
-      freqMin: 500,
-      freqMax: 4000,
+      oscillatorType: synthConfig?.oscillatorType ?? material.bubbleOscillatorType,
+      attack: synthConfig?.attack ?? 0.005,
+      decayMin: synthConfig?.decayMin ?? 0.05,
+      decayMax: synthConfig?.decayMax ?? 0.15,
+      chirpAmount: synthConfig?.chirpAmount ?? 0.1,
+      chirpTime: synthConfig?.chirpTime ?? 0.1,
+      freqMin: synthConfig?.freqMin ?? 500,
+      freqMax: synthConfig?.freqMax ?? 4000,
       probability: material.bubbleProbability,
     };
   }
@@ -363,6 +424,32 @@ export class Rainscaper {
       maxVolume: -12,
       maxParticleCount: 500,
       rampTime: 0.5,
+    };
+  }
+
+  private getPhysicsMapperConfig() {
+    const audio = this._config?.audioSystem;
+    const config = audio?.getPhysicsMapper?.()?.getConfig?.();
+    return {
+      velocityMin: config?.velocityMin ?? 0.5,
+      velocityMax: config?.velocityMax ?? 20,
+      volumeMin: config?.volumeMin ?? -40,
+      volumeMax: config?.volumeMax ?? -6,
+      minnaertBase: config?.minnaertBase ?? 3000,
+      freqMin: config?.freqMin ?? 200,
+      freqMax: config?.freqMax ?? 4000,
+      decayBase: config?.decayBase ?? 0.05,
+      decayRadiusScale: config?.decayRadiusScale ?? 0.02,
+    };
+  }
+
+  private getSystemConfig() {
+    const audio = this._config?.audioSystem;
+    const config = audio?.getSystemConfig?.();
+    return {
+      fadeInTime: config?.fadeInTime ?? 5,
+      fadeOutTime: config?.fadeOutTime ?? 0.5,
+      enableVoiceStealing: config?.enableVoiceStealing ?? true,
     };
   }
 

@@ -25,7 +25,7 @@ class RainPhysicsSystem {
 
     // Create Matter.js engine
     this.engine = Matter.Engine.create({
-      gravity: { x: 0, y: 1 } // Will be scaled for rain
+      gravity: { x: 0, y: 0.98 } // 980/1000 for realistic rain fall
     });
 
     // Configuration (slower than legacy for more realistic fall)
