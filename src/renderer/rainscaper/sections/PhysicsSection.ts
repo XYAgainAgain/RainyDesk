@@ -16,8 +16,6 @@ export interface PhysicsSectionConfig {
   renderScale: number;
   // Background rain shader settings
   backgroundRainEnabled: boolean;
-  backgroundRainLayers: number;
-  backgroundRainSpeed: number;
 }
 
 export interface PhysicsSectionCallbacks {
@@ -38,8 +36,6 @@ export class PhysicsSection {
     terminalVelocity?: Slider;
     renderScale?: Slider;
     backgroundRainEnabled?: Toggle;
-    backgroundRainLayers?: Slider;
-    backgroundRainSpeed?: Slider;
   } = {};
   private _isAdminMode: boolean;
 
@@ -199,42 +195,16 @@ export class PhysicsSection {
 
       this._controls.backgroundRainEnabled = new Toggle({
         id: 'bg-rain-enabled',
-        label: 'Enable',
+        label: 'Background Rain',
         path: 'backgroundRain.enabled',
         value: this._config.backgroundRainEnabled ?? true,
       });
       backgroundGroup.addControl(this._controls.backgroundRainEnabled.create());
 
-      this._controls.backgroundRainLayers = new Slider({
-        id: 'bg-rain-layers',
-        label: 'Layers',
-        path: 'backgroundRain.layerCount',
-        min: 1,
-        max: 5,
-        step: 1,
-        value: this._config.backgroundRainLayers ?? 3,
-        variant: 'water',
-        formatValue: (v) => `${Math.round(v)}`,
-      });
-      backgroundGroup.addControl(this._controls.backgroundRainLayers.create());
-
-      this._controls.backgroundRainSpeed = new Slider({
-        id: 'bg-rain-speed',
-        label: 'Speed',
-        path: 'backgroundRain.speed',
-        min: 0.1,
-        max: 3.0,
-        step: 0.1,
-        value: this._config.backgroundRainSpeed ?? 1.0,
-        variant: 'water',
-        formatValue: (v) => `${v.toFixed(1)}x`,
-      });
-      backgroundGroup.addControl(this._controls.backgroundRainSpeed.create());
-
       // Add hint text for background rain
       const bgRainHint = document.createElement('div');
       bgRainHint.className = 'rs-control-hint';
-      bgRainHint.innerHTML = '<em>Shader-based rain behind physics particles. Linked to Sheet audio layer.</em>';
+      bgRainHint.innerHTML = '<em>Atmospheric rain layer auto-linked to physics settings.</em>';
       backgroundGroup.addControl(bgRainHint);
 
       this._element.appendChild(backgroundGroup.element!);
@@ -252,8 +222,6 @@ export class PhysicsSection {
     if (config.terminalVelocity !== undefined) this._controls.terminalVelocity?.setValue(config.terminalVelocity);
     if (config.renderScale !== undefined) this._controls.renderScale?.setValue(config.renderScale);
     if (config.backgroundRainEnabled !== undefined) this._controls.backgroundRainEnabled?.setValue(config.backgroundRainEnabled);
-    if (config.backgroundRainLayers !== undefined) this._controls.backgroundRainLayers?.setValue(config.backgroundRainLayers);
-    if (config.backgroundRainSpeed !== undefined) this._controls.backgroundRainSpeed?.setValue(config.backgroundRainSpeed);
   }
 
   get element(): HTMLDivElement | null {

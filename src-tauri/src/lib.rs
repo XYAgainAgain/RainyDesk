@@ -5,11 +5,28 @@ use tauri::{
 };
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::fs;
+use std::path::PathBuf;
 
 mod window_detector;
 
 // Global pause state
 static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// Get the rainscapes directory, creating it if needed
+fn get_rainscapes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data = app.path().app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let rainscapes_dir = app_data.join("rainscapes");
+
+    if !rainscapes_dir.exists() {
+        fs::create_dir_all(&rainscapes_dir)
+            .map_err(|e| format!("Failed to create rainscapes dir: {}", e))?;
+        log::info!("Created rainscapes directory: {:?}", rainscapes_dir);
+    }
+
+    Ok(rainscapes_dir)
+}
 
 // Load theme-aware tray icon (white for dark theme, black for light theme)
 fn load_theme_icon() -> tauri::image::Image<'static> {
@@ -115,22 +132,63 @@ fn set_ignore_mouse_events(window: tauri::Window, ignore: bool) {
 }
 
 #[tauri::command]
-fn save_rainscape(_filename: String, _data: serde_json::Value) -> Result<(), String> {
-    // TODO: Implement rainscape persistence
-    Ok(())
+fn save_rainscape(app: tauri::AppHandle, filename: String, data: serde_json::Value) -> Result<serde_json::Value, String> {
+    let rainscapes_dir = get_rainscapes_dir(&app)?;
+
+    // Ensure filename has .json extension
+    let filename = if filename.ends_with(".json") {
+        filename
+    } else {
+        format!("{}.json", filename)
+    };
+
+    let file_path = rainscapes_dir.join(&filename);
+
+    // Write JSON with pretty formatting
+    let json_str = serde_json::to_string_pretty(&data)
+        .map_err(|e| format!("Failed to serialize: {}", e))?;
+
+    fs::write(&file_path, json_str)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+
+    log::info!("Saved rainscape: {:?}", file_path);
+    Ok(serde_json::json!({ "success": true }))
 }
 
 #[tauri::command]
-fn load_rainscapes() -> Result<Vec<String>, String> {
-    log::info!("load_rainscapes called - returning empty list (TODO)");
-    // TODO: Load saved rainscapes
-    Ok(vec![])
+fn load_rainscapes(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let rainscapes_dir = get_rainscapes_dir(&app)?;
+
+    let files: Vec<String> = fs::read_dir(&rainscapes_dir)
+        .map_err(|e| format!("Failed to read dir: {}", e))?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension().map(|ext| ext == "json").unwrap_or(false) {
+                path.file_name()?.to_str().map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    log::info!("Found {} rainscape files", files.len());
+    Ok(files)
 }
 
 #[tauri::command]
-fn read_rainscape(_filename: String) -> Result<serde_json::Value, String> {
-    // TODO: Read rainscape file
-    Ok(serde_json::json!({}))
+fn read_rainscape(app: tauri::AppHandle, filename: String) -> Result<serde_json::Value, String> {
+    let rainscapes_dir = get_rainscapes_dir(&app)?;
+    let file_path = rainscapes_dir.join(&filename);
+
+    let content = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    let data: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    log::info!("Read rainscape: {:?}", file_path);
+    Ok(data)
 }
 
 #[tauri::command]
@@ -146,10 +204,11 @@ fn trigger_audio_start(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
-    // Extract monitor index from window label (e.g., "overlay-0" -> 0)
+    // Extract monitor index from window label (e.g., "overlay-0" or "background-0" -> 0)
     let label = window.label();
     let index: usize = label
         .strip_prefix("overlay-")
+        .or_else(|| label.strip_prefix("background-"))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
@@ -186,6 +245,69 @@ fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
     }
 }
 
+/// Create background rain window (desktop level - behind other windows)
+#[cfg(target_os = "windows")]
+fn create_background_window(
+    app: &tauri::App,
+    monitor: &tauri::Monitor,
+    index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+
+    let pos = monitor.position();
+    let size = monitor.size();
+
+    let label = format!("background-{}", index);
+
+    log::info!(
+        "Creating background window {}: {}x{} at ({}, {})",
+        index, size.width, size.height, pos.x, pos.y
+    );
+
+    // Load separate background.html with minimal renderer
+    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("background.html".into()))
+        .title("RainyDesk Background")
+        .position(pos.x as f64, pos.y as f64)
+        .inner_size(size.width as f64, size.height as f64)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(false)  // Not on top - will be pushed to bottom
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .shadow(false)
+        .build()?;
+
+    // Enable click-through
+    window.set_ignore_cursor_events(true)?;
+
+    // Push window to bottom of z-order (just above desktop)
+    let hwnd = window.hwnd()?;
+    unsafe {
+        let _ = SetWindowPos(
+            HWND(hwnd.0),
+            HWND_BOTTOM,
+            0, 0, 0, 0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE
+        );
+    }
+
+    log::info!("Background window {} created at desktop level", index);
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn create_background_window(
+    _app: &tauri::App,
+    _monitor: &tauri::Monitor,
+    _index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Background windows only supported on Windows for now
+    Ok(())
+}
+
+/// Create overlay window (always on top - for physics rain)
 fn create_overlay_window(
     app: &tauri::App,
     monitor: &tauri::Monitor,
@@ -305,7 +427,14 @@ pub fn run() {
             let monitors = app.available_monitors()?;
             log::info!("Found {} monitor(s)", monitors.len());
 
-            // Create overlays on all monitors
+            // Create background windows first (desktop level - for atmospheric rain)
+            for (index, monitor) in monitors.iter().enumerate() {
+                if let Err(e) = create_background_window(app, monitor, index) {
+                    log::error!("Failed to create background window {}: {}", index, e);
+                }
+            }
+
+            // Create overlay windows (always on top - for physics rain)
             for (index, monitor) in monitors.iter().enumerate() {
                 if let Err(e) = create_overlay_window(app, monitor, index) {
                     log::error!("Failed to create overlay {}: {}", index, e);

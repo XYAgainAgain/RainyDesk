@@ -1,6 +1,8 @@
 /**
- * RainyDesk Renderer (ES Module version with tone.js + matter.js)
- * Rain particle simulation with realistic physics and procedural audio
+ * RainyDesk Renderer - Overlay Mode
+ * Physics rain, particles, audio, and Rainscaper UI
+ *
+ * Note: Background mode uses separate file (background-renderer.js)
  */
 
 import audioSystem from './audioSystem.js';
@@ -8,7 +10,7 @@ import RainPhysicsSystem from './physicsSystem.js';
 
 // New TypeScript audio system (Phase 4.5 integration)
 let newAudioSystem = null;
-let useNewAudio = true; // Using new system exclusively now
+let useNewAudio = true;
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 import Canvas2DRenderer from './Canvas2DRenderer.js';
 
@@ -448,7 +450,7 @@ function resizeCanvas() {
 }
 
 /**
- * Initialize the rain simulation
+ * Initialize the rain simulation (overlay mode)
  */
 async function init() {
   window.rainydesk.log('Initializing RainyDesk renderer...');
@@ -721,6 +723,14 @@ async function init() {
       await rainscaper.init(physicsSystem, config);
       window.rainydesk.log('Legacy Rainscaper initialized');
     }
+
+    // Broadcast initial physics values to background windows
+    // This ensures background rain starts with correct settings
+    window.rainydesk.updateRainscapeParam('physics.intensity', config.intensity);
+    window.rainydesk.updateRainscapeParam('physics.wind', config.wind || 0);
+    window.rainydesk.updateRainscapeParam('physics.renderScale', renderScale);
+    window.rainydesk.updateRainscapeParam('backgroundRain.enabled', true);
+    window.rainydesk.log(`[Init] Broadcast initial values: intensity=${config.intensity}, wind=${config.wind}, renderScale=${renderScale}`);
   } catch (err) {
     window.rainydesk.log(`Rainscaper init failed: ${err.message}`);
     console.error('[Rainscaper] Error:', err);

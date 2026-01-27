@@ -656,7 +656,7 @@ class WebGLRainRenderer {
         if (this.scaleFactor >= 1.0 || !this.framebuffer) {
             // Direct rendering (no scaling)
             this.clear();
-            this._renderBackground();
+            // Background rain now renders in separate desktop-level window
             this._renderParticles(physicsSystem);
             return;
         }
@@ -665,7 +665,7 @@ class WebGLRainRenderer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
         gl.viewport(0, 0, this.lowResWidth, this.lowResHeight);
         this.clear();
-        this._renderBackground();
+        // Background rain now renders in separate desktop-level window
         this._renderParticles(physicsSystem);
 
         // PASS 2: Upscale to display
@@ -707,6 +707,36 @@ class WebGLRainRenderer {
             gl.bindVertexArray(this.splashVAO);
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, splashCount);
         }
+    }
+
+    /**
+     * Render only background rain (for background-mode windows)
+     * No physics particles, minimal overhead
+     */
+    renderBackgroundOnly(dt) {
+        const gl = this.gl;
+
+        // Update background rain animation
+        if (this.backgroundRain) {
+            this.backgroundRain.update(dt);
+        }
+
+        // Skip framebuffer for background-only (render direct)
+        if (this.scaleFactor >= 1.0 || !this.framebuffer) {
+            this._renderBackground();
+            return;
+        }
+
+        // PASS 1: Render to low-res framebuffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+        gl.viewport(0, 0, this.lowResWidth, this.lowResHeight);
+        this.clear();
+        this._renderBackground();
+
+        // PASS 2: Upscale to display
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        this._renderUpscale();
     }
 
     /**

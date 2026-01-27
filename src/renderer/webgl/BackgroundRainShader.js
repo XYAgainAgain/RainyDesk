@@ -15,8 +15,9 @@ out vec2 v_uv;
 
 void main() {
     gl_Position = vec4(a_position, 0.0, 1.0);
-    // Map clip space (-1 to 1) to UV (0 to 1)
+    // Map clip space (-1 to 1) to UV (0 to 1), flip Y for screen coords
     v_uv = a_position * 0.5 + 0.5;
+    v_uv.y = 1.0 - v_uv.y;
 }
 `;
 
@@ -64,17 +65,19 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
     float scale = 80.0 + layerIndex * 40.0;       // Farther layers are finer
 
     // Apply wind slant - shift horizontally based on vertical position
-    float slant = wind * 0.5;
+    // Negate wind to match physics rain direction (due to Y-flip)
+    float slant = -wind * 0.5;
     uv.x += uv.y * slant;
 
     // Stretch UV for rain streaks (taller than wide)
     vec2 rainUV = vec2(uv.x * scale, uv.y * scale * 0.15);
 
     // Scroll downward (with time), adjusted by depth
-    rainUV.y -= time * 8.0 * depthFactor;
+    // Fast atmospheric rain - should feel distant and quick
+    rainUV.y -= time * 25.0 * depthFactor;
 
-    // Add slight horizontal drift from wind
-    rainUV.x += time * wind * 2.0 * depthFactor;
+    // Add slight horizontal drift from wind (negated to match physics)
+    rainUV.x -= time * wind * 2.0 * depthFactor;
 
     // Sample noise for this layer
     float n = noise(rainUV);
@@ -305,6 +308,10 @@ class BackgroundRainShader {
         }
         if (config.enabled !== undefined) {
             this.config.enabled = Boolean(config.enabled);
+        }
+        // Debug: log config updates
+        if (typeof window !== 'undefined' && window.rainydesk?.log) {
+            window.rainydesk.log(`[BGShader] Config: enabled=${this.config.enabled}, intensity=${this.config.intensity.toFixed(2)}, wind=${this.config.wind.toFixed(2)}, layers=${this.config.layerCount}, speed=${this.config.speed.toFixed(2)}`);
         }
     }
 
