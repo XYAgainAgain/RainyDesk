@@ -4,12 +4,13 @@
  * Controls for fade times and voice stealing behavior.
  */
 
-import { ControlGroup, Slider, Toggle } from '../components/controls';
+import { ControlGroup, Slider, Toggle, Select } from '../components/controls';
 
 export interface SystemConfig {
   fadeInTime: number;
   fadeOutTime: number;
   enableVoiceStealing: boolean;
+  fpsLimit: number;
 }
 
 export interface SystemSectionCallbacks {
@@ -19,7 +20,7 @@ export interface SystemSectionCallbacks {
 export class SystemSection {
   private _element: HTMLDivElement | null = null;
   private _config: SystemConfig;
-  private _controls: Record<string, Slider | Toggle> = {};
+  private _controls: Record<string, Slider | Toggle | Select> = {};
 
   constructor(config: SystemConfig, _callbacks: SystemSectionCallbacks = {}) {
     this._config = config;
@@ -92,6 +93,31 @@ export class SystemSection {
 
     this._element.appendChild(poolGroup.element!);
 
+    // Performance Group
+    const perfGroup = new ControlGroup({
+      id: 'system-perf',
+      title: 'Performance',
+      variant: 'neutral',
+    });
+    perfGroup.create();
+
+    this._controls.fpsLimit = new Select({
+      id: 'system-fps-limit',
+      label: 'FPS Limit',
+      path: 'system.fpsLimit',
+      value: String(this._config.fpsLimit),
+      options: [
+        { value: '0', label: 'Uncapped' },
+        { value: '30', label: '30 FPS' },
+        { value: '60', label: '60 FPS' },
+        { value: '120', label: '120 FPS' },
+        { value: '144', label: '144 FPS' },
+      ],
+    });
+    perfGroup.addControl(this._controls.fpsLimit.create());
+
+    this._element.appendChild(perfGroup.element!);
+
     return this._element;
   }
 
@@ -104,6 +130,9 @@ export class SystemSection {
     }
     if (config.enableVoiceStealing !== undefined) {
       (this._controls.enableVoiceStealing as Toggle)?.setValue(config.enableVoiceStealing);
+    }
+    if (config.fpsLimit !== undefined) {
+      (this._controls.fpsLimit as Select)?.setValue(String(config.fpsLimit));
     }
   }
 

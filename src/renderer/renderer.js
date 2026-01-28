@@ -45,8 +45,12 @@ let config = {
   dropColor: 'rgba(160, 196, 232, 0.6)',
   dropMinSize: 2,
   dropMaxSize: 6,
-  useMatterJS: true 
+  useMatterJS: true,
+  fpsLimit: 0  // 0 = uncapped, otherwise target FPS
 };
+
+// FPS limiter state
+let lastFrameTime = 0;
 
 // Physics system (Matter.js)
 let physicsSystem = null;
@@ -317,9 +321,19 @@ function render() {
 }
 
 /**
- * Main game loop with delta time
+ * Main game loop with delta time and optional FPS limiting
  */
 function gameLoop(currentTime) {
+  // FPS limiting: skip frame if we're ahead of schedule
+  if (config.fpsLimit > 0) {
+    const minFrameTime = 1000 / config.fpsLimit;
+    if (currentTime - lastFrameTime < minFrameTime) {
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+    lastFrameTime = currentTime;
+  }
+
   const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
   lastTime = currentTime;
 
@@ -441,6 +455,20 @@ async function init() {
     if (audioInitialized && audioSystem) {
       const db = value <= 0 ? -Infinity : (value / 100 * 60) - 60;
       audioSystem.setMasterVolume(db);
+    }
+    window.rainydesk.log(`Volume set to ${value}%`);
+  });
+
+  // Quick-select rainscape from tray menu
+  window.rainydesk.onLoadRainscape(async (filename) => {
+    try {
+      const data = await window.rainydesk.readRainscape(filename);
+      if (rainscaper && data) {
+        rainscaper.applyRainscape(data);
+        window.rainydesk.log(`Loaded rainscape: ${filename}`);
+      }
+    } catch (err) {
+      window.rainydesk.log(`Failed to load rainscape ${filename}: ${err}`);
     }
   });
 
@@ -565,6 +593,11 @@ async function init() {
         else if (param === 'enabled') configUpdate.enabled = value;
         renderer.setBackgroundRainConfig(configUpdate);
       }
+    } else if (path === 'system.fpsLimit') {
+      // FPS limiter: 0 = uncapped, otherwise target FPS (Select sends string values)
+      const numValue = typeof value === 'string' ? parseInt(value, 10) : value;
+      config.fpsLimit = Math.max(0, Math.min(240, numValue || 0));
+      window.rainydesk.log(`FPS limit set to ${config.fpsLimit === 0 ? 'uncapped' : config.fpsLimit}`);
     } else if (audioSystem) {
       audioSystem.updateParam(path, value);
     }

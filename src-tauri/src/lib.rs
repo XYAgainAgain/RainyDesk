@@ -1,6 +1,6 @@
 use tauri::{
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use std::sync::Mutex;
@@ -468,7 +468,55 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit RainyDesk", true, None::<&str>)?;
             let pause_item = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
             let rainscaper_item = MenuItem::with_id(app, "rainscaper", "Open Rainscaper", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&pause_item, &rainscaper_item, &quit_item])?;
+
+            // Volume presets submenu
+            let volume_submenu = Submenu::with_id_and_items(app, "volume", "Volume", true, &[
+                &MenuItem::with_id(app, "vol_mute", "Mute", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_5", "5%", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_10", "10%", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_25", "25%", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_50", "50%", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_75", "75%", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_90", "90%", true, None::<&str>)?,
+                &MenuItem::with_id(app, "vol_100", "100%", true, None::<&str>)?,
+            ])?;
+
+            // Load rainscape files for quick-select submenu
+            let rainscapes_dir = get_rainscapes_dir(&app.handle())?;
+            let rainscape_files: Vec<String> = fs::read_dir(&rainscapes_dir)
+                .map(|entries| {
+                    entries.filter_map(|e| {
+                        let entry = e.ok()?;
+                        let path = entry.path();
+                        if path.extension().map(|ext| ext == "json").unwrap_or(false) {
+                            path.file_stem()?.to_str().map(String::from)
+                        } else {
+                            None
+                        }
+                    }).collect()
+                })
+                .unwrap_or_default();
+
+            // Build rainscape submenu
+            let rainscape_submenu = Submenu::with_id(app, "rainscapes", "Rainscapes", true)?;
+            if rainscape_files.is_empty() {
+                let placeholder = MenuItem::with_id(app, "rs_none", "(No saved rainscapes)", false, None::<&str>)?;
+                rainscape_submenu.append(&placeholder)?;
+            } else {
+                for name in &rainscape_files {
+                    let id = format!("rs_{}", name);
+                    let item = MenuItem::with_id(app, &id, name, true, None::<&str>)?;
+                    rainscape_submenu.append(&item)?;
+                }
+            }
+
+            let menu = Menu::with_items(app, &[
+                &pause_item,
+                &rainscaper_item,
+                &volume_submenu,
+                &rainscape_submenu,
+                &quit_item
+            ])?;
 
             // Load theme-aware icon (white for dark theme, black for light theme)
             let icon = load_theme_icon();
@@ -480,7 +528,8 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .tooltip("RainyDesk")
                 .on_menu_event(move |app, event| {
-                    match event.id.as_ref() {
+                    let id = event.id.as_ref();
+                    match id {
                         "quit" => {
                             log::info!("Quit requested via tray");
                             app.exit(0);
@@ -496,7 +545,22 @@ pub fn run() {
                             let _ = app.emit("toggle-rainscaper", ());
                             log::info!("Open Rainscaper requested");
                         }
-                        _ => {}
+                        _ => {
+                            // Volume presets (vol_<number>)
+                            if let Some(vol_str) = id.strip_prefix("vol_") {
+                                let volume = match vol_str {
+                                    "mute" => 0,
+                                    _ => vol_str.parse::<i32>().unwrap_or(50),
+                                };
+                                let _ = app.emit("set-volume", volume);
+                            }
+                            // Rainscape selection (rs_<name>)
+                            else if let Some(name) = id.strip_prefix("rs_") {
+                                let filename = format!("{}.json", name);
+                                let _ = app.emit("load-rainscape", filename);
+                                log::info!("Rainscape selected: {}", name);
+                            }
+                        }
                     }
                 })
                 .on_tray_icon_event(|tray, event| {

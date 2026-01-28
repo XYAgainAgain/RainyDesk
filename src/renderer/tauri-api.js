@@ -33,9 +33,14 @@ window.rainydesk = {
     listen('set-intensity', (event) => callback(event.payload));
   },
 
-  // Receive volume changes
+  // Receive volume changes (from tray menu presets)
   onSetVolume: (callback) => {
     listen('set-volume', (event) => callback(event.payload));
+  },
+
+  // Receive rainscape load command (from tray menu quick-select)
+  onLoadRainscape: (callback) => {
+    listen('load-rainscape', (event) => callback(event.payload));
   },
 
   // Receive window position data for exclusion zones

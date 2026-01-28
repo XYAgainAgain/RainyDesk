@@ -87,6 +87,7 @@ export interface RainscaperConfig {
       fadeInTime: number;
       fadeOutTime: number;
       enableVoiceStealing: boolean;
+      fpsLimit?: number;
     };
     getImpactPool: () => {
       getSynthConfig?: () => {
@@ -486,6 +487,7 @@ export class Rainscaper {
       fadeInTime: config?.fadeInTime ?? 5,
       fadeOutTime: config?.fadeOutTime ?? 0.5,
       enableVoiceStealing: config?.enableVoiceStealing ?? true,
+      fpsLimit: config?.fpsLimit ?? 0,  // 0 = uncapped
     };
   }
 
