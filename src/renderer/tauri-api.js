@@ -69,6 +69,8 @@ window.rainydesk = {
 
   // Rainscape File I/O
   saveRainscape: (filename, data) => invoke('save_rainscape', { filename, data }),
+  autosaveRainscape: (data) => invoke('autosave_rainscape', { data }),
+  getStartupRainscape: () => invoke('get_startup_rainscape_cmd'),
   loadRainscapes: () => invoke('load_rainscapes'),
   readRainscape: (filename) => invoke('read_rainscape', { filename }),
 

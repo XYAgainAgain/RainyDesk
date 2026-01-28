@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "notes": "Initial release",
+  "pub_date": "2026-01-28T00:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://github.com/XYAgainAgain/RainyDesk/releases/download/v1.0.0/RainyDesk_1.0.0_x64-setup.nsis.zip",
+      "signature": "SIGNATURE_GOES_HERE"
+    }
+  }
+}

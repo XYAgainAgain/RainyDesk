@@ -13,19 +13,85 @@ mod window_detector;
 // Global pause state
 static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
 
-/// Get the rainscapes directory, creating it if needed
+/// Get the rainscapes directory, creating structure if needed:
+/// rainscapes/
+/// ├── Autosave.rain      ← Always loaded first, overwritten on changes
+/// ├── Default.rain       ← Fallback if no Autosave exists
+/// └── Custom/            ← User-created presets
 fn get_rainscapes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let app_data = app.path().app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let rainscapes_dir = app_data.join("rainscapes");
+    let custom_dir = rainscapes_dir.join("Custom");
 
+    // Create directories if they don't exist
     if !rainscapes_dir.exists() {
         fs::create_dir_all(&rainscapes_dir)
             .map_err(|e| format!("Failed to create rainscapes dir: {}", e))?;
         log::info!("Created rainscapes directory: {:?}", rainscapes_dir);
     }
 
+    if !custom_dir.exists() {
+        fs::create_dir_all(&custom_dir)
+            .map_err(|e| format!("Failed to create custom dir: {}", e))?;
+        log::info!("Created custom rainscapes directory: {:?}", custom_dir);
+    }
+
+    // Create Default.rain if it doesn't exist
+    let default_path = rainscapes_dir.join("Default.rain");
+    if !default_path.exists() {
+        let default_rainscape = create_default_rainscape();
+        let json_str = serde_json::to_string_pretty(&default_rainscape)
+            .map_err(|e| format!("Failed to serialize default: {}", e))?;
+        fs::write(&default_path, json_str)
+            .map_err(|e| format!("Failed to write Default.rain: {}", e))?;
+        log::info!("Created Default.rain");
+    }
+
     Ok(rainscapes_dir)
+}
+
+/// Create the default rainscape configuration
+fn create_default_rainscape() -> serde_json::Value {
+    serde_json::json!({
+        "name": "Default",
+        "version": "1.0.0",
+        "rain": {
+            "intensity": 50,
+            "wind": 0,
+            "turbulence": 0.3
+        },
+        "audio": {
+            "masterVolume": 50,
+            "sheetVolume": 0.6,
+            "impactVolume": 0.8
+        }
+    })
+}
+
+/// Get the startup rainscape (Autosave.rain if exists, else Default.rain)
+fn get_startup_rainscape(app: &tauri::AppHandle) -> Result<(String, serde_json::Value), String> {
+    let rainscapes_dir = get_rainscapes_dir(app)?;
+
+    // Try Autosave.rain first
+    let autosave_path = rainscapes_dir.join("Autosave.rain");
+    if autosave_path.exists() {
+        let content = fs::read_to_string(&autosave_path)
+            .map_err(|e| format!("Failed to read Autosave.rain: {}", e))?;
+        let data: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse Autosave.rain: {}", e))?;
+        log::info!("Loading Autosave.rain");
+        return Ok(("Autosave.rain".to_string(), data));
+    }
+
+    // Fall back to Default.rain
+    let default_path = rainscapes_dir.join("Default.rain");
+    let content = fs::read_to_string(&default_path)
+        .map_err(|e| format!("Failed to read Default.rain: {}", e))?;
+    let data: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse Default.rain: {}", e))?;
+    log::info!("Loading Default.rain (no autosave found)");
+    Ok(("Default.rain".to_string(), data))
 }
 
 // Load theme-aware tray icon (white for dark theme, black for light theme)
@@ -135,14 +201,22 @@ fn set_ignore_mouse_events(window: tauri::Window, ignore: bool) {
 fn save_rainscape(app: tauri::AppHandle, filename: String, data: serde_json::Value) -> Result<serde_json::Value, String> {
     let rainscapes_dir = get_rainscapes_dir(&app)?;
 
-    // Ensure filename has .json extension
-    let filename = if filename.ends_with(".json") {
+    // Ensure filename has .rain extension
+    let filename = if filename.ends_with(".rain") {
         filename
+    } else if filename.ends_with(".json") {
+        // Migrate old .json extension to .rain
+        filename.replace(".json", ".rain")
     } else {
-        format!("{}.json", filename)
+        format!("{}.rain", filename)
     };
 
-    let file_path = rainscapes_dir.join(&filename);
+    // Custom presets go in Custom/ subdirectory (except Autosave and Default)
+    let file_path = if filename == "Autosave.rain" || filename == "Default.rain" {
+        rainscapes_dir.join(&filename)
+    } else {
+        rainscapes_dir.join("Custom").join(&filename)
+    };
 
     // Write JSON with pretty formatting
     let json_str = serde_json::to_string_pretty(&data)
@@ -156,15 +230,42 @@ fn save_rainscape(app: tauri::AppHandle, filename: String, data: serde_json::Val
 }
 
 #[tauri::command]
-fn load_rainscapes(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+fn autosave_rainscape(app: tauri::AppHandle, data: serde_json::Value) -> Result<serde_json::Value, String> {
     let rainscapes_dir = get_rainscapes_dir(&app)?;
+    let autosave_path = rainscapes_dir.join("Autosave.rain");
 
-    let files: Vec<String> = fs::read_dir(&rainscapes_dir)
+    let json_str = serde_json::to_string_pretty(&data)
+        .map_err(|e| format!("Failed to serialize: {}", e))?;
+
+    fs::write(&autosave_path, json_str)
+        .map_err(|e| format!("Failed to write Autosave.rain: {}", e))?;
+
+    // Don't log every autosave to avoid log spam
+    Ok(serde_json::json!({ "success": true }))
+}
+
+#[tauri::command]
+fn get_startup_rainscape_cmd(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let (filename, data) = get_startup_rainscape(&app)?;
+    Ok(serde_json::json!({
+        "filename": filename,
+        "data": data
+    }))
+}
+
+#[tauri::command]
+fn load_rainscapes(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let rainscapes_dir = get_rainscapes_dir(&app)?;
+    let custom_dir = rainscapes_dir.join("Custom");
+
+    // Collect root-level .rain files (Default.rain, Autosave.rain)
+    let root_files: Vec<String> = fs::read_dir(&rainscapes_dir)
         .map_err(|e| format!("Failed to read dir: {}", e))?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension().map(|ext| ext == "json").unwrap_or(false) {
+            // Only files with .rain extension, skip directories
+            if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
                 path.file_name()?.to_str().map(String::from)
             } else {
                 None
@@ -172,20 +273,63 @@ fn load_rainscapes(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         })
         .collect();
 
-    log::info!("Found {} rainscape files", files.len());
-    Ok(files)
+    // Collect custom .rain files from Custom/ subdirectory
+    let custom_files: Vec<String> = if custom_dir.exists() {
+        fs::read_dir(&custom_dir)
+            .map_err(|e| format!("Failed to read custom dir: {}", e))?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
+                    path.file_name()?.to_str().map(String::from)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    log::info!("Found {} root + {} custom rainscape files", root_files.len(), custom_files.len());
+
+    Ok(serde_json::json!({
+        "root": root_files,
+        "custom": custom_files
+    }))
 }
 
 #[tauri::command]
 fn read_rainscape(app: tauri::AppHandle, filename: String) -> Result<serde_json::Value, String> {
     let rainscapes_dir = get_rainscapes_dir(&app)?;
-    let file_path = rainscapes_dir.join(&filename);
+
+    // Handle .rain extension
+    let filename = if filename.ends_with(".rain") {
+        filename
+    } else if filename.ends_with(".json") {
+        // Migration: try .rain first, fall back to .json
+        filename.replace(".json", ".rain")
+    } else {
+        format!("{}.rain", filename)
+    };
+
+    // Check root first (Autosave.rain, Default.rain), then Custom/
+    let root_path = rainscapes_dir.join(&filename);
+    let custom_path = rainscapes_dir.join("Custom").join(&filename);
+
+    let file_path = if root_path.exists() {
+        root_path
+    } else if custom_path.exists() {
+        custom_path
+    } else {
+        return Err(format!("Rainscape not found: {}", filename));
+    };
 
     let content = fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
 
     let data: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        .map_err(|e| format!("Failed to parse rainscape: {}", e))?;
 
     log::info!("Read rainscape: {:?}", file_path);
     Ok(data)
@@ -403,6 +547,8 @@ pub fn run() {
             set_rainscape,
             set_ignore_mouse_events,
             save_rainscape,
+            autosave_rainscape,
+            get_startup_rainscape_cmd,
             load_rainscapes,
             read_rainscape,
             update_rainscape_param,
@@ -483,12 +629,19 @@ pub fn run() {
 
             // Load rainscape files for quick-select submenu
             let rainscapes_dir = get_rainscapes_dir(&app.handle())?;
-            let rainscape_files: Vec<String> = fs::read_dir(&rainscapes_dir)
+            let custom_dir = rainscapes_dir.join("Custom");
+
+            // Collect all .rain files (root + Custom/)
+            let mut rainscape_files: Vec<String> = fs::read_dir(&rainscapes_dir)
                 .map(|entries| {
                     entries.filter_map(|e| {
                         let entry = e.ok()?;
                         let path = entry.path();
-                        if path.extension().map(|ext| ext == "json").unwrap_or(false) {
+                        // Only .rain files, skip Autosave (internal), skip directories
+                        if path.is_file()
+                            && path.extension().map(|ext| ext == "rain").unwrap_or(false)
+                            && path.file_stem().map(|s| s != "Autosave").unwrap_or(true)
+                        {
                             path.file_stem()?.to_str().map(String::from)
                         } else {
                             None
@@ -496,6 +649,24 @@ pub fn run() {
                     }).collect()
                 })
                 .unwrap_or_default();
+
+            // Add custom rainscapes with "Custom/" prefix for display
+            if custom_dir.exists() {
+                let custom_files: Vec<String> = fs::read_dir(&custom_dir)
+                    .map(|entries| {
+                        entries.filter_map(|e| {
+                            let entry = e.ok()?;
+                            let path = entry.path();
+                            if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
+                                path.file_stem()?.to_str().map(String::from)
+                            } else {
+                                None
+                            }
+                        }).collect()
+                    })
+                    .unwrap_or_default();
+                rainscape_files.extend(custom_files);
+            }
 
             // Build rainscape submenu
             let rainscape_submenu = Submenu::with_id(app, "rainscapes", "Rainscapes", true)?;
@@ -556,7 +727,7 @@ pub fn run() {
                             }
                             // Rainscape selection (rs_<name>)
                             else if let Some(name) = id.strip_prefix("rs_") {
-                                let filename = format!("{}.json", name);
+                                let filename = format!("{}.rain", name);
                                 let _ = app.emit("load-rainscape", filename);
                                 log::info!("Rainscape selected: {}", name);
                             }

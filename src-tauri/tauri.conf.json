@@ -24,9 +24,35 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["rain"],
+        "description": "RainyDesk Rainscape Preset",
+        "mimeType": "application/x-rainydesk-rainscape",
+        "role": "Editor"
+      }
+    ],
+    "resources": [
+      "../assets/fonts/*"
+    ],
     "windows": {
       "wix": {
         "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://raw.githubusercontent.com/XYAgainAgain/RainyDesk/main/updates.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

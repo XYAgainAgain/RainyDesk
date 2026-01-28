@@ -19,6 +19,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
+# Updater plugin - check for updates from GitHub releases
+# NOTE: Uncomment when ready for public release and set pubkey in tauri.conf.json
+# tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -36,3 +39,19 @@ windows = { version = "0.58", features = [
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# === Build profiles to reduce disk usage ===
+
+[profile.dev]
+# Minimal debug info (line numbers only, no variable inspection)
+# Reduces .rlib/.pdb size from GBs to MBs
+debug = "line-tables-only"
+# Disable incremental compilation (saves ~2-3 GB of cache)
+# Trade-off: slightly slower rebuilds, much smaller disk footprint
+incremental = false
+
+[profile.release]
+# Strip symbols from release builds
+strip = "symbols"
+# Enable LTO for smaller binaries
+lto = "thin"

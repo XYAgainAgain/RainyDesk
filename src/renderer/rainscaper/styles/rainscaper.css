@@ -7,8 +7,30 @@
 @import url('./components.css');
 @import url('./animations.css');
 
-/* Font imports */
-@import url('https://fonts.googleapis.com/css2?family=Convergence&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Bundled fonts (no external requests) */
+@font-face {
+  font-family: 'Convergence';
+  src: url('../../../../assets/fonts/Convergence-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../../../assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../../../assets/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
 
 /* Panel Container */
 .rainscaper-panel {
