@@ -193,8 +193,10 @@ fn read_rainscape(app: tauri::AppHandle, filename: String) -> Result<serde_json:
 
 #[tauri::command]
 fn update_rainscape_param(path: String, value: serde_json::Value, app: tauri::AppHandle) {
-    // Broadcast to all windows
-    let _ = app.emit("update-rainscape-param", serde_json::json!({ "path": path, "value": value }));
+    // Broadcast to all windows (overlay + background)
+    if let Err(e) = app.emit("update-rainscape-param", serde_json::json!({ "path": path, "value": value })) {
+        log::error!("[ParamSync] Failed to emit {}: {}", path, e);
+    }
 }
 
 #[tauri::command]

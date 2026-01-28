@@ -13,9 +13,14 @@ window.rainydesk = {
   // Get display info via command (more reliable than event)
   getDisplayInfo: () => invoke('get_display_info'),
 
-  // Receive rain toggle commands
+  // Receive rain toggle commands (pause/resume from tray menu)
   onToggleRain: (callback) => {
-    listen('toggle-rain', (event) => callback(event.payload));
+    listen('toggle-rain', (event) => {
+      invoke('log_message', { message: `[TauriAPI] toggle-rain: ${event.payload}` });
+      callback(event.payload);
+    }).catch((e) => {
+      invoke('log_message', { message: `[TauriAPI] FAILED to register toggle-rain listener: ${e}` });
+    });
   },
 
   // Receive audio toggle commands (pause/resume audio system)
@@ -65,7 +70,11 @@ window.rainydesk = {
   // Rainscape Parameter Sync
   updateRainscapeParam: (path, value) => invoke('update_rainscape_param', { path, value }),
   onUpdateRainscapeParam: (callback) => {
-    listen('update-rainscape-param', (event) => callback(event.payload.path, event.payload.value));
+    listen('update-rainscape-param', (event) => {
+      callback(event.payload.path, event.payload.value);
+    }).catch((e) => {
+      invoke('log_message', { message: `[TauriAPI] FAILED to register param listener: ${e}` });
+    });
   },
 
   // Audio start synchronization across monitors

@@ -35,6 +35,15 @@
   display: none;
 }
 
+.rainscaper-panel.fading-out {
+  animation: panel-fade-out 2s ease-out forwards;
+}
+
+@keyframes panel-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 /* Header */
 .rs-header {
   display: flex;

@@ -128,6 +128,9 @@ export class Rainscaper {
   // Stats polling
   private _statsInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Fade-out timeout for click-outside-to-close
+  private _fadeTimeout: ReturnType<typeof setTimeout> | null = null;
+
   constructor() {
     this._panel = new Panel();
     this._header = new Header({
@@ -172,6 +175,17 @@ export class Rainscaper {
 
     // Mount to DOM
     this._panel.mount();
+
+    // Click-outside-to-close: fade out over 2 seconds when clicking outside panel
+    const panelEl = this._panel.element;
+    if (panelEl) {
+      document.addEventListener('mousedown', (e) => {
+        if (state.data.isVisible && !panelEl.contains(e.target as Node)) {
+          // Clicked outside panel - start fade out
+          this.fadeOutAndHide();
+        }
+      });
+    }
 
     // Load presets list
     await this.refreshPresets();
@@ -218,15 +232,37 @@ export class Rainscaper {
 
   /** Show the panel */
   show(): void {
+    // Cancel any pending fade-out
+    if (this._fadeTimeout) {
+      clearTimeout(this._fadeTimeout);
+      this._fadeTimeout = null;
+    }
+    // Remove fade class and show
+    this._panel.element?.classList.remove('fading-out');
     state.setVisible(true);
     window.rainydesk?.setIgnoreMouseEvents?.(false);
     window.rainydesk?.updateRainscapeParam?.('manualMode', true);
   }
 
-  /** Hide the panel */
+  /** Hide the panel immediately */
   hide(): void {
+    if (this._fadeTimeout) {
+      clearTimeout(this._fadeTimeout);
+      this._fadeTimeout = null;
+    }
+    this._panel.element?.classList.remove('fading-out');
     state.setVisible(false);
     window.rainydesk?.setIgnoreMouseEvents?.(true);
+  }
+
+  /** Fade out over 2 seconds, then hide */
+  fadeOutAndHide(): void {
+    if (this._fadeTimeout) return; // Already fading
+    this._panel.element?.classList.add('fading-out');
+    this._fadeTimeout = setTimeout(() => {
+      this._fadeTimeout = null;
+      this.hide();
+    }, 2000);
   }
 
   /** Toggle panel visibility */

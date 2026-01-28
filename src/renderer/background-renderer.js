@@ -76,6 +76,7 @@ async function init() {
 
   // Listen for pause/resume from tray menu
   window.rainydesk.onToggleRain((enabled) => {
+    window.rainydesk.log(`[Background] Toggle rain: enabled=${enabled}`);
     renderer.setBackgroundRainConfig({ enabled: enabled });
   });
 
