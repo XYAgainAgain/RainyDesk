@@ -347,7 +347,11 @@ class WebGLRainRenderer {
         const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
         if (status !== gl.FRAMEBUFFER_COMPLETE) {
             console.error('Framebuffer not complete:', status);
+            this.framebufferComplete = false;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            return;
         }
+        this.framebufferComplete = true;
 
         // Unbind
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -653,8 +657,8 @@ class WebGLRainRenderer {
         }
 
         // Skip framebuffer path if not using scaled rendering
-        if (this.scaleFactor >= 1.0 || !this.framebuffer) {
-            // Direct rendering (no scaling)
+        if (this.scaleFactor >= 1.0 || !this.framebuffer || !this.framebufferComplete) {
+            // Direct rendering (no scaling or framebuffer unavailable)
             this.clear();
             // Background rain now renders in separate desktop-level window
             this._renderParticles(physicsSystem);
@@ -722,7 +726,7 @@ class WebGLRainRenderer {
         }
 
         // Skip framebuffer for background-only (render direct)
-        if (this.scaleFactor >= 1.0 || !this.framebuffer) {
+        if (this.scaleFactor >= 1.0 || !this.framebuffer || !this.framebufferComplete) {
             this._renderBackground();
             return;
         }

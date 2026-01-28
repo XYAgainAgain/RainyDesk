@@ -47,7 +47,7 @@ class Canvas2DRenderer {
     }
 
     /**
-     * Render a single raindrop (legacy - uses main context)
+     * Render a single raindrop (uses main context)
      */
     _renderRaindrop(drop) {
         this._renderRaindropToCtx(drop, this.ctx);
@@ -81,7 +81,7 @@ class Canvas2DRenderer {
     }
 
     /**
-     * Render a single splash particle (legacy - uses main context)
+     * Render a single splash particle (uses main context)
      */
     _renderSplash(particle) {
         this._renderSplashToCtx(particle, this.ctx);

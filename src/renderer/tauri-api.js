@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 window.rainydesk = {
-  // Receive display info from main process (event-based, legacy)
+  // Receive display info from main process (event-based)
   onDisplayInfo: (callback) => {
     listen('display-info', (event) => callback(event.payload));
   },

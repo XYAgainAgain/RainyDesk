@@ -15,22 +15,28 @@ let displayInfo = { index: 0, bounds: { width: 1920, height: 1080 } };
 let lastTime = performance.now();
 
 async function init() {
-  // Wait for Tauri API
-  if (!window.rainydesk) {
-    console.warn('[Background] Waiting for Tauri API...');
+  // Wait for Tauri API with retries
+  let retries = 0;
+  const maxRetries = 10;
+  while (!window.rainydesk && retries < maxRetries) {
+    console.warn(`[Background] Waiting for Tauri API... (${retries + 1}/${maxRetries})`);
     await new Promise(resolve => setTimeout(resolve, 100));
-    if (!window.rainydesk) {
-      console.error('[Background] Tauri API not available');
-      return;
-    }
+    retries++;
+  }
+  if (!window.rainydesk) {
+    console.error('[Background] Tauri API not available after retries');
+    return;
   }
 
+  console.log('[Background] Tauri API ready, initializing...');
   window.rainydesk.log('[Background] Initializing...');
 
   // Get display info
   try {
     displayInfo = await window.rainydesk.getDisplayInfo();
-    window.rainydesk.log(`[Background] Display ${displayInfo.index}: ${displayInfo.bounds.width}x${displayInfo.bounds.height}`);
+    const msg = `[Background] Display ${displayInfo.index}: ${displayInfo.bounds.width}x${displayInfo.bounds.height}`;
+    window.rainydesk.log(msg);
+    console.log(msg);
   } catch (e) {
     console.warn('[Background] getDisplayInfo failed:', e);
   }
@@ -39,10 +45,13 @@ async function init() {
   try {
     renderer = new WebGLRainRenderer(canvas);
     renderer.init();
-    window.rainydesk.log('[Background] WebGL renderer initialized');
+    const msg = '[Background] WebGL renderer initialized';
+    window.rainydesk.log(msg);
+    console.log(msg);
   } catch (error) {
-    window.rainydesk.log(`[Background] WebGL init failed: ${error.message}`);
-    console.error('[Background] WebGL init failed:', error);
+    const msg = `[Background] WebGL init failed: ${error.message}`;
+    window.rainydesk.log(msg);
+    console.error(msg, error);
     return;
   }
 
@@ -65,24 +74,40 @@ async function init() {
     resizeCanvas();
   });
 
+  // Listen for pause/resume from tray menu
+  window.rainydesk.onToggleRain((enabled) => {
+    renderer.setBackgroundRainConfig({ enabled: enabled });
+  });
+
   // Listen for parameter updates from overlay windows
   window.rainydesk.onUpdateRainscapeParam((path, value) => {
-    window.rainydesk.log(`[Background] Param: ${path} = ${value}`);
+    // Log to both Tauri and console for debugging
+    const msg = `[Background] Param: ${path} = ${value}`;
+    window.rainydesk.log(msg);
+    console.log(msg);
 
     if (path === 'physics.wind') {
-      renderer.setBackgroundRainConfig({ wind: value / 100 });
+      // Clamp wind to valid range (-1 to 1)
+      const wind = Math.max(-1, Math.min(1, value / 100));
+      renderer.setBackgroundRainConfig({ wind });
     }
 
     if (path === 'physics.intensity') {
-      // Intensity controls everything for background rain
       const normalized = value / 100;
-      const layers = Math.max(1, Math.round(1 + normalized * 4)); // 1-5 layers
-      const speed = 0.5 + normalized; // 0.5x to 1.5x speed
-      renderer.setBackgroundRainConfig({
-        intensity: normalized,
-        layerCount: layers,
-        speed: speed
-      });
+      if (normalized < 0.01) {
+        // Intensity ~0: disable background rain entirely
+        renderer.setBackgroundRainConfig({ enabled: false });
+      } else {
+        // Scale layers 1-5 and speed 0.5-1.5x based on intensity
+        const layers = Math.round(1 + normalized * 4);
+        const speed = 0.5 + normalized;
+        renderer.setBackgroundRainConfig({
+          enabled: true,
+          intensity: normalized,
+          layerCount: layers,
+          speed: speed
+        });
+      }
     }
 
     if (path === 'physics.renderScale') {
@@ -90,14 +115,26 @@ async function init() {
       resizeCanvas();
     }
 
+    // Direct background rain controls (override auto-link)
     if (path === 'backgroundRain.enabled') {
       renderer.setBackgroundRainConfig({ enabled: Boolean(value) });
+    }
+    if (path === 'backgroundRain.intensity') {
+      renderer.setBackgroundRainConfig({ intensity: value / 100 });
+    }
+    if (path === 'backgroundRain.layerCount') {
+      renderer.setBackgroundRainConfig({ layerCount: Math.max(1, Math.min(5, value)) });
+    }
+    if (path === 'backgroundRain.speed') {
+      renderer.setBackgroundRainConfig({ speed: Math.max(0.1, Math.min(3, value)) });
     }
   });
 
   // Start render loop
   requestAnimationFrame(renderLoop);
-  window.rainydesk.log('[Background] Initialization complete');
+  const initMsg = '[Background] Initialization complete';
+  window.rainydesk.log(initMsg);
+  console.log(initMsg);
 }
 
 function resizeCanvas() {

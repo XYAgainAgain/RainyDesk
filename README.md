@@ -54,10 +54,9 @@ Pre-built installers coming soon once it's more polished!
 
 ## Requirements
 
-- Windows 10/11 (Linux support coming soon! I pinky promise!)
+- Windows 10/11 (Linux X11 support coming soon! I pinky promise!)
 - An audio device such as headphones, earbuds, or speakers (preferably with surround sound)
 - At least one monitor lmao
-- Node.js 16+ (if running from source)
 
 ## How to use it
 
@@ -81,15 +80,15 @@ For developers: RainyDesk is built with Electron, WebGL 2 instanced rendering, M
 
 RainyDesk is currently source-available under the Business Source License 1.1 (BSL-1.1). That means you are welcome to use, tinker with, and modify RainyDesk for personal, educational, and non-commercial purposes. I've chosen a BSL so I can keep the project freely available while preventing third parties from repackaging and selling it as a commercial product without permission. Don't want that, now do we?
 
-**Change Date: 2029-01-01** — on or after this date RainyDesk will automatically be relicensed under the MIT License, making it fully permissive and open-source.
+>  **Change Date: 2029-01-01** — on or after this date RainyDesk will automatically be relicensed under the MIT License, making it fully permissive and open-source.
 
 If you'd like to use RainyDesk commercially before the Change Date (for example to bundle or sell it), please contact me to discuss a commercial license. If you jive with the project, tips and small donations are hugely appreciated — Ko-fi: https://ko-fi.com/xyagain
 
 ## The Fool Who Made It
 
-**Sam Atwood**
+**Sam Atwood** of [The King's Busketeers](https://tkb.band/)
 
-*Please don't sue me if rainwater starts pouring out of your motherboard, that's unintended behavior.*
+*Please don't sue me if rainwater starts pouring out of your USB ports, that's unintended behavior.*
 
 ---
 

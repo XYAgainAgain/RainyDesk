@@ -4,7 +4,6 @@
  */
 
 import Matter from 'https://cdn.skypack.dev/matter-js@0.20.0';
-import audioSystem from './audioSystem.js';
 
 class RainPhysicsSystem {
   constructor(width, height, scaleFactor = 1.0) {
@@ -20,15 +19,15 @@ class RainPhysicsSystem {
     this.height = Math.floor(height * scaleFactor);
     this.floorY = this.height; // Default floor to bottom of physics space
 
-    // New TypeScript audio system (set externally)
-    this.newAudioSystem = null;
+    // Audio system (set externally via setAudioSystem)
+    this.audioSystem = null;
 
     // Create Matter.js engine
     this.engine = Matter.Engine.create({
       gravity: { x: 0, y: 0.98 } // 980/1000 for realistic rain fall
     });
 
-    // Configuration (slower than legacy for more realistic fall)
+    // Physics configuration
     this.config = {
       gravity: 980,
       wind: 0,
@@ -170,7 +169,7 @@ class RainPhysicsSystem {
         y: 0
       });
 
-      // Apply terminal velocity cap (like legacy physics)
+      // Apply terminal velocity cap
       const velocity = drop.body.velocity;
       const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
       if (speed > scaledTerminalVelocity) {
@@ -252,7 +251,7 @@ class RainPhysicsSystem {
               // Visual splash
               this.createSplash(pos.x, this.floorY, speed);
 
-              // Audio impact (both old and new systems)
+              // Audio impact
               this.triggerAudioImpact(drop, speed, 'ground');
 
               Matter.World.remove(this.engine.world, drop.body);
@@ -300,7 +299,14 @@ class RainPhysicsSystem {
    * Set wind (-100 to 100)
    */
   setWind(value) {
-    this.config.wind = value;
+    this.config.wind = Math.max(-100, Math.min(100, value));
+  }
+
+  /**
+   * Set terminal velocity (pixels per second)
+   */
+  setTerminalVelocity(value) {
+    this.config.terminalVelocity = Math.max(50, Math.min(2000, value));
   }
 
   /**
@@ -318,39 +324,34 @@ class RainPhysicsSystem {
   }
 
   /**
-   * Set the new TypeScript audio system for collision events
+   * Set the audio system for collision events
    */
-  setNewAudioSystem(audioSystem) {
-    this.newAudioSystem = audioSystem;
+  setAudioSystem(audio) {
+    this.audioSystem = audio;
   }
 
   /**
-   * Trigger audio impact on both old and new systems
+   * Trigger audio impact
    */
   triggerAudioImpact(drop, speed, surfaceType = 'default') {
-    // Old system - use unscaled velocity for consistent audio
+    if (!this.audioSystem) return;
+
+    // Use unscaled values for consistent audio regardless of render scale
     const unscaledSpeed = speed / this.scaleFactor;
-    const velocityScale = Math.min(unscaledSpeed / this.config.terminalVelocity, 1.0);
-    audioSystem.triggerImpact(drop.mass, velocityScale);
 
-    // New system (if available)
-    if (this.newAudioSystem) {
-      // Convert to collision event for new system
-      // Use audioRadius (unscaled) for consistent sound regardless of pixelation
-      const collisionEvent = {
-        dropRadius: drop.audioRadius || drop.radius || 2, // Unscaled radius for Minnaert frequency
-        velocity: unscaledSpeed, // Unscaled speed for consistent impact energy
-        mass: drop.mass,
-        surfaceType: surfaceType,
-        position: { x: drop.body.position.x, y: drop.body.position.y },
-        impactAngle: Math.atan2(drop.body.velocity.y, drop.body.velocity.x)
-      };
+    const collisionEvent = {
+      dropRadius: drop.audioRadius || drop.radius || 2,
+      velocity: unscaledSpeed,
+      mass: drop.mass,
+      surfaceType: surfaceType,
+      position: { x: drop.body.position.x, y: drop.body.position.y },
+      impactAngle: Math.atan2(drop.body.velocity.y, drop.body.velocity.x)
+    };
 
-      try {
-        this.newAudioSystem.handleCollision(collisionEvent);
-      } catch (err) {
-        console.error('[New Audio] Collision error:', err);
-      }
+    try {
+      this.audioSystem.handleCollision(collisionEvent);
+    } catch (err) {
+      console.error('[Audio] Collision error:', err);
     }
   }
 

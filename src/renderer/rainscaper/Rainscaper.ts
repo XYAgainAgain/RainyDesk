@@ -560,7 +560,7 @@ export class Rainscaper {
       }
     };
 
-    // Material (legacy format compatibility)
+    // Material
     if (data.material && typeof data.material === 'object') {
       const mat = data.material as Record<string, unknown>;
       sendParam('material.id', mat.id);
@@ -602,44 +602,17 @@ export class Rainscaper {
       sendParam('physics.renderScale', phys.renderScale);
     }
 
-    // Legacy format support (layers, synths, reverb, windMod)
-    if (data.layers && typeof data.layers === 'object') {
-      const layers = data.layers as Record<string, Record<string, unknown>>;
-      for (const [layer, values] of Object.entries(layers)) {
-        sendParam(`layers.${layer}.vol`, values.vol);
-        sendParam(`filters.${layer}.freq`, values.freq);
-        sendParam(`filters.${layer}.Q`, values.Q);
-        sendParam(`filters.${layer}.type`, values.type);
-      }
-    }
-
-    if (data.synths && typeof data.synths === 'object') {
-      const synths = data.synths as Record<string, Record<string, unknown>>;
-      if (synths.bubble) {
-        sendParam('synths.bubble.vol', synths.bubble.vol);
-        sendParam('synths.bubble.decay', synths.bubble.decay);
-        sendParam('synths.bubble.osc', synths.bubble.osc);
-      }
-      if (synths.impact) {
-        sendParam('synths.impact.vol', synths.impact.vol);
-        sendParam('synths.impact.decay', synths.impact.decay);
-        sendParam('synths.impact.type', synths.impact.type);
-      }
-      if (synths.global) {
-        sendParam('synths.global.pitchScale', synths.global.pitchScale);
-      }
-    }
-
-    if (data.reverb && typeof data.reverb === 'object') {
-      const rv = data.reverb as Record<string, unknown>;
-      sendParam('reverb.decay', rv.decay);
-      sendParam('reverb.wet', rv.wet);
-    }
-
-    if (data.windMod && typeof data.windMod === 'object') {
-      const wm = data.windMod as Record<string, unknown>;
-      sendParam('wind.speed', wm.speed);
-      sendParam('wind.depth', wm.depth);
+    // Sheet Layer (background noise)
+    if (data.sheetLayer && typeof data.sheetLayer === 'object') {
+      const sheet = data.sheetLayer as Record<string, unknown>;
+      sendParam('sheetLayer.noiseType', sheet.noiseType);
+      sendParam('sheetLayer.filterType', sheet.filterType);
+      sendParam('sheetLayer.filterFreq', sheet.filterFreq);
+      sendParam('sheetLayer.filterQ', sheet.filterQ);
+      sendParam('sheetLayer.minVolume', sheet.minVolume);
+      sendParam('sheetLayer.maxVolume', sheet.maxVolume);
+      sendParam('sheetLayer.maxParticleCount', sheet.maxParticleCount);
+      sendParam('sheetLayer.rampTime', sheet.rampTime);
     }
 
     // Update state

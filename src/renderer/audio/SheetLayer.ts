@@ -82,7 +82,8 @@ export class SheetLayer {
   private updateVolume(): void {
     const { minVolume, maxVolume, maxParticleCount, rampTime } = this._config;
     const normalized = Math.min(1, this._currentParticleCount / maxParticleCount);
-    const targetVolume = minVolume + (maxVolume - minVolume) * normalized;
+    // Use -Infinity (true silence) when no particles, otherwise interpolate
+    const targetVolume = normalized < 0.001 ? -Infinity : minVolume + (maxVolume - minVolume) * normalized;
     this._noise.volume.rampTo(targetVolume, rampTime);
   }
 

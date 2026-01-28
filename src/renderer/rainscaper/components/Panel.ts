@@ -15,19 +15,8 @@ export class Panel {
     this._element = document.createElement('div');
     this._element.className = 'rainscaper-panel hidden';
 
-    // Enable mouse events when hovering over panel
-    this._element.addEventListener('mouseenter', () => {
-      if (window.rainydesk?.setIgnoreMouseEvents) {
-        window.rainydesk.setIgnoreMouseEvents(false);
-      }
-    });
-
-    // Disable mouse events when leaving panel (click-through mode)
-    this._element.addEventListener('mouseleave', () => {
-      if (window.rainydesk?.setIgnoreMouseEvents) {
-        window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
-      }
-    });
+    // Click-through controlled by show()/hide(), not hover events
+    // (Tauri lacks Electron's "forward: true" for hover detection)
 
     // Subscribe to visibility changes
     state.subscribe((s) => {

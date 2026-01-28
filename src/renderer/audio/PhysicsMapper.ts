@@ -107,7 +107,9 @@ export class PhysicsMapper {
   /** Calculate filter frequency. Higher velocity = brighter sound. */
   calculateFilterFreq(event: CollisionEvent, material: MaterialConfig): number {
     const velocityFactor = Math.min(1, event.velocity / this._config.velocityMax);
-    return material.filterFreq * (1 + velocityFactor);
+    const freq = material.filterFreq * (1 + velocityFactor);
+    // Clamp to valid audio frequency range
+    return Math.max(20, Math.min(18000, freq));
   }
 
   updateConfig(config: Partial<PhysicsMapperConfig>): void {

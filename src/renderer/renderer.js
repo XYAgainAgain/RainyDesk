@@ -5,18 +5,15 @@
  * Note: Background mode uses separate file (background-renderer.js)
  */
 
-import audioSystem from './audioSystem.js';
 import RainPhysicsSystem from './physicsSystem.js';
-
-// New TypeScript audio system (Phase 4.5 integration)
-let newAudioSystem = null;
-let useNewAudio = true;
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 import Canvas2DRenderer from './Canvas2DRenderer.js';
 
-// New TypeScript Rainscaper (Phase 4 panel rewrite)
+// Audio system (TypeScript, voice-pooled)
+let audioSystem = null;
+
+// Rainscaper UI panel
 let rainscaper = null;
-let useNewRainscaper = true;
 
 // Canvas and context
 const canvas = document.getElementById('rain-canvas');
@@ -78,7 +75,7 @@ let windowZoneCount = 0;
 let isFullscreenActive = false;
 
 /**
- * Legacy Raindrop class (for non-Matter.js mode)
+ * Raindrop class (fallback for non-Matter.js mode)
  */
 class Raindrop {
   constructor(x, y) {
@@ -143,7 +140,7 @@ class Raindrop {
 }
 
 /**
- * Legacy SplashParticle class (for non-Matter.js mode)
+ * SplashParticle class (fallback for non-Matter.js mode)
  */
 class SplashParticle {
   constructor(x, y, impactVelocity) {
@@ -202,108 +199,42 @@ function overlapPercentage(a, b) {
 }
 
 /**
- * Initialize audio system with gentle 5-second fade-in
- * Applies full autosave config BEFORE fade-in to avoid surprise sounds
+ * Initialize audio system with gentle fade-in
  */
 async function initAudio() {
   if (audioInitialized) return;
 
   try {
-    // Step 0: Load and initialize new TypeScript audio system
-    try {
-      const { AudioSystem } = await import('./audio.bundle.js');
-      newAudioSystem = new AudioSystem({
-        impactPoolSize: 12,
-        bubblePoolSize: 12
-      });
-      await newAudioSystem.init();
-      window.rainydesk.log('[New Audio] TypeScript AudioSystem initialized');
-    } catch (err) {
-      window.rainydesk.log(`[New Audio] Failed to initialize: ${err.message}`);
-      console.error('[New Audio] Error:', err);
+    // Load and initialize audio system
+    const { AudioSystem } = await import('./audio.bundle.js');
+    audioSystem = new AudioSystem({
+      impactPoolSize: 12,
+      bubblePoolSize: 12
+    });
+    await audioSystem.init();
+    window.rainydesk.log('[Audio] Initialized');
+
+    // Start with fade-in
+    await audioSystem.start(true);
+    window.rainydesk.log('[Audio] Started with fade-in');
+
+    // Connect to physics for collision events
+    if (physicsSystem) {
+      physicsSystem.setAudioSystem(audioSystem);
+      window.rainydesk.log('[Audio] Connected to physics system');
     }
 
-    // Step 1: Initialize old audio system (only if not using new one)
-    if (!useNewAudio) {
-      await audioSystem.init();
-      window.rainydesk.log('Audio system initialized');
-
-      // Step 2: Apply full autosaved preset BEFORE starting fade-in
-      if (pendingAutosave) {
-        window.rainydesk.log('Applying autosaved rainscape before fade-in');
-        rainscaper.applyPreset(pendingAutosave);
-        pendingAutosave = null; // Clear after applying
-      }
-
-      // Step 3: Capture target values (now includes autosave settings)
-      const targetVolume = config.volume;
-      const targetIntensity = config.intensity;
-      const targetWind = config.wind;
-
-      // Step 4: Set everything to 0 for fade-in
-      audioSystem.setVolume(0);
-      audioSystem.setIntensity(0);
-
-      // Step 5: Start audio playback
-      await audioSystem.start();
-    } else {
-      window.rainydesk.log('[New Audio] Old system disabled - using new TypeScript system only');
-    }
-
-    // Step 5.5: Start new audio system
-    if (newAudioSystem) {
-      try {
-        await newAudioSystem.start(true); // true = enable fade-in
-        window.rainydesk.log('[New Audio] Started with fade-in');
-
-        // Pass new audio system to physics for collision events
-        if (physicsSystem) {
-          physicsSystem.setNewAudioSystem(newAudioSystem);
-          window.rainydesk.log('[New Audio] Connected to physics system');
-        }
-
-        // Connect new audio system to new rainscaper
-        if (useNewRainscaper && rainscaper && rainscaper.setAudioSystem) {
-          rainscaper.setAudioSystem(newAudioSystem);
-          window.rainydesk.log('[New Audio] Connected to Rainscaper');
-        }
-      } catch (err) {
-        window.rainydesk.log(`[New Audio] Failed to start: ${err.message}`);
-      }
-    }
-
-    // Step 6: Gentle 5-second fade-in to target values (old system only)
-    if (!useNewAudio) {
-      const targetVolume = config.volume;
-      const targetIntensity = config.intensity;
-      const targetWind = config.wind;
-
-      const fadeDuration = 5000;
-      const fadeSteps = 50;
-      const stepDuration = fadeDuration / fadeSteps;
-
-      for (let i = 0; i <= fadeSteps; i++) {
-        const progress = i / fadeSteps;
-        const easedProgress = progress * progress; // Ease-in curve
-
-        audioSystem.setVolume(targetVolume * easedProgress);
-        audioSystem.setIntensity(targetIntensity * easedProgress);
-        audioSystem.setWind(targetWind * easedProgress);
-
-        if (i < fadeSteps) {
-          await new Promise(resolve => setTimeout(resolve, stepDuration));
-        }
-      }
-      window.rainydesk.log('Audio fade-in complete');
-    } else {
-      window.rainydesk.log('[New Audio] Fade-in handled by AudioSystem.start()');
+    // Connect to Rainscaper
+    if (rainscaper && rainscaper.setAudioSystem) {
+      rainscaper.setAudioSystem(audioSystem);
+      window.rainydesk.log('[Audio] Connected to Rainscaper');
     }
 
     audioInitialized = true;
-
     rainscaper.refresh();
   } catch (error) {
     window.rainydesk.log(`Audio init error: ${error.message}`);
+    console.error('[Audio] Error:', error);
   }
 }
 
@@ -312,12 +243,12 @@ async function initAudio() {
  */
 function startAutosave() {
   setInterval(async () => {
-    if (audioInitialized && rainscaper.isVisible) {
+    if (audioInitialized && rainscaper) {
       const data = rainscaper.gatherPresetData();
       data.name = "Autosave";
       await window.rainydesk.saveRainscape('autosave.json', data);
     }
-  }, 10000); // Every 10 seconds
+  }, 30000);
 }
 
 /**
@@ -362,7 +293,7 @@ function update(dt) {
   if (config.useMatterJS && physicsSystem) {
     physicsSystem.update(dt);
   } else {
-    // Legacy custom physics
+    // Fallback: custom physics (non-Matter.js mode)
     raindrops = raindrops.filter(drop => {
       const alive = drop.update(dt);
       return alive;
@@ -397,15 +328,15 @@ function gameLoop(currentTime) {
     update(dt);
     render();
 
-    // Feed particle count to new audio system
-    if (newAudioSystem && physicsSystem) {
+    // Feed particle count to audio system for sheet layer modulation
+    if (audioSystem && physicsSystem) {
       const particleCount = physicsSystem.getParticleCount();
-      newAudioSystem.setParticleCount(particleCount);
+      audioSystem.setParticleCount(particleCount);
     }
   } else {
     // When fullscreen, feed zero particles to quiet the sheet layer
-    if (newAudioSystem) {
-      newAudioSystem.setParticleCount(0);
+    if (audioSystem) {
+      audioSystem.setParticleCount(0);
     }
   }
 
@@ -474,16 +405,26 @@ async function init() {
     resizeCanvas();
   });
 
-  window.rainydesk.onToggleRain((enabled) => { config.enabled = enabled; });
+  window.rainydesk.onToggleRain((enabled) => {
+    config.enabled = enabled;
+    // Also pause/resume audio when rain is toggled
+    if (audioSystem) {
+      if (enabled) {
+        audioSystem.start();
+      } else {
+        audioSystem.stop();
+      }
+    }
+  });
 
   // Audio pause/resume (from tray menu "Pause RainyDesk")
   window.rainydesk.onToggleAudio((enabled) => {
-    if (newAudioSystem) {
+    if (audioSystem) {
       if (enabled) {
-        newAudioSystem.start();
+        audioSystem.start();
         window.rainydesk.log('Audio resumed');
       } else {
-        newAudioSystem.stop();
+        audioSystem.stop();
         window.rainydesk.log('Audio paused');
       }
     }
@@ -491,12 +432,16 @@ async function init() {
 
   window.rainydesk.onSetIntensity((value) => {
     config.intensity = value;
-    if (audioInitialized) audioSystem.setIntensity(value);
+    // Audio responds to particle count, not intensity directly
   });
 
   window.rainydesk.onSetVolume((value) => {
     config.volume = value;
-    if (audioInitialized) audioSystem.setVolume(value);
+    // Convert 0-100 slider to dB range (-60 to 0)
+    if (audioInitialized && audioSystem) {
+      const db = value <= 0 ? -Infinity : (value / 100 * 60) - 60;
+      audioSystem.setMasterVolume(db);
+    }
   });
 
   // Track if we've logged window info for this session (log once per startup)
@@ -592,8 +537,6 @@ async function init() {
       }
       if (param === 'intensity') {
         config.intensity = value;
-        // Old audio system uses intensity directly; new system uses particle count from game loop
-        if (!useNewAudio && audioSystem.isInitialized) audioSystem.setIntensity(value);
         // Update background rain intensity (normalize to 0..1)
         if (renderer && renderer.setBackgroundRainIntensity) {
           renderer.setBackgroundRainIntensity(value / 100);
@@ -608,6 +551,9 @@ async function init() {
         resizeCanvas(); // Triggers renderer.resize with new scale
         window.rainydesk.log(`Render scale set to ${renderScale * 100}%`);
       }
+      if (param === 'terminalVelocity' && physicsSystem) {
+        physicsSystem.setTerminalVelocity(value);
+      }
     } else if (path.startsWith('backgroundRain.')) {
       // Handle background rain shader parameters
       const param = path.split('.')[1];
@@ -619,9 +565,7 @@ async function init() {
         else if (param === 'enabled') configUpdate.enabled = value;
         renderer.setBackgroundRainConfig(configUpdate);
       }
-    } else if (newAudioSystem) {
-      newAudioSystem.updateParam(path, value);
-    } else if (!useNewAudio && audioSystem.isInitialized) {
+    } else if (audioSystem) {
       audioSystem.updateParam(path, value);
     }
   });
@@ -648,8 +592,8 @@ async function init() {
     // Only handle on primary monitor to avoid duplicate processing
     if (displayInfo.index !== 0) return;
 
-    if (newAudioSystem) {
-      newAudioSystem.setMuffled(shouldMuffle);
+    if (audioSystem) {
+      audioSystem.setMuffled(shouldMuffle);
       window.rainydesk.log(`Audio muffling: ${shouldMuffle ? 'ON' : 'OFF'}`);
     }
   });
@@ -682,10 +626,6 @@ async function init() {
     physicsSystem = new RainPhysicsSystem(canvasWidth, canvasHeight, renderScale);
   }
 
-  audioSystem.onRainscapeChange = (name) => {
-    window.rainydesk.setRainscape(name);
-  };
-
   const initialConfig = await window.rainydesk.getConfig();
   config.enabled = initialConfig.rainEnabled;
   config.intensity = initialConfig.intensity;
@@ -709,20 +649,12 @@ async function init() {
     window.rainydesk.log(`Autosave load failed: ${err.message}`);
   }
 
-  // Init Rainscaper (new TypeScript version or legacy fallback)
+  // Init Rainscaper
   try {
-    if (useNewRainscaper) {
-      const { rainscaper: newRainscaper } = await import('./rainscaper.bundle.js');
-      rainscaper = newRainscaper;
-      await rainscaper.init(physicsSystem, config);
-      window.rainydesk.log('[New Rainscaper] TypeScript Rainscaper initialized');
-    } else {
-      // Legacy rainscaper fallback
-      const { rainscaper: legacyRainscaper } = await import('./rainscaper.js');
-      rainscaper = legacyRainscaper;
-      await rainscaper.init(physicsSystem, config);
-      window.rainydesk.log('Legacy Rainscaper initialized');
-    }
+    const { rainscaper: rsModule } = await import('./rainscaper.bundle.js');
+    rainscaper = rsModule;
+    await rainscaper.init(physicsSystem, config);
+    window.rainydesk.log('[Rainscaper] Initialized');
 
     // Broadcast initial physics values to background windows
     // This ensures background rain starts with correct settings
