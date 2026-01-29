@@ -18,12 +18,8 @@ dist/
 Thumbs.db
 desktop.ini
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Development documentation (might put it up later though)
+.dev/
 
 # Logs
 .logs/
@@ -37,23 +33,14 @@ yarn-error.log*
 .env.local
 .env.*.local
 
-# AI instruction files (private)
+# AI instruction files (shout-out to Claude for not sucking)
 .claude/
 CLAUDE.md
-.gemini/
-.gemini-clipboard/
-GEMINI.md
-
-# Development documentation (private)
-.dev/
 
 # Backup
 .backup/
+*.backup
 
 # Temporary files
 *.tmp
 *.temp
-
-# Package manager locks (optional - uncomment if not committing)
-# package-lock.json
-# yarn.lock
