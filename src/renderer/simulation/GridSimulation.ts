@@ -372,11 +372,12 @@ export class GridSimulation {
                         if (cellValue === CELL_GLASS) {
                             this.grid[cellIndex] = CELL_WATER;
                             // Set initial energy based on impact velocity (for bounce)
+                            // Reduced multiplier for less jitter
                             const impactSpeed = Math.sqrt(
                                 this.dropsVelX[i]! * this.dropsVelX[i]! +
                                 this.dropsVelY[i]! * this.dropsVelY[i]!
                             );
-                            this.waterEnergy[cellIndex] = Math.min(impactSpeed * 0.02, 1.0);
+                            this.waterEnergy[cellIndex] = Math.min(impactSpeed * 0.008, 0.5);
                         } else if (cellValue === CELL_VOID) {
                             // Void cells stay void (no puddling in gaps between monitors)
                         }
@@ -486,7 +487,9 @@ export class GridSimulation {
         // Water has energy (bounce) and is attracted to nearby water (cohesion)
 
         const { wallAdhesion } = this.config;
-        const energyDecay = 0.85;
+        const energyDecay = 0.7;        // Faster decay for quicker settling
+        const restThreshold = 0.05;     // Below this, water is at rest
+        const minFallEnergy = 0.02;     // Minimum energy added on fall (was 0.2)
 
         // Bottom-up iteration (skip bottom row as it has nowhere to flow)
         for (let y = this.gridHeight - 2; y >= 0; y--) {
@@ -500,7 +503,7 @@ export class GridSimulation {
                 const index = y * this.gridWidth + x;
                 if (this.grid[index] !== CELL_WATER) continue;
 
-                const energy = this.waterEnergy[index]!;
+                let energy = this.waterEnergy[index]!;
 
                 // Check if adjacent to wall (triggers adhesion mechanic)
                 const hasWallNeighbor = this.hasAdjacentWall(x, y);
@@ -511,28 +514,40 @@ export class GridSimulation {
                     continue;
                 }
 
+                // === REST STATE: Skip processing if energy is negligible ===
+                // Only check gravity - if we can fall, we're not at rest
+                const belowIndex = (y + 1) * this.gridWidth + x;
+                const canFall = y + 1 < this.gridHeight && this.grid[belowIndex] === CELL_AIR;
+
+                if (energy < restThreshold && !canFall) {
+                    // Truly at rest - zero out energy and skip
+                    this.waterEnergy[index] = 0;
+                    continue;
+                }
+
                 // === BOUNCE: If high energy, try to move UP first ===
                 if (energy > 0.3 && Math.random() < energy) {
-                    if (this.tryMoveWaterWithEnergy(index, x, y - 1, energy * 0.6)) {
+                    if (this.tryMoveWaterWithEnergy(index, x, y - 1, energy * 0.5)) {
                         continue;
                     }
                     // Bounce failed (blocked), convert some energy to horizontal
                     const bounceDir = Math.random() > 0.5 ? 1 : -1;
-                    if (this.tryMoveWaterWithEnergy(index, x + bounceDir, y - 1, energy * 0.5)) {
+                    if (this.tryMoveWaterWithEnergy(index, x + bounceDir, y - 1, energy * 0.4)) {
                         continue;
                     }
                 }
 
                 // === COHESION: Count nearby water for mass-based speed ===
                 const nearbyMass = this.countNearbyWater(x, y);
-                const massBonus = Math.min(6, Math.floor(nearbyMass / 1.5));
+                const massBonus = Math.min(4, Math.floor(nearbyMass / 2));
 
                 // === GRAVITY: Try to move down (multiple cells for speed) ===
-                const baseFall = 3 + Math.floor(energy * 5);
-                const fallDist = Math.min(16, baseFall + massBonus);
+                const baseFall = 2 + Math.floor(energy * 3);
+                const fallDist = Math.min(12, baseFall + massBonus);
                 let fell = false;
                 for (let dy = fallDist; dy >= 1; dy--) {
-                    if (this.tryMoveWaterWithEnergy(index, x, y + dy, energy * energyDecay + 0.2)) {
+                    // Minimal energy boost on fall, mostly preserve with decay
+                    if (this.tryMoveWaterWithEnergy(index, x, y + dy, energy * energyDecay + minFallEnergy)) {
                         fell = true;
                         break;
                     }
@@ -545,28 +560,29 @@ export class GridSimulation {
                 const diag2X = tryLeftFirst ? x + 1 : x - 1;
 
                 // Try diagonal at multiple distances
-                for (let dy = Math.min(4, 2 + massBonus); dy >= 1; dy--) {
+                for (let dy = Math.min(3, 1 + massBonus); dy >= 1; dy--) {
                     if (this.tryMoveWaterWithEnergy(index, diag1X, y + dy, energy * energyDecay)) { fell = true; break; }
                     if (this.tryMoveWaterWithEnergy(index, diag2X, y + dy, energy * energyDecay)) { fell = true; break; }
                 }
                 if (fell) continue;
 
-                // === COHESION: Move toward nearby water masses (always try) ===
-                const cohesionDir = this.findCohesionDirection(x, y);
-                if (cohesionDir !== 0) {
-                    // Try multiple cells toward mass
-                    for (let dx = 2; dx >= 1; dx--) {
-                        if (this.tryMoveWaterWithEnergy(index, x + cohesionDir * dx, y, energy * energyDecay + 0.1)) { fell = true; break; }
+                // === COHESION: Move toward nearby water masses (only if energy allows) ===
+                if (energy > restThreshold) {
+                    const cohesionDir = this.findCohesionDirection(x, y);
+                    if (cohesionDir !== 0) {
+                        // Single cell movement toward mass, no energy boost
+                        if (this.tryMoveWaterWithEnergy(index, x + cohesionDir, y, energy * energyDecay)) {
+                            continue;
+                        }
                     }
-                    if (fell) continue;
+
+                    // === HORIZONTAL SPREAD ===
+                    const side1X = tryLeftFirst ? x - 1 : x + 1;
+                    const side2X = tryLeftFirst ? x + 1 : x - 1;
+
+                    if (this.tryMoveWaterWithEnergy(index, side1X, y, energy * energyDecay)) continue;
+                    if (this.tryMoveWaterWithEnergy(index, side2X, y, energy * energyDecay)) continue;
                 }
-
-                // === HORIZONTAL SPREAD ===
-                const side1X = tryLeftFirst ? x - 1 : x + 1;
-                const side2X = tryLeftFirst ? x + 1 : x - 1;
-
-                if (this.tryMoveWaterWithEnergy(index, side1X, y, energy * energyDecay)) continue;
-                if (this.tryMoveWaterWithEnergy(index, side2X, y, energy * energyDecay)) continue;
 
                 // No valid moves → water stays, decay energy
                 this.waterEnergy[index] = energy * energyDecay;
@@ -844,7 +860,7 @@ export class GridSimulation {
             const neighborIndex = ny * this.gridWidth + nx;
             if (this.grid[neighborIndex] === CELL_AIR) {
                 this.grid[neighborIndex] = CELL_WATER;
-                this.waterEnergy[neighborIndex] = 0.5; // Give it some bounce
+                this.waterEnergy[neighborIndex] = 0.15; // Reduced bounce energy
                 return;
             }
         }

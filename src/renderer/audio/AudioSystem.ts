@@ -112,8 +112,6 @@ export class AudioSystem {
     this._state = 'initializing';
 
     try {
-      console.log('[AudioSystem] v2.0 initialization complete');
-
       this.createMasterChain();
       this.createBuses();
       this.createVoicePools();

@@ -182,32 +182,85 @@ export class RainPixiRenderer {
     private createTextures(): void {
         if (!this.app) return;
 
-        // Create a tapered teardrop shape matching the WebGL shader style
-        // Color: rgb(160, 196, 232) = 0xa0c4e8 - light blue-grey from WebGL version
-        const dropGraphics = new Graphics();
+        // Create teardrop texture using Canvas 2D for proper gradients
+        // This mimics the WebGL shader's smooth tapered cone + circular head
+        this.dropTexture = this.createTeardropTexture();
 
-        // Draw teardrop: circle head at bottom, tapering cone tail upward
-        const headRadius = 1.5;
-        const tailLength = 12; // Longer tail for motion blur effect
-
-        // Draw the tapered tail (triangle from tip to head width)
-        dropGraphics.moveTo(0, -tailLength);           // Tip of tail
-        dropGraphics.lineTo(-headRadius, 0);           // Left side of head
-        dropGraphics.lineTo(headRadius, 0);            // Right side of head
-        dropGraphics.closePath();
-        dropGraphics.fill({ color: 0xa0c4e8, alpha: 0.5 });
-
-        // Draw circular head
-        dropGraphics.circle(0, headRadius * 0.5, headRadius);
-        dropGraphics.fill({ color: 0xa0c4e8, alpha: 0.6 });
-
-        this.dropTexture = this.app.renderer.generateTexture(dropGraphics);
-
-        // Create a soft circular splash
+        // Create a soft circular splash with radial gradient
         const splashGraphics = new Graphics();
-        splashGraphics.circle(0, 0, 2);
-        splashGraphics.fill({ color: 0xa0c4e8, alpha: 0.4 });
+        splashGraphics.circle(0, 0, 3);
+        splashGraphics.fill({ color: 0xa0c4e8, alpha: 0.35 });
         this.splashTexture = this.app.renderer.generateTexture(splashGraphics);
+    }
+
+    /**
+     * Create a high-quality teardrop texture using Canvas 2D gradients.
+     * Mimics the WebGL shader's smooth tapered cone with circular head.
+     */
+    private createTeardropTexture(): Texture {
+        const canvas = document.createElement('canvas');
+        const width = 16;
+        const height = 48;  // Tall for motion blur tail
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d')!;
+
+        // Clear to transparent
+        ctx.clearRect(0, 0, width, height);
+
+        // Raindrop color: rgb(160, 196, 232)
+        const centerX = width / 2;
+        const headRadius = 3;
+        const headCenterY = height - headRadius - 2;
+
+        // Draw tapered tail using multiple strokes with decreasing width
+        // This creates the smooth taper effect the WebGL shader achieves
+        const tailTipY = 4;
+        const segments = 20;
+
+        for (let i = 0; i < segments; i++) {
+            const t = i / segments;  // 0 at tip, 1 at head
+            const y = tailTipY + (headCenterY - tailTipY) * t;
+            const nextT = (i + 1) / segments;
+            const nextY = tailTipY + (headCenterY - tailTipY) * nextT;
+
+            // Width tapers from 0 at tip to headRadius at head
+            // Use easeOutQuad for natural taper: t * (2 - t)
+            const easedT = t * (2 - t);
+            const halfWidth = headRadius * easedT;
+
+            // Alpha fades toward tip for motion blur effect
+            const alpha = 0.15 + 0.45 * t;
+
+            ctx.beginPath();
+            ctx.moveTo(centerX - halfWidth, y);
+            ctx.lineTo(centerX + halfWidth, y);
+            ctx.lineTo(centerX + headRadius * (nextT * (2 - nextT)), nextY);
+            ctx.lineTo(centerX - headRadius * (nextT * (2 - nextT)), nextY);
+            ctx.closePath();
+            ctx.fillStyle = `rgba(160, 196, 232, ${alpha})`;
+            ctx.fill();
+        }
+
+        // Draw circular head with radial gradient for soft edges
+        const gradient = ctx.createRadialGradient(
+            centerX, headCenterY, 0,
+            centerX, headCenterY, headRadius + 1
+        );
+        gradient.addColorStop(0, 'rgba(160, 196, 232, 0.7)');
+        gradient.addColorStop(0.6, 'rgba(160, 196, 232, 0.5)');
+        gradient.addColorStop(1, 'rgba(160, 196, 232, 0)');
+
+        ctx.beginPath();
+        ctx.arc(centerX, headCenterY, headRadius + 1, 0, Math.PI * 2);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+
+        // Create Pixi texture from canvas
+        const texture = Texture.from(canvas);
+        texture.source.scaleMode = 'nearest'; // Pixelated aesthetic
+        return texture;
     }
 
     private renderRain(simulation: GridSimulation, alpha: number): void {
@@ -220,7 +273,7 @@ export class RainPixiRenderer {
         // Ensure we have enough sprites
         while (this.rainSprites.length < drops.count) {
             const sprite = new Sprite(this.dropTexture);
-            sprite.anchor.set(0.5, 0.8); // Anchor near head (bottom of teardrop)
+            sprite.anchor.set(0.5, 0.9); // Anchor at head (near bottom of teardrop)
             this.rainContainer.addChild(sprite);
             this.rainSprites.push(sprite);
         }
@@ -238,17 +291,27 @@ export class RainPixiRenderer {
             sprite.y = y - offsetY;
             sprite.alpha = drops.opacity[i]!;
 
-            // Calculate velocity direction for rotation (tail points opposite to motion)
+            // Calculate velocity for rotation and stretch
             const dx = drops.x[i]! - drops.prevX[i]!;
             const dy = drops.y[i]! - drops.prevY[i]!;
-            // Texture has tail at -Y (up). For falling down (dy>0), we want tail pointing up (no rotation).
-            // atan2(dy,dx) for down = PI/2, so subtract PI/2 to get 0 rotation
+            const speed = Math.sqrt(dx * dx + dy * dy);
+
+            // Rotation: tail points opposite to motion direction
+            // Texture has tail at -Y (up). For falling down (dy>0), tail should point up.
             const angle = Math.atan2(dy, dx) - Math.PI / 2;
             sprite.rotation = angle;
 
-            // Scale based on radius - keep consistent size like WebGL version
-            const baseScale = drops.radius[i]! * 0.4;
-            sprite.scale.set(baseScale);
+            // Scale based on radius AND velocity
+            const radius = drops.radius[i]!;
+            const baseScale = radius * 0.15;  // Base width scale
+
+            // Stretch Y (length) based on speed - faster = longer tail
+            // Speed of ~5 logic units/tick is typical falling speed
+            const speedFactor = Math.min(2.5, 0.5 + speed * 0.25);
+            const scaleX = baseScale;
+            const scaleY = baseScale * speedFactor;
+
+            sprite.scale.set(scaleX, scaleY);
         }
 
         // Hide unused sprites
