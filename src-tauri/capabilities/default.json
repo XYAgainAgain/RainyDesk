@@ -4,8 +4,8 @@
   "description": "RainyDesk default capabilities",
   "windows": [
     "main",
-    "overlay-*",
-    "background-*"
+    "overlay",
+    "background"
   ],
   "permissions": [
     "core:default",

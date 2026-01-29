@@ -11,7 +11,7 @@ console.log('[Background] Module loaded');
 const canvas = document.getElementById('rain-canvas');
 let renderer = null;
 let renderScale = 0.25;
-let displayInfo = { index: 0, bounds: { width: 1920, height: 1080 } };
+let virtualDesktop = null;
 let lastTime = performance.now();
 
 async function init() {
@@ -31,14 +31,16 @@ async function init() {
   console.log('[Background] Tauri API ready, initializing...');
   window.rainydesk.log('[Background] Initializing...');
 
-  // Get display info
+  // Get virtual desktop info (mega-window spans all monitors)
   try {
-    displayInfo = await window.rainydesk.getDisplayInfo();
-    const msg = `[Background] Display ${displayInfo.index}: ${displayInfo.bounds.width}x${displayInfo.bounds.height}`;
+    virtualDesktop = await window.rainydesk.getVirtualDesktop();
+    const msg = `[Background] Virtual desktop: ${virtualDesktop.width}x${virtualDesktop.height}`;
     window.rainydesk.log(msg);
     console.log(msg);
   } catch (e) {
-    console.warn('[Background] getDisplayInfo failed:', e);
+    console.warn('[Background] getVirtualDesktop failed:', e);
+    // Fallback to window dimensions
+    virtualDesktop = { width: window.innerWidth, height: window.innerHeight };
   }
 
   // Initialize WebGL renderer
@@ -64,13 +66,13 @@ async function init() {
     enabled: true
   });
 
-  // Resize canvas
+  // Resize canvas to full virtual desktop
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
-  // Listen for display info updates
-  window.rainydesk.onDisplayInfo((info) => {
-    displayInfo = info;
+  // Listen for virtual desktop updates
+  window.rainydesk.onVirtualDesktop?.((info) => {
+    virtualDesktop = info;
     resizeCanvas();
   });
 
@@ -139,13 +141,16 @@ async function init() {
 }
 
 function resizeCanvas() {
-  const width = displayInfo.bounds?.width || window.innerWidth;
-  const height = displayInfo.bounds?.height || window.innerHeight;
+  const width = virtualDesktop?.width || window.innerWidth;
+  const height = virtualDesktop?.height || window.innerHeight;
   canvas.width = width;
   canvas.height = height;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
   if (renderer) {
     renderer.resize(width, height, 1, renderScale);
   }
+  window.rainydesk?.log?.(`[Background] Canvas resized to ${width}x${height}`);
 }
 
 function renderLoop() {

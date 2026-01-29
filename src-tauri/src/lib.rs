@@ -11,10 +11,7 @@ use std::path::PathBuf;
 mod window_detector;
 
 #[cfg(target_os = "windows")]
-use windows::Win32::{
-    Foundation::RECT,
-    Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST},
-};
+use windows::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::POINT;
 
@@ -172,7 +169,7 @@ fn get_monitor_work_area(x: i32, y: i32, width: u32, height: u32) -> Bounds {
             ..Default::default()
         };
 
-        if GetMonitorInfoW(hmonitor, &mut monitor_info).is_ok() {
+        if GetMonitorInfoW(hmonitor, &mut monitor_info).as_bool() {
             let work = &monitor_info.rcWork;
             Bounds {
                 x: work.left,
@@ -203,6 +200,43 @@ fn get_monitor_work_area(x: i32, y: i32, width: u32, height: u32) -> Bounds {
     }
 }
 
+/// Find which monitor is the primary (contains point 0,0)
+#[cfg(target_os = "windows")]
+fn get_primary_monitor_index(monitors: &[tauri::Monitor]) -> usize {
+    use windows::Win32::Graphics::Gdi::{
+        MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    };
+
+    unsafe {
+        // Primary monitor contains point (0, 0)
+        let primary = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+
+        if GetMonitorInfoW(primary, &mut info).as_bool() {
+            let primary_x = info.rcMonitor.left;
+            let primary_y = info.rcMonitor.top;
+
+            // Find matching monitor in our list
+            for (i, monitor) in monitors.iter().enumerate() {
+                let pos = monitor.position();
+                if pos.x == primary_x && pos.y == primary_y {
+                    return i;
+                }
+            }
+        }
+    }
+    0 // Default to first monitor
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_primary_monitor_index(_monitors: &[tauri::Monitor]) -> usize {
+    0 // Default to first monitor on non-Windows platforms
+}
+
 // App state for configuration
 struct AppState {
     config: Mutex<serde_json::Value>,
@@ -225,6 +259,40 @@ struct Bounds {
     y: i32,
     width: u32,
     height: u32,
+}
+
+/// Virtual desktop info: bounding box of all monitors + individual regions
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VirtualDesktop {
+    /// Bounding box origin (may be negative if monitor extends left of primary)
+    origin_x: i32,
+    origin_y: i32,
+    /// Total bounding box dimensions
+    width: u32,
+    height: u32,
+    /// Individual monitor regions with coordinates relative to bounding box
+    monitors: Vec<MonitorRegion>,
+    /// Index of the primary monitor (for Rainscaper UI positioning)
+    primary_index: usize,
+}
+
+/// Single monitor region within the virtual desktop
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitorRegion {
+    index: usize,
+    /// Position relative to virtual desktop origin (always >= 0)
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    /// Work area (excluding taskbar) relative to virtual desktop origin
+    work_x: u32,
+    work_y: u32,
+    work_width: u32,
+    work_height: u32,
+    scale_factor: f64,
 }
 
 // Tauri commands (invoked from renderer via window.__TAURI__.core.invoke)
@@ -478,34 +546,113 @@ fn get_all_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String> {
     Ok(displays)
 }
 
-/// Create background rain window (desktop level - behind other windows)
+#[tauri::command]
+fn get_virtual_desktop(app: tauri::AppHandle) -> Result<VirtualDesktop, String> {
+    let monitors: Vec<tauri::Monitor> = app
+        .available_monitors()
+        .map_err(|e| format!("Failed to get monitors: {}", e))?
+        .into_iter()
+        .collect();
+
+    if monitors.is_empty() {
+        return Err("No monitors found".to_string());
+    }
+
+    // Calculate bounding box (X_min, Y_min, X_max, Y_max)
+    let mut x_min = i32::MAX;
+    let mut y_min = i32::MAX;
+    let mut x_max = i32::MIN;
+    let mut y_max = i32::MIN;
+
+    for monitor in &monitors {
+        let pos = monitor.position();
+        let size = monitor.size();
+
+        x_min = x_min.min(pos.x);
+        y_min = y_min.min(pos.y);
+        x_max = x_max.max(pos.x + size.width as i32);
+        y_max = y_max.max(pos.y + size.height as i32);
+    }
+
+    let total_width = (x_max - x_min) as u32;
+    let total_height = (y_max - y_min) as u32;
+
+    log::info!(
+        "[VirtualDesktop] Bounding box: ({}, {}) {}x{}",
+        x_min, y_min, total_width, total_height
+    );
+
+    // Get primary monitor index
+    let primary_index = get_primary_monitor_index(&monitors);
+
+    // Build monitor regions with coordinates relative to bounding box origin
+    let mut regions = Vec::new();
+    for (index, monitor) in monitors.iter().enumerate() {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+
+        // Get actual work area from Windows API
+        let work_area = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+
+        // Convert to bounding-box-relative coordinates (always positive)
+        let rel_x = (pos.x - x_min) as u32;
+        let rel_y = (pos.y - y_min) as u32;
+        let rel_work_x = (work_area.x - x_min) as u32;
+        let rel_work_y = (work_area.y - y_min) as u32;
+
+        regions.push(MonitorRegion {
+            index,
+            x: rel_x,
+            y: rel_y,
+            width: size.width,
+            height: size.height,
+            work_x: rel_work_x,
+            work_y: rel_work_y,
+            work_width: work_area.width,
+            work_height: work_area.height,
+            scale_factor: scale,
+        });
+
+        log::info!(
+            "[VirtualDesktop] Monitor {}{}: rel({}, {}) {}x{} work_height={}",
+            index,
+            if index == primary_index { " (primary)" } else { "" },
+            rel_x, rel_y, size.width, size.height, work_area.height
+        );
+    }
+
+    Ok(VirtualDesktop {
+        origin_x: x_min,
+        origin_y: y_min,
+        width: total_width,
+        height: total_height,
+        monitors: regions,
+        primary_index,
+    })
+}
+
+/// Create mega-background window spanning entire virtual desktop (HWND_BOTTOM)
 #[cfg(target_os = "windows")]
-fn create_background_window(
+fn create_mega_background(
     app: &tauri::App,
-    monitor: &tauri::Monitor,
-    index: usize,
+    desktop: &VirtualDesktop,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
-    let pos = monitor.position();
-    let size = monitor.size();
-
-    let label = format!("background-{}", index);
-
     log::info!(
-        "Creating background window {}: {}x{} at ({}, {})",
-        index, size.width, size.height, pos.x, pos.y
+        "Creating mega-background: {}x{} at ({}, {})",
+        desktop.width, desktop.height, desktop.origin_x, desktop.origin_y
     );
 
-    // Load separate background.html with minimal renderer
-    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("background.html".into()))
+    let window = WebviewWindowBuilder::new(app, "background", WebviewUrl::App("background.html".into()))
         .title("RainyDesk Background")
-        .position(pos.x as f64, pos.y as f64)
-        .inner_size(size.width as f64, size.height as f64)
+        .position(desktop.origin_x as f64, desktop.origin_y as f64)
+        .inner_size(desktop.width as f64, desktop.height as f64)
         .transparent(true)
         .decorations(false)
-        .always_on_top(false)  // Not on top - will be pushed to bottom
+        .always_on_top(false)
         .skip_taskbar(true)
         .resizable(false)
         .focused(false)
@@ -515,7 +662,7 @@ fn create_background_window(
     // Enable click-through
     window.set_ignore_cursor_events(true)?;
 
-    // Push window to bottom of z-order (just above desktop)
+    // Push to bottom of z-order (just above desktop)
     let hwnd = window.hwnd()?;
     unsafe {
         let _ = SetWindowPos(
@@ -526,41 +673,44 @@ fn create_background_window(
         );
     }
 
-    log::info!("Background window {} created at desktop level", index);
+    // Emit virtual-desktop info to background renderer
+    let desktop_clone = desktop.clone();
+    let win = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        log::info!("Sending virtual-desktop to background");
+        if let Err(e) = win.emit("virtual-desktop", &desktop_clone) {
+            log::error!("Failed to emit virtual-desktop to background: {}", e);
+        }
+    });
+
+    log::info!("Mega-background created successfully");
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn create_background_window(
+fn create_mega_background(
     _app: &tauri::App,
-    _monitor: &tauri::Monitor,
-    _index: usize,
+    _desktop: &VirtualDesktop,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Background windows only supported on Windows for now
     Ok(())
 }
 
-/// Create overlay window (always on top - for physics rain)
-fn create_overlay_window(
+/// Create mega-overlay window spanning entire virtual desktop (always-on-top)
+fn create_mega_overlay(
     app: &tauri::App,
-    monitor: &tauri::Monitor,
-    index: usize,
+    desktop: &VirtualDesktop,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let pos = monitor.position();
-    let size = monitor.size();
-    let scale = monitor.scale_factor();
-
-    let label = format!("overlay-{}", index);
-
     log::info!(
-        "Creating overlay {}: {}x{} at ({}, {}) scale={}",
-        index, size.width, size.height, pos.x, pos.y, scale
+        "Creating mega-overlay: {}x{} at ({}, {})",
+        desktop.width, desktop.height, desktop.origin_x, desktop.origin_y
     );
 
-    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
         .title("RainyDesk")
-        .position(pos.x as f64, pos.y as f64)
-        .inner_size(size.width as f64, size.height as f64)
+        .position(desktop.origin_x as f64, desktop.origin_y as f64)
+        .inner_size(desktop.width as f64, desktop.height as f64)
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
@@ -573,43 +723,24 @@ fn create_overlay_window(
     // Enable click-through
     window.set_ignore_cursor_events(true)?;
 
-    // Open DevTools only for primary monitor (index 0) in dev mode
+    // Open DevTools in dev mode
     #[cfg(debug_assertions)]
-    if index == 0 {
+    {
         window.open_devtools();
     }
 
-    // Prepare display info for renderer
-    let display_info = DisplayInfo {
-        index,
-        bounds: Bounds {
-            x: pos.x,
-            y: pos.y,
-            width: size.width,
-            height: size.height,
-        },
-        work_area: Bounds {
-            x: pos.x,
-            y: pos.y,
-            width: size.width,
-            height: size.height,
-        },
-        scale_factor: scale,
-        refresh_rate: 60, // TODO: Get actual refresh rate via platform API
-    };
-
-    // Emit display-info after a brief delay to let the page load
-    // In Phase 5, we'll switch to a command-based approach for cleaner IPC
+    // Emit virtual-desktop info to renderer after page loads
+    let desktop_clone = desktop.clone();
     let win = window.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        log::info!("Sending display-info to overlay {}", display_info.index);
-        if let Err(e) = win.emit("display-info", &display_info) {
-            log::error!("Failed to emit display-info: {}", e);
+        log::info!("Sending virtual-desktop to overlay");
+        if let Err(e) = win.emit("virtual-desktop", &desktop_clone) {
+            log::error!("Failed to emit virtual-desktop to overlay: {}", e);
         }
     });
 
-    log::info!("Overlay {} created successfully", index);
+    log::info!("Mega-overlay created successfully");
     Ok(())
 }
 
@@ -632,6 +763,7 @@ pub fn run() {
             get_config,
             get_display_info,
             get_all_displays,
+            get_virtual_desktop,
             set_rainscape,
             set_ignore_mouse_events,
             save_rainscape,
@@ -643,7 +775,7 @@ pub fn run() {
             trigger_audio_start
         ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("overlay-0") {
+            if let Some(window) = app.get_webview_window("overlay") {
                 let _ = window.set_focus();
             }
             log::info!("Second instance blocked: RainyDesk is already running");
@@ -660,28 +792,32 @@ pub fn run() {
         .setup(|app| {
             log::info!("RainyDesk Tauri starting...");
 
-            let monitors = app.available_monitors()?;
-            log::info!("Found {} monitor(s)", monitors.len());
+            // Calculate virtual desktop (bounding box of all monitors)
+            let desktop = get_virtual_desktop(app.handle().clone())
+                .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-            // Create background windows first (desktop level - for atmospheric rain)
-            for (index, monitor) in monitors.iter().enumerate() {
-                if let Err(e) = create_background_window(app, monitor, index) {
-                    log::error!("Failed to create background window {}: {}", index, e);
-                }
+            log::info!(
+                "Virtual desktop: {}x{} at ({}, {}) with {} monitor(s)",
+                desktop.width, desktop.height,
+                desktop.origin_x, desktop.origin_y,
+                desktop.monitors.len()
+            );
+
+            // Create mega-background (HWND_BOTTOM - atmospheric rain behind windows)
+            if let Err(e) = create_mega_background(app, &desktop) {
+                log::error!("Failed to create mega-background: {}", e);
             }
 
-            // Create overlay windows (always on top - for physics rain)
-            for (index, monitor) in monitors.iter().enumerate() {
-                if let Err(e) = create_overlay_window(app, monitor, index) {
-                    log::error!("Failed to create overlay {}: {}", index, e);
-                }
+            // Create mega-overlay (always-on-top - physics rain + UI)
+            if let Err(e) = create_mega_overlay(app, &desktop) {
+                log::error!("Failed to create mega-overlay: {}", e);
             }
 
-            // Start window detection polling (100ms for responsive Pixi physics)
+            // Start window detection polling (50ms for responsive physics)
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
 
                     match window_detector::get_visible_windows() {
                         Ok(window_data) => {

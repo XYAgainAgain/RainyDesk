@@ -80,6 +80,11 @@ export class PresetSelector {
   updatePresets(presets: string[]): void {
     if (!this._select) return;
 
+    // Guard against non-array input
+    if (!Array.isArray(presets)) {
+      presets = [];
+    }
+
     const currentValue = this._select.value;
     this._select.innerHTML = '';
 
@@ -93,7 +98,7 @@ export class PresetSelector {
     for (const preset of presets) {
       const opt = document.createElement('option');
       opt.value = preset;
-      opt.textContent = preset.replace('.json', '');
+      opt.textContent = preset.replace('.json', '').replace('.rain', '');
       this._select.appendChild(opt);
     }
 

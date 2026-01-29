@@ -16,6 +16,14 @@ window.rainydesk = {
   // Get all displays for multi-monitor grid calculation
   getAllDisplays: () => invoke('get_all_displays'),
 
+  // Get virtual desktop info (bounding box + monitor regions)
+  getVirtualDesktop: () => invoke('get_virtual_desktop'),
+
+  // Receive virtual desktop info from main process (event-based)
+  onVirtualDesktop: (callback) => {
+    listen('virtual-desktop', (event) => callback(event.payload));
+  },
+
   // Receive rain toggle commands (pause/resume from tray menu)
   onToggleRain: (callback) => {
     listen('toggle-rain', (event) => {

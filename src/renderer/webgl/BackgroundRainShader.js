@@ -62,7 +62,7 @@ float noise(vec2 p) {
 float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
     // Each layer has different scale and speed for parallax depth
     float depthFactor = 1.0 - layerIndex * 0.15;  // Farther layers are slower
-    float scale = 80.0 + layerIndex * 40.0;       // Farther layers are finer
+    float scale = 200.0 + layerIndex * 80.0;      // Higher scale = finer rain streaks
 
     // Apply wind slant - shift horizontally based on vertical position
     // Negate wind to match physics rain direction (due to Y-flip)
@@ -70,11 +70,11 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
     uv.x += uv.y * slant;
 
     // Stretch UV for rain streaks (taller than wide)
-    vec2 rainUV = vec2(uv.x * scale, uv.y * scale * 0.15);
+    vec2 rainUV = vec2(uv.x * scale, uv.y * scale * 0.12);
 
     // Scroll downward (with time), adjusted by depth
     // Fast atmospheric rain - should feel distant and quick
-    rainUV.y -= time * 25.0 * depthFactor;
+    rainUV.y -= time * 50.0 * depthFactor;
 
     // Add slight horizontal drift from wind (negated to match physics)
     rainUV.x -= time * wind * 2.0 * depthFactor;

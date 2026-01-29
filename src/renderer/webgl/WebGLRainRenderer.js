@@ -684,7 +684,9 @@ class WebGLRainRenderer {
      */
     _renderBackground() {
         if (this.backgroundRain) {
-            this.backgroundRain.render(this.lowResWidth, this.lowResHeight);
+            // Pass full display resolution for correct noise scaling
+            // (low-res framebuffer provides pixelation, but pattern density needs display size)
+            this.backgroundRain.render(this.canvas.width, this.canvas.height);
         }
     }
 

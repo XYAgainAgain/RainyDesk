@@ -33,7 +33,7 @@ declare global {
       onUpdateRainscapeParam: (callback: (path: string, value: unknown) => void) => void;
       saveRainscape: (name: string, data: unknown) => Promise<void>;
       readRainscape: (name: string) => Promise<unknown>;
-      loadRainscapes: () => Promise<string[]>;
+      loadRainscapes: () => Promise<{ root: string[]; custom: string[] }>;
       getConfig: () => Promise<{ rainEnabled: boolean; intensity: number; volume: number; wind: number }>;
     };
   }
@@ -224,10 +224,15 @@ export class Rainscaper {
   /** Refresh presets list from filesystem */
   async refreshPresets(): Promise<void> {
     try {
-      const files = await window.rainydesk?.loadRainscapes?.() ?? [];
+      const result = await window.rainydesk?.loadRainscapes?.() ?? { root: [], custom: [] };
+      // Backend returns { root: [...], custom: [...] }, flatten into single array
+      const root = Array.isArray(result.root) ? result.root : [];
+      const custom = Array.isArray(result.custom) ? result.custom : [];
+      const files = [...root, ...custom.map((f: string) => `Custom/${f}`)];
       state.setPresets(files);
     } catch (err) {
       console.error('[Rainscaper] Failed to load presets:', err);
+      state.setPresets([]);
     }
   }
 
@@ -256,14 +261,14 @@ export class Rainscaper {
     window.rainydesk?.setIgnoreMouseEvents?.(true);
   }
 
-  /** Fade out over 2 seconds, then hide */
+  /** Fade out over 1 second, then hide */
   fadeOutAndHide(): void {
     if (this._fadeTimeout) return; // Already fading
     this._panel.element?.classList.add('fading-out');
     this._fadeTimeout = setTimeout(() => {
       this._fadeTimeout = null;
       this.hide();
-    }, 2000);
+    }, 1000);
   }
 
   /** Toggle panel visibility */

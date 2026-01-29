@@ -182,16 +182,31 @@ export class RainPixiRenderer {
     private createTextures(): void {
         if (!this.app) return;
 
-        // Create a simple circle texture for raindrops
+        // Create a tapered teardrop shape matching the WebGL shader style
+        // Color: rgb(160, 196, 232) = 0xa0c4e8 - light blue-grey from WebGL version
         const dropGraphics = new Graphics();
-        dropGraphics.circle(0, 0, 4); // 4px radius at screen scale
-        dropGraphics.fill({ color: 0x4488ff, alpha: 0.8 });
+
+        // Draw teardrop: circle head at bottom, tapering cone tail upward
+        const headRadius = 1.5;
+        const tailLength = 12; // Longer tail for motion blur effect
+
+        // Draw the tapered tail (triangle from tip to head width)
+        dropGraphics.moveTo(0, -tailLength);           // Tip of tail
+        dropGraphics.lineTo(-headRadius, 0);           // Left side of head
+        dropGraphics.lineTo(headRadius, 0);            // Right side of head
+        dropGraphics.closePath();
+        dropGraphics.fill({ color: 0xa0c4e8, alpha: 0.5 });
+
+        // Draw circular head
+        dropGraphics.circle(0, headRadius * 0.5, headRadius);
+        dropGraphics.fill({ color: 0xa0c4e8, alpha: 0.6 });
+
         this.dropTexture = this.app.renderer.generateTexture(dropGraphics);
 
-        // Create a smaller circle for splashes
+        // Create a soft circular splash
         const splashGraphics = new Graphics();
         splashGraphics.circle(0, 0, 2);
-        splashGraphics.fill({ color: 0x66aaff, alpha: 0.6 });
+        splashGraphics.fill({ color: 0xa0c4e8, alpha: 0.4 });
         this.splashTexture = this.app.renderer.generateTexture(splashGraphics);
     }
 
@@ -205,7 +220,7 @@ export class RainPixiRenderer {
         // Ensure we have enough sprites
         while (this.rainSprites.length < drops.count) {
             const sprite = new Sprite(this.dropTexture);
-            sprite.anchor.set(0.5);
+            sprite.anchor.set(0.5, 0.8); // Anchor near head (bottom of teardrop)
             this.rainContainer.addChild(sprite);
             this.rainSprites.push(sprite);
         }
@@ -223,9 +238,17 @@ export class RainPixiRenderer {
             sprite.y = y - offsetY;
             sprite.alpha = drops.opacity[i]!;
 
-            // Scale based on radius
-            const scale = drops.radius[i]! / 1.0; // Normalize to base radius
-            sprite.scale.set(scale);
+            // Calculate velocity direction for rotation (tail points opposite to motion)
+            const dx = drops.x[i]! - drops.prevX[i]!;
+            const dy = drops.y[i]! - drops.prevY[i]!;
+            // Texture has tail at -Y (up). For falling down (dy>0), we want tail pointing up (no rotation).
+            // atan2(dy,dx) for down = PI/2, so subtract PI/2 to get 0 rotation
+            const angle = Math.atan2(dy, dx) - Math.PI / 2;
+            sprite.rotation = angle;
+
+            // Scale based on radius - keep consistent size like WebGL version
+            const baseScale = drops.radius[i]! * 0.4;
+            sprite.scale.set(baseScale);
         }
 
         // Hide unused sprites
@@ -343,7 +366,7 @@ export class RainPixiRenderer {
 
         // Color mapping (ABGR format for Uint32Array on little-endian)
         const COLOR_AIR = 0x00000000;        // Transparent
-        const COLOR_WATER = 0x80ff8844;      // Semi-transparent blue (AABBGGRR)
+        const COLOR_WATER = 0xA0bbaa99;      // Semi-transparent grey-blue (AABBGGRR) - matches raindrop color
 
         for (let i = 0; i < grid.length; i++) {
             const cellValue = grid[i]!;
