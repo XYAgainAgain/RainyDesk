@@ -20,10 +20,10 @@ Sometimes you just want it to rain. I know I sure do. This ~~scratches~~ splashe
 ### How do I use this? ☔
 Right now it's a bit tricky, but soon I'll have a proper installer which you can download and double-click to install, then run it like any other application. During the installation, it will ask you if you want RainyDesk to automatically run when you log in. You can change this option (and all the others) at any time!
 
-Once running, RainyDesk sits in your system tray. Left-click the tray icon to open the Rainscaper panel or right-click to open a small context menu allowing you to:
+Once running, RainyDesk sits in your system tray. Left-click the tray icon to open the Rainscaper panel or right-click to open a small context menu:
 - Pause/Resume
 - Open Rainscaper
-- Volume Presets
+- Volume Presets (there's a bunch)
 - Quit RainyDesk
 
 The Rainscaper panel is a little more complicated, but it has an Easy Mode (for most folks) and an Admin Mode (for the real rain-heads). I'll include a full guide here once it's done!
