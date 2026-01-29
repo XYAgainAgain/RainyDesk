@@ -70,7 +70,7 @@ RainyDesk is in active development and I'm really not rushing it because it's my
 
 - **Cozy pixelated rain** falls on all your monitors (including vertical/rotated ones)
 - **Cool water physics** with surface tension, cohesion/adhesion, dripping, pooling, and all that juicy fluid stuff with oodles of splishysplashies on the tops/sides of windows + the taskbar
-- Click-through transparency (rain never blocks your mouse)
+- **Click-through** transparency so the rain never blocks your mouse
 - **System tray controls** for volume & hot-swapping between Rainscapes
 - **High refresh rate** support (anywhere from 60–240Hz) via interpolation
 - **Window detection**; rain flows around your windows unless maximized, and if it's maximized, it's muffled!
