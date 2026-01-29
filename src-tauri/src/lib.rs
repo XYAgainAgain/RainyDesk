@@ -10,6 +10,14 @@ use std::path::PathBuf;
 
 mod window_detector;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::{
+    Foundation::RECT,
+    Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::POINT;
+
 // Global pause state
 static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
 
@@ -146,6 +154,53 @@ fn is_dark_theme() -> bool {
 #[cfg(not(target_os = "windows"))]
 fn is_dark_theme() -> bool {
     true // Default to dark theme on other platforms
+}
+
+/// Get the actual work area (excluding taskbar) for a monitor at given position
+#[cfg(target_os = "windows")]
+fn get_monitor_work_area(x: i32, y: i32, width: u32, height: u32) -> Bounds {
+    unsafe {
+        // Get monitor handle from center point of the monitor bounds
+        let center_x = x + (width as i32 / 2);
+        let center_y = y + (height as i32 / 2);
+        let point = POINT { x: center_x, y: center_y };
+        let hmonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+
+        // Query monitor info to get work area
+        let mut monitor_info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+
+        if GetMonitorInfoW(hmonitor, &mut monitor_info).is_ok() {
+            let work = &monitor_info.rcWork;
+            Bounds {
+                x: work.left,
+                y: work.top,
+                width: (work.right - work.left) as u32,
+                height: (work.bottom - work.top) as u32,
+            }
+        } else {
+            // Fallback to approximate taskbar height
+            Bounds {
+                x,
+                y,
+                width,
+                height: height.saturating_sub(48),
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_monitor_work_area(x: i32, y: i32, width: u32, height: u32) -> Bounds {
+    // Fallback for non-Windows platforms
+    Bounds {
+        x,
+        y,
+        width,
+        height: height.saturating_sub(48),
+    }
 }
 
 // App state for configuration
@@ -364,9 +419,12 @@ fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
         let size = monitor.size();
         let scale = monitor.scale_factor();
 
+        // Get actual work area using Windows API
+        let work_area = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+
         log::info!(
-            "[get_display_info] Monitor {}: {}x{} at ({}, {})",
-            index, size.width, size.height, pos.x, pos.y
+            "[get_display_info] Monitor {}: {}x{} at ({}, {}) work_area_height={}",
+            index, size.width, size.height, pos.x, pos.y, work_area.height
         );
 
         Ok(DisplayInfo {
@@ -377,18 +435,47 @@ fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
                 width: size.width,
                 height: size.height,
             },
-            work_area: Bounds {
-                x: pos.x,
-                y: pos.y,
-                width: size.width,
-                height: size.height - 48, // Approximate taskbar height, TODO: get actual work area
-            },
+            work_area,
             scale_factor: scale,
             refresh_rate: 60,
         })
     } else {
         Err("Could not get monitor info".to_string())
     }
+}
+
+#[tauri::command]
+fn get_all_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String> {
+    // Get all available monitors
+    let monitors = app
+        .available_monitors()
+        .map_err(|e| format!("Failed to get monitors: {}", e))?;
+
+    let mut displays = Vec::new();
+    for (index, monitor) in monitors.iter().enumerate() {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+
+        // Get actual work area using Windows API
+        let work_area = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+
+        displays.push(DisplayInfo {
+            index,
+            bounds: Bounds {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+            },
+            work_area,
+            scale_factor: scale,
+            refresh_rate: 60,
+        });
+    }
+
+    log::info!("[get_all_displays] Found {} monitors", displays.len());
+    Ok(displays)
 }
 
 /// Create background rain window (desktop level - behind other windows)
@@ -544,6 +631,7 @@ pub fn run() {
             log_message,
             get_config,
             get_display_info,
+            get_all_displays,
             set_rainscape,
             set_ignore_mouse_events,
             save_rainscape,
@@ -589,11 +677,11 @@ pub fn run() {
                 }
             }
 
-            // Start window detection polling (250ms interval like Electron)
+            // Start window detection polling (100ms for responsive Pixi physics)
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    std::thread::sleep(std::time::Duration::from_millis(100));
 
                     match window_detector::get_visible_windows() {
                         Ok(window_data) => {

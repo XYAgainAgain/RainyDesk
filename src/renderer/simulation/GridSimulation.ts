@@ -376,10 +376,93 @@ export class GridSimulation {
     }
 
     private stepPuddles(_dt: number): void {
-        // TODO: Implement cellular automata for puddle flow
-        // - Iterate bottom-up
-        // - Water flows: down → down-diag → side
-        // - Wall adhesion: 30% chance to stick next to walls
+        // Cellular automata: iterate bottom-up to prevent double-updates
+        // Water flows with priority: down → down-diagonal → horizontal
+
+        const { wallAdhesion } = this.config;
+
+        // Bottom-up iteration (skip bottom row as it has nowhere to flow)
+        for (let y = this.gridHeight - 2; y >= 0; y--) {
+            // Randomize horizontal scan direction each row (prevents bias)
+            const scanLeft = Math.random() > 0.5;
+            const startX = scanLeft ? 0 : this.gridWidth - 1;
+            const endX = scanLeft ? this.gridWidth : -1;
+            const stepX = scanLeft ? 1 : -1;
+
+            for (let x = startX; x !== endX; x += stepX) {
+                const index = y * this.gridWidth + x;
+                if (this.grid[index] !== CELL_WATER) continue;
+
+                // Check if adjacent to wall (triggers adhesion mechanic)
+                const hasWallNeighbor = this.hasAdjacentWall(x, y);
+
+                // Wall adhesion: water "sticks" to walls with probabilistic friction
+                if (hasWallNeighbor && Math.random() < wallAdhesion) {
+                    continue; // Don't move this frame (dribble effect)
+                }
+
+                // Priority 1: Try to move straight down
+                if (this.tryMoveWater(index, x, y + 1)) continue;
+
+                // Priority 2: Try diagonal down (random L/R to avoid bias)
+                const tryLeftFirst = Math.random() > 0.5;
+                const diag1X = tryLeftFirst ? x - 1 : x + 1;
+                const diag2X = tryLeftFirst ? x + 1 : x - 1;
+
+                if (this.tryMoveWater(index, diag1X, y + 1)) continue;
+                if (this.tryMoveWater(index, diag2X, y + 1)) continue;
+
+                // Priority 3: Try horizontal flow (fills gaps, spreads puddles)
+                const side1X = tryLeftFirst ? x - 1 : x + 1;
+                const side2X = tryLeftFirst ? x + 1 : x - 1;
+
+                if (this.tryMoveWater(index, side1X, y)) continue;
+                if (this.tryMoveWater(index, side2X, y)) continue;
+
+                // No valid moves → water stays in place (pooled)
+            }
+        }
+    }
+
+    /**
+     * Check if water cell has adjacent wall (triggers dribble mechanic).
+     */
+    private hasAdjacentWall(x: number, y: number): boolean {
+        // Check 4 cardinal directions
+        if (x > 0 && this.grid[y * this.gridWidth + (x - 1)] === CELL_GLASS) return true;
+        if (x < this.gridWidth - 1 && this.grid[y * this.gridWidth + (x + 1)] === CELL_GLASS) return true;
+        if (y > 0 && this.grid[(y - 1) * this.gridWidth + x] === CELL_GLASS) return true;
+        if (y < this.gridHeight - 1 && this.grid[(y + 1) * this.gridWidth + x] === CELL_GLASS) return true;
+        return false;
+    }
+
+    /**
+     * Attempt to move water from srcIndex to (destX, destY).
+     * Returns true if successful, false if blocked.
+     */
+    private tryMoveWater(
+        srcIndex: number,
+        destX: number,
+        destY: number
+    ): boolean {
+        // Bounds check
+        if (destX < 0 || destX >= this.gridWidth || destY < 0 || destY >= this.gridHeight) {
+            return false;
+        }
+
+        const destIndex = destY * this.gridWidth + destX;
+        const destCell = this.grid[destIndex]!;
+
+        // Can only flow into air
+        if (destCell !== CELL_AIR) {
+            return false;
+        }
+
+        // Swap cells (water moves, air fills source)
+        this.grid[srcIndex] = CELL_AIR;
+        this.grid[destIndex] = CELL_WATER;
+
+        return true;
     }
 
     private stepSplashes(dt: number): void {
@@ -510,9 +593,9 @@ export class GridSimulation {
             velocityMultiplier = 0.5 + 0.5 * horizontalRatio;
         }
 
-        // Map grid value to material
+        // Map grid value to material (must match MaterialManager keys)
         let surfaceType = 'default';
-        if (gridValue === CELL_GLASS) surfaceType = 'glass';
+        if (gridValue === CELL_GLASS) surfaceType = 'glass_window';
         else if (gridValue === CELL_WATER) surfaceType = 'water';
 
         // Populate reusable event object

@@ -46,14 +46,21 @@ let config = {
   dropMinSize: 2,
   dropMaxSize: 6,
   useMatterJS: true,
+  usePixiPhysics: true,  // Toggle between Pixi (true) and Matter.js (false)
   fpsLimit: 0  // 0 = uncapped, otherwise target FPS
 };
 
 // FPS limiter state
 let lastFrameTime = 0;
 
-// Physics system (Matter.js)
+// Physics system (Matter.js - legacy)
 let physicsSystem = null;
+
+// Pixi hybrid physics (new system)
+let gridSimulation = null;
+let pixiRenderer = null;
+let allDisplays = [];  // All monitors for multi-monitor grid calculation
+let globalGridBounds = null;  // { minX, minY, width, height, logicWidth, logicHeight }
 
 // Custom physics arrays (fallback)
 let raindrops = [];
@@ -243,6 +250,106 @@ async function initAudio() {
 }
 
 /**
+ * Initialize Pixi hybrid physics system
+ */
+async function initPixiPhysics() {
+  if (gridSimulation || pixiRenderer) {
+    window.rainydesk.log('[Pixi] Already initialized');
+    return;
+  }
+
+  try {
+    window.rainydesk.log('[Pixi] Initializing hybrid physics...');
+
+    // Dynamically import simulation modules
+    const { GridSimulation, RainPixiRenderer } = await import('./simulation.bundle.js');
+
+    // Fetch ALL displays for multi-monitor grid calculation
+    allDisplays = await window.rainydesk.getAllDisplays();
+    window.rainydesk.log(`[Pixi] Got ${allDisplays.length} displays`);
+
+    // Calculate global grid bounds
+    const minX = Math.min(...allDisplays.map(d => d.x));
+    const minY = Math.min(...allDisplays.map(d => d.y));
+    const maxX = Math.max(...allDisplays.map(d => d.x + d.width));
+    const maxY = Math.max(...allDisplays.map(d => d.y + d.height));
+
+    const totalWidth = maxX - minX;
+    const totalHeight = maxY - minY;
+    const logicWidth = Math.ceil(totalWidth * 0.25);
+    const logicHeight = Math.ceil(totalHeight * 0.25);
+
+    globalGridBounds = {
+      minX, minY,
+      width: totalWidth,
+      height: totalHeight,
+      logicWidth,
+      logicHeight
+    };
+
+    window.rainydesk.log(`[Pixi] Global grid: (${minX},${minY}) ${totalWidth}x${totalHeight} → ${logicWidth}x${logicHeight} logic`);
+
+    // Calculate local offset for this monitor
+    const localOffsetX = displayInfo.bounds.x - minX;
+    const localOffsetY = displayInfo.bounds.y - minY;
+
+    // Initialize GridSimulation with global dimensions
+    gridSimulation = new GridSimulation(
+      logicWidth,
+      logicHeight,
+      minX,
+      minY
+    );
+
+    // Set initial parameters from config
+    gridSimulation.setIntensity(config.intensity / 100);
+    gridSimulation.setWind(config.wind);
+
+    // Wire up audio callback
+    if (audioSystem) {
+      gridSimulation.onCollision = (event) => {
+        audioSystem.handleCollision(event);
+      };
+      window.rainydesk.log('[Pixi] Audio callback connected');
+    }
+
+    // Initialize Pixi renderer
+    pixiRenderer = new RainPixiRenderer({
+      canvas: canvas,
+      width: canvasWidth,
+      height: canvasHeight,
+      localOffsetX,
+      localOffsetY,
+      backgroundColor: 0x000000,
+      preferWebGPU: true
+    });
+
+    await pixiRenderer.init();
+    window.rainydesk.log('[Pixi] Renderer initialized');
+
+    window.rainydesk.log('[Pixi] Hybrid physics ready!');
+  } catch (error) {
+    window.rainydesk.log(`[Pixi] Init error: ${error.message}`);
+    console.error('[Pixi] Error:', error);
+  }
+}
+
+/**
+ * Switch between Matter.js and Pixi physics
+ */
+function switchPhysicsEngine(usePixi) {
+  config.usePixiPhysics = usePixi;
+  window.rainydesk.log(`[Physics] Switched to ${usePixi ? 'Pixi' : 'Matter.js'}`);
+
+  // Initialize the appropriate system if not already done
+  if (usePixi && !gridSimulation) {
+    initPixiPhysics();
+  } else if (!usePixi && !physicsSystem) {
+    // Matter.js will be initialized in the existing init flow
+  }
+}
+
+/**
  * Periodically save state to autosave.json
  */
 function startAutosave() {
@@ -292,12 +399,16 @@ function spawnRaindrops(dt) {
  * Update all particles
  */
 function update(dt) {
-  spawnRaindrops(dt);
-
-  if (config.useMatterJS && physicsSystem) {
+  if (config.usePixiPhysics && gridSimulation) {
+    // Pixi hybrid physics
+    gridSimulation.step(dt);
+  } else if (config.useMatterJS && physicsSystem) {
+    // Matter.js physics
+    spawnRaindrops(dt);
     physicsSystem.update(dt);
   } else {
     // Fallback: custom physics (non-Matter.js mode)
+    spawnRaindrops(dt);
     raindrops = raindrops.filter(drop => {
       const alive = drop.update(dt);
       return alive;
@@ -310,9 +421,14 @@ function update(dt) {
  * Render all particles
  */
 function render() {
-  if (config.useMatterJS && physicsSystem && renderer) {
+  if (config.usePixiPhysics && pixiRenderer && gridSimulation) {
+    // Pixi hybrid renderer
+    pixiRenderer.render(gridSimulation);
+  } else if (config.useMatterJS && physicsSystem && renderer) {
+    // Matter.js + WebGL renderer
     renderer.render(physicsSystem);
   } else if (!config.useMatterJS) {
+    // Fallback canvas 2D renderer
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     raindrops.forEach(drop => drop.render(ctx));
@@ -343,8 +459,15 @@ function gameLoop(currentTime) {
     render();
 
     // Feed particle count to audio system for sheet layer modulation
-    if (audioSystem && physicsSystem) {
-      const particleCount = physicsSystem.getParticleCount();
+    if (audioSystem) {
+      let particleCount = 0;
+      if (config.usePixiPhysics && gridSimulation) {
+        particleCount = gridSimulation.getActiveDropCount();
+      } else if (physicsSystem) {
+        particleCount = physicsSystem.getParticleCount();
+      } else {
+        particleCount = raindrops.length;
+      }
       audioSystem.setParticleCount(particleCount);
     }
   } else {
@@ -358,8 +481,16 @@ function gameLoop(currentTime) {
   fpsCounter++;
   if (currentTime - fpsTime > 5000) {
     const fps = Math.round(fpsCounter / 5);
-    const particles = physicsSystem ? physicsSystem.getParticleCount() : raindrops.length;
-    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}${isFullscreenActive ? ', FULLSCREEN' : ''}`);
+    let particles = 0;
+    if (config.usePixiPhysics && gridSimulation) {
+      particles = gridSimulation.getActiveDropCount();
+    } else if (physicsSystem) {
+      particles = physicsSystem.getParticleCount();
+    } else {
+      particles = raindrops.length;
+    }
+    const engineName = config.usePixiPhysics ? 'Pixi' : 'Matter';
+    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}, Engine: ${engineName}${isFullscreenActive ? ', FULLSCREEN' : ''}`);
     fpsCounter = 0;
     fpsTime = currentTime;
   }
@@ -446,6 +577,10 @@ async function init() {
 
   window.rainydesk.onSetIntensity((value) => {
     config.intensity = value;
+    // Update Pixi simulation if active
+    if (config.usePixiPhysics && gridSimulation) {
+      gridSimulation.setIntensity(value / 100);
+    }
     // Audio responds to particle count, not intensity directly
   });
 
@@ -548,16 +683,45 @@ async function init() {
     windowZones = windowZones.map(z => ({ x: z.x, y: z.y, width: z.width, height: z.height }));
 
     windowZoneCount = windowZones.length;
-    if (physicsSystem) physicsSystem.setWindowZones(windowZones);
+
+    // Update physics system with window zones
+    if (config.usePixiPhysics && gridSimulation) {
+      // Pixi needs global coordinates - convert local back to global
+      const globalWindows = windowZones.map(z => ({
+        x: z.x + displayInfo.bounds.x,
+        y: z.y + displayInfo.bounds.y,
+        width: z.width,
+        height: z.height
+      }));
+      gridSimulation.updateWindowZones(globalWindows);
+    } else if (physicsSystem) {
+      // Matter.js uses local coordinates
+      physicsSystem.setWindowZones(windowZones);
+    }
   });
 
   // Handle Parameter Sync
   window.rainydesk.onUpdateRainscapeParam((path, value) => {
     if (path.startsWith('physics.')) {
       const param = path.split('.')[1];
-      if (param === 'gravity' && physicsSystem) physicsSystem.setGravity(value);
-      if (param === 'wind' && physicsSystem) {
-        physicsSystem.setWind(value);
+
+      if (param === 'gravity') {
+        if (config.usePixiPhysics && gridSimulation) {
+          // Pixi uses config object, will be picked up on next sim creation
+          // For now, just log
+          window.rainydesk.log(`[Pixi] Gravity update: ${value} (requires restart)`);
+        } else if (physicsSystem) {
+          physicsSystem.setGravity(value);
+        }
+      }
+
+      if (param === 'wind') {
+        config.wind = value;
+        if (config.usePixiPhysics && gridSimulation) {
+          gridSimulation.setWind(value);
+        } else if (physicsSystem) {
+          physicsSystem.setWind(value);
+        }
         // Also update background rain wind (normalize to -1..1)
         if (renderer && renderer.setBackgroundRainWind) {
           renderer.setBackgroundRainWind(value / 100);
@@ -598,6 +762,9 @@ async function init() {
       const numValue = typeof value === 'string' ? parseInt(value, 10) : value;
       config.fpsLimit = Math.max(0, Math.min(240, numValue || 0));
       window.rainydesk.log(`FPS limit set to ${config.fpsLimit === 0 ? 'uncapped' : config.fpsLimit}`);
+    } else if (path === 'system.usePixiPhysics') {
+      // Physics engine toggle
+      switchPhysicsEngine(!!value);
     } else if (audioSystem) {
       audioSystem.updateParam(path, value);
     }
@@ -689,6 +856,9 @@ async function init() {
     await rainscaper.init(physicsSystem, config);
     window.rainydesk.log('[Rainscaper] Initialized');
 
+    // Add physics engine toggle to Rainscaper (exposed as window function for UI)
+    window.switchPhysicsEngine = switchPhysicsEngine;
+
     // Broadcast initial physics values to background windows
     // This ensures background rain starts with correct settings
     window.rainydesk.updateRainscapeParam('physics.intensity', config.intensity);
@@ -701,9 +871,15 @@ async function init() {
     console.error('[Rainscaper] Error:', err);
   }
 
+  // Initialize Pixi physics if enabled by default
+  if (config.usePixiPhysics) {
+    window.rainydesk.log('[Init] Pixi physics enabled, initializing...');
+    await initPixiPhysics();
+  }
+
   startAutosave();
 
-  // Enable click-through immediately (autoplay policy bypassed in Electron)
+  // Enable click-through immediately (Tauri autoplay policy allows immediate start)
   window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
 
   // Listen for audio start broadcast from main process

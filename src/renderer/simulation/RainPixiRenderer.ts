@@ -52,8 +52,13 @@ export class RainPixiRenderer {
     private dropTexture: Texture | null = null;
     private splashTexture: Texture | null = null;
 
-    // Grid texture for puddles (will be BufferImageSource in full implementation)
-    // puddleSprite will be added when we implement BufferImageSource
+    // Puddle texture system
+    private puddleCanvas: HTMLCanvasElement | null = null;
+    private puddleCtx: CanvasRenderingContext2D | null = null;
+    private puddleImageData: ImageData | null = null;
+    private puddlePixelBuffer: Uint32Array | null = null;
+    private puddleTexture: Texture | null = null;
+    private puddleSprite: Sprite | null = null;
 
     constructor(config: Partial<RendererConfig> & { canvas: HTMLCanvasElement }) {
         this.config = {
@@ -102,7 +107,22 @@ export class RainPixiRenderer {
         // Create simple textures for particles
         this.createTextures();
 
+        // Initialize puddle buffer (will be sized on first render)
+        this.initPuddleBuffer();
+
         this.initialized = true;
+    }
+
+    /**
+     * Initialize the puddle texture buffer system.
+     */
+    private initPuddleBuffer(): void {
+        // Buffer will be created on first render when we know grid size
+        // For now, just set up the canvas
+        this.puddleCanvas = document.createElement('canvas');
+        this.puddleCtx = this.puddleCanvas.getContext('2d', {
+            willReadFrequently: false, // We write, not read
+        });
     }
 
     /**
@@ -138,6 +158,18 @@ export class RainPixiRenderer {
      * Clean up resources.
      */
     destroy(): void {
+        // Clean up puddle resources
+        if (this.puddleTexture) {
+            this.puddleTexture.destroy(true);
+            this.puddleTexture = null;
+        }
+        this.puddleCanvas = null;
+        this.puddleCtx = null;
+        this.puddleImageData = null;
+        this.puddlePixelBuffer = null;
+        this.puddleSprite = null;
+
+        // Clean up Pixi app
         if (this.app) {
             this.app.destroy(true, { children: true, texture: true });
             this.app = null;
@@ -233,31 +265,95 @@ export class RainPixiRenderer {
     }
 
     private renderPuddles(simulation: GridSimulation): void {
-        if (!this.puddleContainer) return;
+        if (!this.puddleContainer || !this.app) return;
 
         const grid = simulation.gridState;
         const offsetX = this.config.localOffsetX * this.logicScale;
         const offsetY = this.config.localOffsetY * this.logicScale;
 
-        // TODO: Implement efficient grid-to-texture rendering
-        // For now, use simple Graphics drawing (will be replaced with BufferImageSource)
-
-        // Clear previous puddle graphics
-        this.puddleContainer.removeChildren();
-
-        const graphics = new Graphics();
-
-        // Draw water cells as blue pixels
-        for (let y = 0; y < grid.height; y++) {
-            for (let x = 0; x < grid.width; x++) {
-                const index = y * grid.width + x;
-                if (grid.data[index] === CELL_WATER) {
-                    graphics.rect(x - offsetX, y - offsetY, 1, 1);
-                }
-            }
+        // Initialize buffer on first render
+        if (!this.puddlePixelBuffer || !this.puddleCanvas || !this.puddleCtx) {
+            this.createPuddleTexture(grid.width, grid.height);
         }
 
-        graphics.fill({ color: 0x4488ff, alpha: 0.5 });
-        this.puddleContainer.addChild(graphics);
+        // Ensure buffer matches grid size (handles dynamic resize)
+        if (this.puddleCanvas!.width !== grid.width || this.puddleCanvas!.height !== grid.height) {
+            this.createPuddleTexture(grid.width, grid.height);
+        }
+
+        // Convert grid to pixel buffer (Uint8Array → Uint32Array RGBA)
+        this.updatePuddleBuffer(grid.data);
+
+        // Upload to GPU
+        this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
+
+        // Update texture from canvas
+        if (this.puddleTexture && this.puddleSprite) {
+            // Force texture update
+            this.puddleTexture.source.update();
+
+            // Position sprite to account for monitor offset
+            this.puddleSprite.x = -offsetX;
+            this.puddleSprite.y = -offsetY;
+        }
+    }
+
+    /**
+     * Create or recreate the puddle texture with given dimensions.
+     */
+    private createPuddleTexture(width: number, height: number): void {
+        if (!this.app || !this.puddleContainer || !this.puddleCanvas || !this.puddleCtx) return;
+
+        // Resize canvas
+        this.puddleCanvas.width = width;
+        this.puddleCanvas.height = height;
+
+        // Create ImageData and get buffer view
+        this.puddleImageData = this.puddleCtx.createImageData(width, height);
+        this.puddlePixelBuffer = new Uint32Array(this.puddleImageData.data.buffer);
+
+        // Destroy old texture if exists
+        if (this.puddleTexture) {
+            this.puddleTexture.destroy(true);
+        }
+
+        // Create texture from canvas
+        this.puddleTexture = Texture.from(this.puddleCanvas);
+
+        // Set to nearest-neighbor for pixelated aesthetic
+        this.puddleTexture.source.scaleMode = 'nearest';
+
+        // Create or update sprite
+        if (!this.puddleSprite) {
+            this.puddleSprite = new Sprite(this.puddleTexture);
+            this.puddleContainer.addChild(this.puddleSprite);
+        } else {
+            this.puddleSprite.texture = this.puddleTexture;
+        }
+    }
+
+    /**
+     * Update the pixel buffer from grid data.
+     * Converts Uint8Array cell values to RGBA colors.
+     */
+    private updatePuddleBuffer(grid: Uint8Array): void {
+        if (!this.puddlePixelBuffer) return;
+
+        const buffer = this.puddlePixelBuffer;
+
+        // Color mapping (ABGR format for Uint32Array on little-endian)
+        const COLOR_AIR = 0x00000000;        // Transparent
+        const COLOR_WATER = 0x80ff8844;      // Semi-transparent blue (AABBGGRR)
+
+        for (let i = 0; i < grid.length; i++) {
+            const cellValue = grid[i]!;
+
+            // Map cell type to color
+            if (cellValue === CELL_WATER) {
+                buffer[i] = COLOR_WATER;
+            } else {
+                buffer[i] = COLOR_AIR; // Air and glass both transparent
+            }
+        }
     }
 }

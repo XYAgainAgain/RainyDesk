@@ -73,15 +73,40 @@ Once running, RainyDesk sits in your system tray. Right-click the icon for quick
 
 Sometimes you just want it to rain. I know I sure do. This scratches that itch.
 
-## Technical Details
+## How It Works (ELI5) 🧒
 
-For big nerds: RainyDesk is built with Tauri (Rust backend + WebView2), WebGL 2 instanced rendering, Matter.js physics, and Tone.js audio synthesis. Each monitor gets its own transparent overlay window running an independent particle simulation. Background windows render atmospheric rain  sheets without physics at the desktop level to enhance the vibes while overlay windows handle physics & UI. Kinda neat! 💦
+Imagine your entire desktop — all your monitors — as one big invisible grid, like graph paper. RainyDesk draws a single giant transparent window over everything and makes it rain on that grid.
+
+**The magic:**
+- **Void mask:** Gaps between your monitors? Those are "walls" that rain can't pass through.
+- **Spawn map:** Rain only falls from the top of each monitor, not from empty space.
+- **Puddles:** When rain hits something, it turns into water that spreads out like a real puddle.
+- **Waterfalls:** If your monitors are at different heights, puddles can spill over the edge and cascade down to the lower monitor. 🌊
+
+**What makes it feel real:**
+- Drag a window over a puddle? *Splash!* Half the water vanishes, half goes flying sideways.
+- Close a window with water on it? The puddle falls and splashes on whatever's below.
+- Go fullscreen for a game? Rain hides on that screen but keeps falling on your others.
+
+It's like having a tiny water park on your desktop, except you can't get wet.
+
+## Technical Details 🔧
+
+For big nerds: RainyDesk is built with Tauri (Rust backend + WebView2), Pixi.js v8 rendering, and Tone.js audio synthesis.
+
+**Architecture:**
+- ONE mega-overlay window spans your entire virtual desktop (all monitors)
+- ONE mega-background window renders atmospheric rain behind everything
+- Void mask treats gaps between monitors as solid walls
+- Hybrid physics: Lagrangian particles (rain) + Eulerian grid (puddles)
+- Cellular automata for natural water flow (Noita-style!)
+- Spatial audio: rain position → stereo pan (5.1/7.1 coming later)
 
 ## Third-Party Libraries
 
 - [Tauri](https://tauri.app) (v2) — MIT License — Desktop app framework
+- [Pixi.js](https://pixijs.com) (v8) — MIT License — GPU-accelerated rendering
 - [Tone.js](https://tonejs.github.io) (v15.1.22) — MIT License — Audio synthesis
-- [Matter.js](https://brm.io/matter-js) (v0.20.0) — MIT License — Physics engine
 
 ## License
 

@@ -10,7 +10,7 @@ dist/
 *.bundle.js
 *.bundle.js.map
 
-# Electron Forge
+# Cache
 .cache/
 
 # OS files

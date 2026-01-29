@@ -16,7 +16,7 @@ export class Panel {
     this._element.className = 'rainscaper-panel hidden';
 
     // Click-through controlled by show()/hide(), not hover events
-    // (Tauri lacks Electron's "forward: true" for hover detection)
+    // (Tauri requires explicit window focus control)
 
     // Subscribe to visibility changes
     state.subscribe((s) => {

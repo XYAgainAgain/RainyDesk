@@ -11,6 +11,7 @@ export interface SystemConfig {
   fadeOutTime: number;
   enableVoiceStealing: boolean;
   fpsLimit: number;
+  usePixiPhysics: boolean;
 }
 
 export interface SystemSectionCallbacks {
@@ -116,6 +117,20 @@ export class SystemSection {
     });
     perfGroup.addControl(this._controls.fpsLimit.create());
 
+    this._controls.usePixiPhysics = new Toggle({
+      id: 'system-pixi-physics',
+      label: 'Pixi Hybrid Physics',
+      path: 'system.usePixiPhysics',
+      value: this._config.usePixiPhysics,
+    });
+    perfGroup.addControl(this._controls.usePixiPhysics.create());
+
+    // Add hint text explaining physics engine toggle
+    const physicsHint = document.createElement('div');
+    physicsHint.className = 'rs-control-hint';
+    physicsHint.innerHTML = '<em>Toggle between Pixi (new) and Matter.js (legacy) physics</em>';
+    perfGroup.addControl(physicsHint);
+
     this._element.appendChild(perfGroup.element!);
 
     return this._element;
@@ -133,6 +148,9 @@ export class SystemSection {
     }
     if (config.fpsLimit !== undefined) {
       (this._controls.fpsLimit as Select)?.setValue(String(config.fpsLimit));
+    }
+    if (config.usePixiPhysics !== undefined) {
+      (this._controls.usePixiPhysics as Toggle)?.setValue(config.usePixiPhysics);
     }
   }
 

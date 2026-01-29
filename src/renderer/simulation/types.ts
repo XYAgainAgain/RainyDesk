@@ -64,6 +64,8 @@ export interface SimulationConfig {
     radiusMax: number;
     /** Horizontal velocity threshold for pass-through (0–1) */
     slipThreshold: number;
+    /** Probability water sticks to walls (dribble effect, 0–1) */
+    wallAdhesion: number;
 }
 
 /** Default simulation configuration */
@@ -77,6 +79,7 @@ export const DEFAULT_CONFIG: SimulationConfig = {
     radiusMin: 0.5,
     radiusMax: 1.5,
     slipThreshold: 0.85,
+    wallAdhesion: 0.3,   // 30% chance to stick to walls (creates dribble effect)
 };
 
 /** Grid cell values */

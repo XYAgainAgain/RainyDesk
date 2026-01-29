@@ -488,6 +488,7 @@ export class Rainscaper {
       fadeOutTime: config?.fadeOutTime ?? 0.5,
       enableVoiceStealing: config?.enableVoiceStealing ?? true,
       fpsLimit: config?.fpsLimit ?? 0,  // 0 = uncapped
+      usePixiPhysics: (this._config as any)?.usePixiPhysics ?? true,
     };
   }
 

@@ -1,5 +1,5 @@
-// Tauri API compatibility layer for window.rainydesk
-// Provides same API as Electron preload but uses Tauri invoke/listen
+// Tauri API bridge for window.rainydesk
+// Uses Tauri invoke/listen for IPC communication with Rust backend
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -12,6 +12,9 @@ window.rainydesk = {
 
   // Get display info via command (more reliable than event)
   getDisplayInfo: () => invoke('get_display_info'),
+
+  // Get all displays for multi-monitor grid calculation
+  getAllDisplays: () => invoke('get_all_displays'),
 
   // Receive rain toggle commands (pause/resume from tray menu)
   onToggleRain: (callback) => {
