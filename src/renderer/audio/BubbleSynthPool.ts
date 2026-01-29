@@ -39,6 +39,7 @@ const DEFAULT_BUBBLE_CONFIG: BubbleSynthConfig = {
  */
 export class BubbleSynthPool extends VoicePool<Tone.Synth> {
   private _synthConfig: BubbleSynthConfig;
+  private _panners: Map<number, Tone.Panner> = new Map();
   private _output: Tone.Gain;
 
   constructor(
@@ -54,6 +55,8 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
   protected createVoice(): Voice<Tone.Synth> {
     const config = this._synthConfig;
 
+    const panner = new Tone.Panner(0);
+
     const synth = new Tone.Synth({
       oscillator: { type: config.oscillatorType },
       envelope: {
@@ -64,14 +67,18 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
       },
     });
 
-    synth.connect(this._output);
+    synth.connect(panner);
+    panner.connect(this._output);
 
-    return {
+    const voice: Voice<Tone.Synth> = {
       id: this._nextId++,
       synth,
       busy: false,
       releaseTime: 0,
     };
+
+    this._panners.set(voice.id, panner);
+    return voice;
   }
 
   /**
@@ -85,6 +92,7 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
     if (!voice) return null;
 
     const config = this._synthConfig;
+    const panner = this._panners.get(voice.id);
 
     const frequency = Math.max(config.freqMin, Math.min(config.freqMax, params.frequency));
     const volumeNormalized = Math.max(0, Math.min(1, (params.volume + 40) / 34));
@@ -92,6 +100,11 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
 
     voice.synth.envelope.decay = decay;
     voice.synth.volume.value = params.volume;
+
+    // Apply stereo pan
+    if (panner) {
+      panner.pan.value = params.pan;
+    }
 
     const now = Tone.now();
     const duration = decay + config.attack + 0.02;
@@ -133,6 +146,10 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
   }
 
   override dispose(): void {
+    for (const panner of this._panners.values()) {
+      panner.dispose();
+    }
+    this._panners.clear();
     this._output.dispose();
     super.dispose();
   }

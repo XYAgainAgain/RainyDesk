@@ -50,6 +50,7 @@ export class PhysicsMapper {
       decay: this.mapRadiusToDecay(event.dropRadius, material),
       triggerBubble: this.shouldTriggerBubble(event, material),
       filterFreq: this.calculateFilterFreq(event, material),
+      pan: 0, // Default center; AudioSystem overrides with position-based pan
     };
   }
 

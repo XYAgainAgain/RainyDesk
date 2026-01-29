@@ -1,7 +1,8 @@
 /**
- * AudioSystem - Main orchestrator for voice-pooled rain audio synthesis
+ * AudioSystem v2.0 - Main orchestrator for voice-pooled rain audio synthesis
  *
  * Manages voice pools, sheet layer, effects chain, and physics integration.
+ * Now includes Wind, Thunder, and Matrix modules with bus routing.
  * Entry point for all audio operations in RainyDesk.
  */
 
@@ -11,14 +12,23 @@ import { BubbleSynthPool } from './BubbleSynthPool';
 import { SheetLayer } from './SheetLayer';
 import { PhysicsMapper } from './PhysicsMapper';
 import { MaterialManager } from './MaterialManager';
+import { AudioBus } from './AudioBus';
+import { WindModule } from './WindModule';
+import { ThunderModule } from './ThunderModule';
+import { MatrixModule } from './MatrixModule';
 import type {
   AudioSystemState,
   AudioSystemStats,
   RainscapeConfig,
+  RainscapeConfigV2,
   CollisionEvent,
   EQSettings,
   ReverbSettings,
   VoicePoolSizes,
+  WindModuleConfig,
+  ThunderModuleConfig,
+  MatrixModuleConfig,
+  BusConfig,
 } from '../../types/audio';
 
 export interface AudioSystemConfig {
@@ -43,26 +53,44 @@ export class AudioSystem {
   private _state: AudioSystemState = 'uninitialized';
   private _config: AudioSystemConfig;
 
-  // Voice pools
+  // Voice pools (rain sounds)
   private _impactPool: ImpactSynthPool | null = null;
   private _bubblePool: BubbleSynthPool | null = null;
   private _sheetLayer: SheetLayer | null = null;
+
+  // v2.0 Modules
+  private _windModule: WindModule | null = null;
+  private _thunderModule: ThunderModule | null = null;
+  private _matrixModule: MatrixModule | null = null;
+
+  // v2.0 Bus routing
+  private _rainBus: AudioBus | null = null;
+  private _windBus: AudioBus | null = null;
+  private _thunderBus: AudioBus | null = null;
+  private _matrixBus: AudioBus | null = null;
 
   // Support systems
   private _physicsMapper: PhysicsMapper;
   private _materialManager: MaterialManager;
 
-  // Effects chain
-  private _eq: Tone.EQ3 | null = null;
-  private _reverb: Tone.Reverb | null = null;
+  // Master effects chain
+  private _masterReverb: Tone.Reverb | null = null;
+  private _masterDelay: Tone.FeedbackDelay | null = null;
+  private _masterLimiter: Tone.Limiter | null = null;
   private _muffleFilter: Tone.Filter | null = null;
   private _muffleGain: Tone.Gain | null = null;
   private _masterGain: Tone.Gain | null = null;
 
+  // Legacy EQ (for backward compatibility)
+  private _eq: Tone.EQ3 | null = null;
+  private _reverb: Tone.Reverb | null = null;
+
   // State tracking
   private _isMuted = false;
   private _isMuffled = false;
+  private _matrixModeEnabled = false;
   private _currentRainscape: RainscapeConfig | null = null;
+  private _currentRainscapeV2: RainscapeConfigV2 | null = null;
   private _collisionCount = 0;
   private _droppedCollisions = 0;
   private _lastStatsTime = 0;
@@ -84,19 +112,20 @@ export class AudioSystem {
     this._state = 'initializing';
 
     try {
-      await Tone.start();
-      console.log('[AudioSystem] Tone.js context started');
+      console.log('[AudioSystem] v2.0 initialization complete');
 
-      this.createEffectsChain();
+      this.createMasterChain();
+      this.createBuses();
       this.createVoicePools();
       this.createSheetLayer();
+      this.createModules();
       this.connectAudioGraph();
 
       // Start transport for scheduled releases
       Tone.getTransport().start();
 
       this._state = 'ready';
-      console.log('[AudioSystem] Initialization complete');
+      console.log('[AudioSystem] v2.0 initialization complete');
     } catch (err) {
       this._state = 'error';
       console.error('[AudioSystem] Initialization failed:', err);
@@ -104,9 +133,13 @@ export class AudioSystem {
     }
   }
 
-  private createEffectsChain(): void {
-    this._eq = new Tone.EQ3({ low: 0, mid: 0, high: 0 });
-    this._reverb = new Tone.Reverb({ decay: 2, wet: 0.3 });
+  private createMasterChain(): void {
+    // Master send effects
+    this._masterReverb = new Tone.Reverb({ decay: 2, wet: 1 });
+    this._masterDelay = new Tone.FeedbackDelay({ delayTime: 0.25, feedback: 0.3, wet: 1 });
+
+    // Master output chain
+    this._masterLimiter = new Tone.Limiter(-1);
 
     // Muffle filter: low-pass at 20kHz by default (fully open), drops to 800Hz when muffled
     this._muffleFilter = new Tone.Filter({
@@ -119,6 +152,39 @@ export class AudioSystem {
     this._muffleGain = new Tone.Gain(1);
 
     this._masterGain = new Tone.Gain(Tone.dbToGain(this._config.masterVolume));
+
+    // Legacy EQ for backward compatibility
+    this._eq = new Tone.EQ3({ low: 0, mid: 0, high: 0 });
+    this._reverb = new Tone.Reverb({ decay: 2, wet: 0.3 });
+  }
+
+  private createBuses(): void {
+    this._rainBus = new AudioBus('rain', {
+      gain: 0,
+      reverbSend: 0.3,
+      compressorEnabled: true,
+      compressorThreshold: -18,
+      compressorRatio: 3,
+    });
+
+    this._windBus = new AudioBus('wind', {
+      gain: -6,
+      reverbSend: 0.2,
+      compressorEnabled: false,
+    });
+
+    this._thunderBus = new AudioBus('thunder', {
+      gain: 0,
+      reverbSend: 0.4,
+      compressorEnabled: false,
+    });
+
+    this._matrixBus = new AudioBus('matrix', {
+      gain: -12,
+      reverbSend: 0.5,
+      delaySend: 0.3,
+      compressorEnabled: false,
+    });
   }
 
   private createVoicePools(): void {
@@ -138,17 +204,52 @@ export class AudioSystem {
     this._sheetLayer = new SheetLayer();
   }
 
+  private createModules(): void {
+    this._windModule = new WindModule();
+    this._thunderModule = new ThunderModule();
+    this._matrixModule = new MatrixModule();
+  }
+
   private connectAudioGraph(): void {
     if (!this._impactPool || !this._bubblePool || !this._sheetLayer) return;
-    if (!this._eq || !this._reverb || !this._muffleFilter || !this._muffleGain || !this._masterGain) return;
+    if (!this._windModule || !this._thunderModule || !this._matrixModule) return;
+    if (!this._rainBus || !this._windBus || !this._thunderBus || !this._matrixBus) return;
+    if (!this._masterReverb || !this._masterDelay || !this._masterLimiter) return;
+    if (!this._muffleFilter || !this._muffleGain || !this._masterGain) return;
 
-    // Pools → EQ → Reverb → MuffleFilter → MuffleGain → Master → Destination
-    this._impactPool.connect(this._eq);
-    this._bubblePool.connect(this._eq);
-    this._sheetLayer.connect(this._eq);
+    // Connect rain sources to rain bus
+    this._impactPool.connect(this._rainBus.input);
+    this._bubblePool.connect(this._rainBus.input);
+    this._sheetLayer.connect(this._rainBus.input);
 
-    this._eq.connect(this._reverb);
-    this._reverb.connect(this._muffleFilter);
+    // Connect modules to their buses
+    this._windModule.connect(this._windBus.input);
+    this._thunderModule.connect(this._thunderBus.input);
+    this._matrixModule.connect(this._matrixBus.input);
+
+    // Connect bus outputs to limiter (dry path)
+    this._rainBus.connect(this._masterLimiter);
+    this._windBus.connect(this._masterLimiter);
+    this._thunderBus.connect(this._masterLimiter);
+    this._matrixBus.connect(this._masterLimiter);
+
+    // Connect bus sends to master effects
+    this._rainBus.connectReverbSend(this._masterReverb);
+    this._windBus.connectReverbSend(this._masterReverb);
+    this._thunderBus.connectReverbSend(this._masterReverb);
+    this._matrixBus.connectReverbSend(this._masterReverb);
+    this._matrixBus.connectDelaySend(this._masterDelay);
+
+    // Connect master effects to limiter
+    this._masterReverb.connect(this._masterLimiter);
+    this._masterDelay.connect(this._masterLimiter);
+
+    // Thunder sidechain: available for ducking other buses during thunder
+    // Wind bus dry signal can optionally route through sidechain
+    // This is opt-in via config - call getSidechainCompressor() when needed
+
+    // Master output chain
+    this._masterLimiter.connect(this._muffleFilter);
     this._muffleFilter.connect(this._muffleGain);
     this._muffleGain.connect(this._masterGain);
     this._masterGain.toDestination();
@@ -170,7 +271,13 @@ export class AudioSystem {
       );
     }
 
+    // Start all layers
     this._sheetLayer?.start();
+    this._windModule?.start();
+    if (this._matrixModeEnabled) {
+      this._matrixModule?.start();
+    }
+
     this._state = 'playing';
     console.log('[AudioSystem] Playback started');
   }
@@ -182,15 +289,22 @@ export class AudioSystem {
     if (fadeOut && this._masterGain) {
       this._masterGain.gain.rampTo(0, this._config.fadeOutTime);
       setTimeout(() => {
-        this._sheetLayer?.stop();
+        this.stopAllLayers();
         this._state = 'stopped';
       }, this._config.fadeOutTime * 1000);
     } else {
-      this._sheetLayer?.stop();
+      this.stopAllLayers();
       this._state = 'stopped';
     }
 
     console.log('[AudioSystem] Playback stopped');
+  }
+
+  private stopAllLayers(): void {
+    this._sheetLayer?.stop();
+    this._windModule?.stop();
+    this._thunderModule?.stopAuto();
+    this._matrixModule?.stop();
   }
 
   /** Process a collision event from Matter.js. */
@@ -203,12 +317,22 @@ export class AudioSystem {
     const material = this._materialManager.getMaterial(event.surfaceType);
     const params = this._physicsMapper.mapCollision(event, material);
 
+    // Calculate stereo pan from X position (-1 = left, 0 = center, 1 = right)
+    const normalizedX = event.position.x / window.innerWidth;
+    params.pan = (normalizedX * 2) - 1;
+
     // Trigger impact sound (always)
     const impactVoice = this._impactPool.trigger(params);
     if (!impactVoice) this._droppedCollisions++;
 
     // Trigger bubble sound (probabilistic)
     this._bubblePool.trigger(params);
+
+    // If matrix mode is enabled, also trigger matrix drops
+    if (this._matrixModeEnabled && this._matrixModule) {
+      const velocity = Math.min(1, event.velocity / 10);
+      this._matrixModule.triggerDrop(normalizedX, velocity);
+    }
   }
 
   /** Batch process collision events from Matter.js collisionStart. */
@@ -223,7 +347,117 @@ export class AudioSystem {
     this._sheetLayer?.setParticleCount(count);
   }
 
+  // ============================================================================
+  // v2.0 Module Controls
+  // ============================================================================
+
+  /**
+   * Set wind speed (0-100). Affects wind module intensity.
+   */
+  setWindSpeed(speed: number): void {
+    this._windModule?.setWindSpeed(speed);
+  }
+
+  /**
+   * Trigger a thunder strike at optional distance (km).
+   * If no distance specified, uses random distance within configured range.
+   */
+  triggerThunder(distance?: number): void {
+    this._thunderModule?.triggerStrike(distance);
+  }
+
+  /**
+   * Start automatic thunder scheduling.
+   */
+  startAutoThunder(): void {
+    this._thunderModule?.startAuto();
+  }
+
+  /**
+   * Stop automatic thunder scheduling.
+   */
+  stopAutoThunder(): void {
+    this._thunderModule?.stopAuto();
+  }
+
+  /**
+   * Enable or disable matrix mode (sci-fi rain).
+   * When enabled, collisions also trigger matrix drops.
+   */
+  setMatrixMode(enabled: boolean): void {
+    this._matrixModeEnabled = enabled;
+    if (enabled && this._state === 'playing') {
+      this._matrixModule?.start();
+    } else {
+      this._matrixModule?.stop();
+    }
+    console.log(`[AudioSystem] Matrix mode ${enabled ? 'ON' : 'OFF'}`);
+  }
+
+  get isMatrixModeEnabled(): boolean {
+    return this._matrixModeEnabled;
+  }
+
+  /**
+   * Trigger a manual wind gust for UI testing.
+   */
+  triggerGust(intensity?: number): void {
+    this._windModule?.triggerGust(intensity);
+  }
+
+  /**
+   * Trigger a matrix glitch burst for UI testing.
+   */
+  triggerMatrixGlitch(): void {
+    this._matrixModule?.triggerGlitch();
+  }
+
+  /**
+   * Trigger a single matrix drop for UI testing.
+   */
+  triggerMatrixDrop(): void {
+    this._matrixModule?.triggerDrop(0.5, 0.7);
+  }
+
+  // ============================================================================
+  // Bus Controls
+  // ============================================================================
+
+  setRainBusConfig(config: Partial<BusConfig>): void {
+    this._rainBus?.updateConfig(config);
+  }
+
+  setWindBusConfig(config: Partial<BusConfig>): void {
+    this._windBus?.updateConfig(config);
+  }
+
+  setThunderBusConfig(config: Partial<BusConfig>): void {
+    this._thunderBus?.updateConfig(config);
+  }
+
+  setMatrixBusConfig(config: Partial<BusConfig>): void {
+    this._matrixBus?.updateConfig(config);
+  }
+
+  // ============================================================================
+  // Module Config Updates
+  // ============================================================================
+
+  updateWindConfig(config: Partial<WindModuleConfig>): void {
+    this._windModule?.updateConfig(config);
+  }
+
+  updateThunderConfig(config: Partial<ThunderModuleConfig>): void {
+    this._thunderModule?.updateConfig(config);
+  }
+
+  updateMatrixConfig(config: Partial<MatrixModuleConfig>): void {
+    this._matrixModule?.updateConfig(config);
+  }
+
+  // ============================================================================
   // Volume & Mute
+  // ============================================================================
 
   setMasterVolume(db: number): void {
     this._config.masterVolume = db;
@@ -257,7 +491,7 @@ export class AudioSystem {
     if (this._isMuffled === muffled) return;
     this._isMuffled = muffled;
 
-    const rampTime = 0.5; // Smooth transition over 500ms
+    const rampTime = 0.5;
 
     if (this._muffleFilter) {
       const targetFreq = muffled ? 800 : 20000;
@@ -276,7 +510,9 @@ export class AudioSystem {
     return this._isMuffled;
   }
 
-  // Effects
+  // ============================================================================
+  // Effects (Legacy API)
+  // ============================================================================
 
   setEQ(settings: Partial<EQSettings>): void {
     if (!this._eq) return;
@@ -295,22 +531,28 @@ export class AudioSystem {
   }
 
   setReverb(settings: Partial<ReverbSettings>): void {
-    if (!this._reverb) return;
-    if (settings.decay !== undefined) this._reverb.decay = settings.decay;
-    if (settings.wetness !== undefined) this._reverb.wet.value = settings.wetness;
+    if (!this._masterReverb) return;
+    if (settings.decay !== undefined) this._masterReverb.decay = settings.decay;
+    if (settings.wetness !== undefined) {
+      // Scale bus sends based on wetness
+      this._rainBus?.setReverbSend(settings.wetness);
+      this._windBus?.setReverbSend(settings.wetness * 0.7);
+    }
   }
 
   getReverb(): ReverbSettings {
-    if (!this._reverb) return { decay: 2, wetness: 0.3 };
+    if (!this._masterReverb) return { decay: 2, wetness: 0.3 };
     return {
-      decay: Number(this._reverb.decay),
-      wetness: this._reverb.wet.value,
+      decay: Number(this._masterReverb.decay),
+      wetness: this._rainBus?.config.reverbSend ?? 0.3,
     };
   }
 
-  // Rainscape
+  // ============================================================================
+  // Rainscape Loading
+  // ============================================================================
 
-  /** Load a complete rainscape configuration. */
+  /** Load a v1.0 rainscape configuration (backward compatible). */
   loadRainscape(config: RainscapeConfig): void {
     this._currentRainscape = config;
 
@@ -331,11 +573,88 @@ export class AudioSystem {
     // Resize pools if needed
     this.setVoicePoolSizes(config.voicePools);
 
-    console.log(`[AudioSystem] Loaded rainscape: ${config.name}`);
+    console.log(`[AudioSystem] Loaded v1.0 rainscape: ${config.name}`);
+  }
+
+  /** Load a v2.0 rainscape configuration with full module support. */
+  loadRainscapeV2(config: RainscapeConfigV2): void {
+    this._currentRainscapeV2 = config;
+
+    // Master volume
+    this.setMasterVolume(config.audio.masterVolume);
+
+    // Sheet layer
+    if (config.audio.sheet) {
+      this._sheetLayer?.updateConfig(config.audio.sheet);
+    }
+
+    // Impact config
+    if (config.audio.impact) {
+      this._impactPool?.updateConfig({
+        noiseType: config.audio.impact.noiseType,
+        attack: config.audio.impact.attack,
+        decayMin: config.audio.impact.decayMin,
+        decayMax: config.audio.impact.decayMax,
+        filterFreqMin: config.audio.impact.filterFreqMin,
+        filterFreqMax: config.audio.impact.filterFreqMax,
+        filterQ: config.audio.impact.filterQ,
+      });
+    }
+
+    // Bubble config
+    if (config.audio.bubble) {
+      this._bubblePool?.updateConfig({
+        oscillatorType: config.audio.bubble.oscillatorType,
+        attack: config.audio.bubble.attack,
+        decayMin: config.audio.bubble.decayMin,
+        decayMax: config.audio.bubble.decayMax,
+        chirpAmount: config.audio.bubble.chirpAmount,
+        chirpTime: config.audio.bubble.chirpTime,
+        freqMin: config.audio.bubble.freqMin,
+        freqMax: config.audio.bubble.freqMax,
+      });
+    }
+
+    // Wind module
+    if (config.audio.wind) {
+      this._windModule?.updateConfig(config.audio.wind);
+    }
+
+    // Thunder module
+    if (config.audio.thunder) {
+      this._thunderModule?.updateConfig(config.audio.thunder);
+    }
+
+    // Matrix module
+    if (config.audio.matrix) {
+      this._matrixModule?.updateConfig(config.audio.matrix);
+    }
+
+    // Bus routing (SFX config)
+    if (config.audio.sfx) {
+      if (config.audio.sfx.rainBus) this._rainBus?.updateConfig(config.audio.sfx.rainBus);
+      if (config.audio.sfx.windBus) this._windBus?.updateConfig(config.audio.sfx.windBus);
+      if (config.audio.sfx.thunderBus) this._thunderBus?.updateConfig(config.audio.sfx.thunderBus);
+      if (config.audio.sfx.matrixBus) this._matrixBus?.updateConfig(config.audio.sfx.matrixBus);
+
+      // Master bus settings
+      if (config.audio.sfx.masterBus) {
+        this.setMasterVolume(config.audio.sfx.masterBus.gain);
+        if (this._masterLimiter && config.audio.sfx.masterBus.limiterThreshold !== undefined) {
+          this._masterLimiter.threshold.value = config.audio.sfx.masterBus.limiterThreshold;
+        }
+      }
+    }
+
+    console.log(`[AudioSystem] Loaded v2.0 rainscape: ${config.name}`);
   }
 
   getCurrentRainscape(): RainscapeConfig | null {
     return this._currentRainscape;
+  }
+
+  getCurrentRainscapeV2(): RainscapeConfigV2 | null {
+    return this._currentRainscapeV2;
   }
 
   /** Update a single parameter by path (e.g. "effects.reverb.decay"). */
@@ -343,10 +662,8 @@ export class AudioSystem {
     const parts = path.split('.');
     const category = parts[0];
 
-    // Helper to safely get path segment
     const getPart = (index: number): string | undefined => parts[index];
 
-    // Validation helpers
     const isValidEQKey = (key: string): key is keyof EQSettings =>
       ['low', 'mid', 'high'].includes(key);
     const isValidReverbKey = (key: string): key is keyof ReverbSettings =>
@@ -412,7 +729,6 @@ export class AudioSystem {
             this._bubblePool?.updateConfig({ oscillatorType: value });
           }
         } else {
-          // Route other params (chirp, freq range) to the pool directly
           this._bubblePool?.updateConfig({ [bubbleKey]: Number(value) });
         }
         break;
@@ -465,12 +781,45 @@ export class AudioSystem {
         break;
       }
 
+      // v2.0 paths
+      case 'wind': {
+        const windKey = getPart(1);
+        if (windKey === 'masterGain') {
+          this._windModule?.setMasterGain(Number(value));
+        } else if (windKey) {
+          this._windModule?.updateConfig({ [windKey]: value } as Partial<WindModuleConfig>);
+        }
+        break;
+      }
+
+      case 'thunder': {
+        const thunderKey = getPart(1);
+        if (thunderKey === 'masterGain') {
+          this._thunderModule?.setMasterGain(Number(value));
+        } else if (thunderKey) {
+          this._thunderModule?.updateConfig({ [thunderKey]: value } as Partial<ThunderModuleConfig>);
+        }
+        break;
+      }
+
+      case 'matrix': {
+        const matrixKey = getPart(1);
+        if (matrixKey === 'masterGain') {
+          this._matrixModule?.setMasterGain(Number(value));
+        } else if (matrixKey) {
+          this._matrixModule?.updateConfig({ [matrixKey]: value } as Partial<MatrixModuleConfig>);
+        }
+        break;
+      }
+
       default:
         break;
     }
   }
 
+  // ============================================================================
   // Voice Pools
+  // ============================================================================
 
   setVoicePoolSizes(sizes: Partial<VoicePoolSizes>): void {
     if (sizes.impactPoolSize !== undefined && this._impactPool) {
@@ -488,7 +837,9 @@ export class AudioSystem {
     };
   }
 
+  // ============================================================================
   // Component Access
+  // ============================================================================
 
   getImpactPool(): ImpactSynthPool | null {
     return this._impactPool;
@@ -510,6 +861,18 @@ export class AudioSystem {
     return this._physicsMapper;
   }
 
+  getWindModule(): WindModule | null {
+    return this._windModule;
+  }
+
+  getThunderModule(): ThunderModule | null {
+    return this._thunderModule;
+  }
+
+  getMatrixModule(): MatrixModule | null {
+    return this._matrixModule;
+  }
+
   getSystemConfig(): {
     fadeInTime: number;
     fadeOutTime: number;
@@ -522,7 +885,9 @@ export class AudioSystem {
     };
   }
 
+  // ============================================================================
   // Stats & Cleanup
+  // ============================================================================
 
   getStats(): AudioSystemStats {
     const now = performance.now();
@@ -545,21 +910,64 @@ export class AudioSystem {
     return stats;
   }
 
+  /** Get extended stats including v2.0 modules */
+  getExtendedStats(): {
+    base: AudioSystemStats;
+    wind: ReturnType<WindModule['getStats']> | null;
+    thunder: ReturnType<ThunderModule['getStats']> | null;
+    matrix: ReturnType<MatrixModule['getStats']> | null;
+  } {
+    return {
+      base: this.getStats(),
+      wind: this._windModule?.getStats() ?? null,
+      thunder: this._thunderModule?.getStats() ?? null,
+      matrix: this._matrixModule?.getStats() ?? null,
+    };
+  }
+
   dispose(): void {
     this.stop(false);
 
+    // Dispose rain sources
     this._impactPool?.dispose();
     this._bubblePool?.dispose();
     this._sheetLayer?.dispose();
+
+    // Dispose v2.0 modules
+    this._windModule?.dispose();
+    this._thunderModule?.dispose();
+    this._matrixModule?.dispose();
+
+    // Dispose buses
+    this._rainBus?.dispose();
+    this._windBus?.dispose();
+    this._thunderBus?.dispose();
+    this._matrixBus?.dispose();
+
+    // Dispose master chain
+    this._masterReverb?.dispose();
+    this._masterDelay?.dispose();
+    this._masterLimiter?.dispose();
     this._eq?.dispose();
     this._reverb?.dispose();
     this._muffleFilter?.dispose();
     this._muffleGain?.dispose();
     this._masterGain?.dispose();
 
+    // Clear references
     this._impactPool = null;
     this._bubblePool = null;
     this._sheetLayer = null;
+    this._windModule = null;
+    this._thunderModule = null;
+    this._matrixModule = null;
+    this._rainBus = null;
+    this._windBus = null;
+    this._thunderBus = null;
+    this._matrixBus = null;
+    this._masterReverb = null;
+    this._masterDelay = null;
+    this._masterLimiter = null;
     this._eq = null;
     this._reverb = null;
     this._muffleFilter = null;

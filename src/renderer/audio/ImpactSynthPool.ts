@@ -31,11 +31,12 @@ const DEFAULT_IMPACT_CONFIG: ImpactSynthConfig = {
 
 /**
  * Voice pool for impact/click sounds.
- * Each voice has a NoiseSynth routed through a bandpass filter.
+ * Each voice has a NoiseSynth routed through a bandpass filter and panner.
  */
 export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
   private _synthConfig: ImpactSynthConfig;
   private _filters: Map<number, Tone.Filter> = new Map();
+  private _panners: Map<number, Tone.Panner> = new Map();
   private _output: Tone.Gain;
 
   constructor(
@@ -57,6 +58,8 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
       Q: config.filterQ,
     });
 
+    const panner = new Tone.Panner(0);
+
     const synth = new Tone.NoiseSynth({
       noise: { type: config.noiseType },
       envelope: {
@@ -68,7 +71,8 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     });
 
     synth.connect(filter);
-    filter.connect(this._output);
+    filter.connect(panner);
+    panner.connect(this._output);
 
     const voice: Voice<Tone.NoiseSynth> = {
       id: this._nextId++,
@@ -78,6 +82,7 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     };
 
     this._filters.set(voice.id, filter);
+    this._panners.set(voice.id, panner);
     return voice;
   }
 
@@ -88,6 +93,7 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
 
     const config = this._synthConfig;
     const filter = this._filters.get(voice.id);
+    const panner = this._panners.get(voice.id);
 
     // Map volume to decay time (louder = longer decay)
     const volumeNormalized = Math.max(0, Math.min(1, (params.volume + 40) / 34));
@@ -100,6 +106,11 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
         (config.filterFreqMax - config.filterFreqMin) *
         Math.min(1, params.filterFreq / 8000);
       filter.frequency.value = filterFreq;
+    }
+
+    // Apply stereo pan
+    if (panner) {
+      panner.pan.value = params.pan;
     }
 
     voice.synth.volume.value = params.volume;
@@ -138,7 +149,11 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     for (const filter of this._filters.values()) {
       filter.dispose();
     }
+    for (const panner of this._panners.values()) {
+      panner.dispose();
+    }
     this._filters.clear();
+    this._panners.clear();
     this._output.dispose();
     super.dispose();
   }

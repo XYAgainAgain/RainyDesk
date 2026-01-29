@@ -56,20 +56,262 @@ fn get_rainscapes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(rainscapes_dir)
 }
 
-/// Create the default rainscape configuration
+/// Create the default rainscape configuration (v2.0 schema)
 fn create_default_rainscape() -> serde_json::Value {
     serde_json::json!({
         "name": "Default",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "description": "Balanced rain soundscape with gentle wind",
+        "author": "RainyDesk",
+        "tags": ["default", "ambient", "relaxing"],
+
         "rain": {
             "intensity": 50,
-            "wind": 0,
-            "turbulence": 0.3
+            "wind": 15,
+            "turbulence": 0.3,
+            "dropSize": {
+                "min": 1.5,
+                "max": 4.0
+            },
+            "splashEnabled": true
         },
+
         "audio": {
-            "masterVolume": 50,
-            "sheetVolume": 0.6,
-            "impactVolume": 0.8
+            "masterVolume": -6,
+
+            "impact": {
+                "enabled": true,
+                "noiseType": "pink",
+                "attack": 0.001,
+                "decayMin": 0.03,
+                "decayMax": 0.08,
+                "filterFreqMin": 2000,
+                "filterFreqMax": 8000,
+                "filterQ": 1,
+                "gain": 0,
+                "poolSize": 12
+            },
+
+            "bubble": {
+                "enabled": true,
+                "oscillatorType": "sine",
+                "attack": 0.005,
+                "decayMin": 0.05,
+                "decayMax": 0.15,
+                "chirpAmount": 0.1,
+                "chirpTime": 0.1,
+                "freqMin": 500,
+                "freqMax": 4000,
+                "probability": 0,
+                "gain": -3,
+                "poolSize": 8
+            },
+
+            "sheet": {
+                "noiseType": "pink",
+                "filterType": "lowpass",
+                "filterFreq": 2000,
+                "filterQ": 1,
+                "minVolume": -60,
+                "maxVolume": -12,
+                "maxParticleCount": 500,
+                "rampTime": 0.1
+            },
+
+            "wind": {
+                "masterGain": -12,
+                "bed": {
+                    "enabled": true,
+                    "noiseType": "pink",
+                    "baseGain": -24,
+                    "lpfFreq": 800,
+                    "hpfFreq": 80,
+                    "lfoRate": 0.15,
+                    "lfoDepth": 0.3
+                },
+                "interaction": {
+                    "enabled": false,
+                    "cornerWhistleGain": -30,
+                    "eaveDripGain": -36,
+                    "rattleGain": -40
+                },
+                "gust": {
+                    "enabled": true,
+                    "minInterval": 8,
+                    "maxInterval": 25,
+                    "riseTime": 1.5,
+                    "fallTime": 3,
+                    "intensityRange": [0.3, 0.8]
+                },
+                "aeolian": {
+                    "enabled": false,
+                    "strouhalNumber": 0.2,
+                    "wireDiameter": 4,
+                    "baseFreq": 400,
+                    "harmonics": [1, 2, 3],
+                    "gain": -30
+                },
+                "singing": {
+                    "enabled": false,
+                    "mode": "aeolian",
+                    "rootNote": "A3",
+                    "vowelFormants": {
+                        "f1": 730,
+                        "f2": 1090,
+                        "f3": 2440,
+                        "f4": 3400,
+                        "f5": 4500
+                    },
+                    "gain": -28
+                },
+                "katabatic": {
+                    "enabled": false,
+                    "lowFreqBoost": 6,
+                    "surgeRate": 0.08,
+                    "gain": -30
+                }
+            },
+
+            "thunder": {
+                "masterGain": -6,
+                "minInterval": 30,
+                "maxInterval": 120,
+                "distanceRange": [1, 15],
+                "sidechainEnabled": true,
+                "sidechainRatio": 4,
+                "sidechainAttack": 0.01,
+                "sidechainRelease": 0.5,
+                "tearing": {
+                    "enabled": true,
+                    "noiseType": "white",
+                    "hpfFreq": 4000,
+                    "attackTime": 0.005,
+                    "decayTime": 0.15,
+                    "gain": -12
+                },
+                "crack": {
+                    "enabled": true,
+                    "frequency": 80,
+                    "harmonics": 6,
+                    "attackTime": 0.002,
+                    "decayTime": 0.3,
+                    "gain": -6
+                },
+                "body": {
+                    "enabled": true,
+                    "noiseType": "brown",
+                    "lpfFreq": 400,
+                    "reverbDecay": 4,
+                    "gain": -8
+                },
+                "rumble": {
+                    "enabled": true,
+                    "frequency": 35,
+                    "lfoRate": 0.3,
+                    "duration": 8,
+                    "gain": -10
+                }
+            },
+
+            "matrix": {
+                "masterGain": -12,
+                "drop": {
+                    "enabled": false,
+                    "carrierFreq": 800,
+                    "modulatorRatio": 2,
+                    "modulationIndex": 5,
+                    "glideTime": 0.15,
+                    "attackTime": 0.005,
+                    "decayTime": 0.2,
+                    "gain": -12
+                },
+                "drone": {
+                    "enabled": false,
+                    "baseFreq": 60,
+                    "beatFreq": 4,
+                    "phaserRate": 0.2,
+                    "phaserDepth": 0.5,
+                    "gain": -24
+                },
+                "glitch": {
+                    "enabled": false,
+                    "bitDepth": 8,
+                    "sampleRateReduction": 4,
+                    "probability": 0.1,
+                    "gain": -18
+                }
+            },
+
+            "sfx": {
+                "rainBus": {
+                    "gain": 0,
+                    "mute": false,
+                    "solo": false,
+                    "pan": 0,
+                    "eqLow": 0,
+                    "eqMid": 0,
+                    "eqHigh": 0,
+                    "compressorEnabled": true,
+                    "compressorThreshold": -18,
+                    "compressorRatio": 3,
+                    "reverbSend": 0.3,
+                    "delaySend": 0
+                },
+                "windBus": {
+                    "gain": -6,
+                    "mute": false,
+                    "solo": false,
+                    "pan": 0,
+                    "eqLow": 0,
+                    "eqMid": 0,
+                    "eqHigh": 0,
+                    "compressorEnabled": false,
+                    "compressorThreshold": -24,
+                    "compressorRatio": 4,
+                    "reverbSend": 0.2,
+                    "delaySend": 0
+                },
+                "thunderBus": {
+                    "gain": 0,
+                    "mute": false,
+                    "solo": false,
+                    "pan": 0,
+                    "eqLow": 0,
+                    "eqMid": 0,
+                    "eqHigh": 0,
+                    "compressorEnabled": false,
+                    "compressorThreshold": -24,
+                    "compressorRatio": 4,
+                    "reverbSend": 0.4,
+                    "delaySend": 0
+                },
+                "matrixBus": {
+                    "gain": -12,
+                    "mute": false,
+                    "solo": false,
+                    "pan": 0,
+                    "eqLow": 0,
+                    "eqMid": 0,
+                    "eqHigh": 0,
+                    "compressorEnabled": false,
+                    "compressorThreshold": -24,
+                    "compressorRatio": 4,
+                    "reverbSend": 0.5,
+                    "delaySend": 0.3
+                },
+                "masterBus": {
+                    "gain": -6,
+                    "limiterEnabled": true,
+                    "limiterThreshold": -1
+                }
+            }
+        },
+
+        "visual": {
+            "pixelScale": 0.25,
+            "colorTint": "#7799ff",
+            "trailLength": 0.8,
+            "splashOpacity": 0.7
         }
     })
 }
