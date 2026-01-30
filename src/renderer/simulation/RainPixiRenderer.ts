@@ -188,7 +188,7 @@ export class RainPixiRenderer {
 
         // Create a soft circular splash with radial gradient
         const splashGraphics = new Graphics();
-        splashGraphics.circle(0, 0, 3);
+        splashGraphics.circle(0, 0, 1.5);  // Smaller splash (was 3)
         splashGraphics.fill({ color: 0xa0c4e8, alpha: 0.35 });
         this.splashTexture = this.app.renderer.generateTexture(splashGraphics);
     }
@@ -421,24 +421,43 @@ export class RainPixiRenderer {
     /**
      * Update the pixel buffer from grid data.
      * Converts Uint8Array cell values to RGBA colors.
+     * Applies bottom-fade for taskbar visibility.
      */
     private updatePuddleBuffer(grid: Uint8Array): void {
-        if (!this.puddlePixelBuffer) return;
+        if (!this.puddlePixelBuffer || !this.puddleCanvas) return;
 
         const buffer = this.puddlePixelBuffer;
+        const width = this.puddleCanvas.width;
+        const height = this.puddleCanvas.height;
 
-        // Color mapping (ABGR format for Uint32Array on little-endian)
-        const COLOR_AIR = 0x00000000;        // Transparent
-        const COLOR_WATER = 0xA0bbaa99;      // Semi-transparent grey-blue (AABBGGRR) - matches raindrop color
+        // Color components (RGB: 99, aa, bb in AABBGGRR format)
+        const COLOR_AIR = 0x00000000;
+        const waterR = 0x99;
+        const waterG = 0xaa;
+        const waterB = 0xbb;
+        const baseAlpha = 0xA0; // ~63% opacity
+
+        // Bottom fade: start fading at 85% height, reach minimum at 100%
+        const fadeStartY = Math.floor(height * 0.85);
+        const minAlpha = 0x0D; // ~5% opacity (95% transparent)
 
         for (let i = 0; i < grid.length; i++) {
             const cellValue = grid[i]!;
 
-            // Map cell type to color
             if (cellValue === CELL_WATER) {
-                buffer[i] = COLOR_WATER;
+                const y = Math.floor(i / width);
+
+                // Calculate alpha with bottom fade
+                let alpha = baseAlpha;
+                if (y > fadeStartY) {
+                    const fadeProgress = (y - fadeStartY) / (height - fadeStartY);
+                    alpha = Math.floor(baseAlpha - (baseAlpha - minAlpha) * fadeProgress);
+                }
+
+                // Pack as AABBGGRR (little-endian)
+                buffer[i] = (alpha << 24) | (waterB << 16) | (waterG << 8) | waterR;
             } else {
-                buffer[i] = COLOR_AIR; // Air and glass both transparent
+                buffer[i] = COLOR_AIR;
             }
         }
     }

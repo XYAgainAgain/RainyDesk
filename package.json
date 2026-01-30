@@ -7,6 +7,7 @@
     "build:types": "tsc --noEmit",
     "build:tauri-api": "esbuild src/renderer/tauri-api.js --bundle --format=esm --outfile=src/renderer/tauri-api.bundle.js --sourcemap",
     "build:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap",
+    "build:audio-standalone": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=dist/audio.standalone.bundle.js --sourcemap",
     "build:rainscaper": "esbuild src/renderer/rainscaper/index.ts --bundle --format=esm --outfile=src/renderer/rainscaper.bundle.js --sourcemap",
     "build:simulation": "esbuild src/renderer/simulation/index.ts --bundle --format=esm --outfile=src/renderer/simulation.bundle.js --external:pixi.js --sourcemap",
     "watch:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap --watch",

@@ -11,7 +11,7 @@ const BUILT_IN_MATERIALS: Record<string, MaterialConfig> = {
   glass_window: {
     id: 'glass_window',
     name: 'Glass Window',
-    bubbleProbability: 0.4,
+    bubbleProbability: 0,  // Disabled by default - annoying until presets available
     impactSynthType: 'noise',
     bubbleOscillatorType: 'sine',
     filterFreq: 4000,
@@ -25,7 +25,7 @@ const BUILT_IN_MATERIALS: Record<string, MaterialConfig> = {
   water: {
     id: 'water',
     name: 'Water/Puddle',
-    bubbleProbability: 0.7,
+    bubbleProbability: 0,  // Disabled by default
     impactSynthType: 'noise',
     bubbleOscillatorType: 'sine',
     filterFreq: 2000,
@@ -95,7 +95,7 @@ const BUILT_IN_MATERIALS: Record<string, MaterialConfig> = {
   default: {
     id: 'default',
     name: 'Default',
-    bubbleProbability: 0.4,
+    bubbleProbability: 0,  // Disabled by default
     impactSynthType: 'noise',
     bubbleOscillatorType: 'sine',
     filterFreq: 3000,

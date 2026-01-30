@@ -33,7 +33,9 @@ export class GridSimulation {
 
     // === Grid state (Eulerian layer) ===
     private grid: Uint8Array;
-    private waterEnergy: Float32Array;  // Energy per cell for bounce effect
+    private waterEnergy: Float32Array;    // Energy per cell for bounce effect
+    private waterMomentumX: Float32Array; // Horizontal momentum (-1 to 1) for sloshing
+    private processedThisFrame: Uint8Array; // Cascade prevention: marks moved cells
 
     // === Void mask & spawn/floor maps (mega-window architecture) ===
     private voidMask: Uint8Array | null = null;        // 1 = void, 0 = usable
@@ -63,6 +65,13 @@ export class GridSimulation {
     private rainAccumulator = 0;
     private puddleAccumulator = 0;
     private spawnAccumulator = 0;
+
+    // === Evaporation system ===
+    private evaporationTimer = 0;  // Total time elapsed since simulation start
+
+    // === Splash throttling ===
+    private splashesThisFrame = 0;
+    private readonly MAX_SPLASHES_PER_FRAME = 20;
 
     // === Audio callback ===
     public onCollision: CollisionCallback | null = null;
@@ -117,6 +126,8 @@ export class GridSimulation {
         // Allocate grid and energy arrays
         this.grid = new Uint8Array(this.gridWidth * this.gridHeight);
         this.waterEnergy = new Float32Array(this.gridWidth * this.gridHeight);
+        this.waterMomentumX = new Float32Array(this.gridWidth * this.gridHeight);
+        this.processedThisFrame = new Uint8Array(this.gridWidth * this.gridHeight);
 
         // Initialize grid with void cells if void mask provided
         if (this.voidMask) {
@@ -155,6 +166,8 @@ export class GridSimulation {
         this.rainAccumulator += dt;
         this.puddleAccumulator += dt;
         this.spawnAccumulator += dt;
+        this.evaporationTimer += dt;
+        this.splashesThisFrame = 0; // Reset splash throttle
 
         // Spawn new drops
         while (this.spawnAccumulator >= 1 / this.config.spawnRate) {
@@ -169,11 +182,14 @@ export class GridSimulation {
             this.rainAccumulator -= RAIN_TICK;
         }
 
-        // Puddle automata at 30Hz
+        // Puddle automata at 60Hz
         while (this.puddleAccumulator >= PUDDLE_TICK) {
             this.stepPuddles(PUDDLE_TICK);
             this.puddleAccumulator -= PUDDLE_TICK;
         }
+
+        // Global evaporation (gentle equilibrium system)
+        this.applyEvaporation(dt);
 
         // Splashes every frame (visual-only)
         this.stepSplashes(dt);
@@ -208,10 +224,20 @@ export class GridSimulation {
     }
 
     /**
-     * Set wind strength.
+     * Set wind strength (0-100 slider value).
+     * Scaled to logic pixels/sec for noticeable effect.
      */
     setWind(wind: number): void {
-        this.config.windBase = wind;
+        // Scale: 0 = no wind, 100 = strong wind (150 logic px/sec = 600 screen px/sec)
+        this.config.windBase = wind * 1.5;
+    }
+
+    /**
+     * Set gravity (real-time adjustable).
+     * @param gravity Gravity in logic pixels/sec² (default 980)
+     */
+    setGravity(gravity: number): void {
+        this.config.gravity = gravity;
     }
 
     /**
@@ -293,7 +319,7 @@ export class GridSimulation {
 
         // Initial velocity (slight horizontal from wind)
         this.dropsVelX[i] = windBase + (Math.random() - 0.5) * windTurbulence;
-        this.dropsVelY[i] = 150 + Math.random() * 100; // Start with good downward momentum
+        this.dropsVelY[i] = 200 + Math.random() * 150; // Start with good downward momentum (200-350)
 
         // Full opacity
         this.dropsOpacity[i] = 1.0;
@@ -301,7 +327,10 @@ export class GridSimulation {
 
     private stepRain(dt: number): void {
         const { gravity, windBase, slipThreshold } = this.config;
-        const terminalVelocity = 300; // Logic px/s (~1200 screen px/s, realistic rain)
+        // Terminal velocity scales with gravity (default: 980 → 350 logic px/s)
+        // Higher gravity = faster terminal velocity, lower gravity = slower
+        // Minimum of 50 prevents zero-gravity from freezing drops
+        const terminalVelocity = Math.max(50, 350 * (gravity / 980));
 
         for (let i = 0; i < this.dropCount; i++) {
             // Store previous position for collision detection
@@ -316,8 +345,8 @@ export class GridSimulation {
                 this.dropsVelY[i] = terminalVelocity;
             }
 
-            // Apply wind (lerp toward target)
-            this.dropsVelX[i] = this.dropsVelX[i]! + (windBase - this.dropsVelX[i]!) * 0.1 * dt * 60;
+            // Apply wind (lerp toward target, faster response)
+            this.dropsVelX[i] = this.dropsVelX[i]! + (windBase - this.dropsVelX[i]!) * 0.3 * dt * 60;
 
             // Integrate position
             this.dropsX[i] = this.dropsX[i]! + this.dropsVelX[i]! * dt;
@@ -351,7 +380,44 @@ export class GridSimulation {
             const cellIndex = cellY * this.gridWidth + cellX;
             const cellValue = this.grid[cellIndex]!;
 
-            // Check for Air→Wall transition
+            // VOID cells: immediate despawn with splash (no air-transition check needed)
+            // This handles rain falling off monitor edges into gaps
+            if (cellValue === CELL_VOID) {
+                // Spawn splash at edge
+                this.spawnSplash(this.dropsX[i]!, this.dropsY[i]!, this.dropsVelX[i]!, this.dropsVelY[i]!);
+                this.despawnDrop(i);
+                i--;
+                continue;
+            }
+
+            // Floor collision: check if we've hit the work area floor
+            if (this.floorMap) {
+                const floorY = this.floorMap[cellX];
+                if (floorY !== undefined && cellY >= floorY && this.dropsPrevY[i]! < floorY) {
+                    // Hit the floor - spawn splash and create puddle
+                    this.triggerAudio(i, CELL_GLASS, this.dropsX[i]!, floorY, 'top');
+                    this.spawnSplash(this.dropsX[i]!, floorY, this.dropsVelX[i]!, this.dropsVelY[i]!);
+
+                    // Create water at floor if cell is air
+                    const floorIndex = floorY * this.gridWidth + cellX;
+                    if (floorIndex >= 0 && floorIndex < this.grid.length && this.grid[floorIndex] === CELL_AIR) {
+                        this.grid[floorIndex] = CELL_WATER;
+                        const impactSpeed = Math.sqrt(
+                            this.dropsVelX[i]! * this.dropsVelX[i]! +
+                            this.dropsVelY[i]! * this.dropsVelY[i]!
+                        );
+                        this.waterEnergy[floorIndex] = Math.min(impactSpeed * 0.01, 0.6);
+                        // Set initial momentum from rain's horizontal velocity
+                        this.waterMomentumX[floorIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
+                    }
+
+                    this.despawnDrop(i);
+                    i--;
+                    continue;
+                }
+            }
+
+            // Check for Air→Glass/Water transition
             if (cellValue !== CELL_AIR) {
                 const prevIndex = prevCellY * this.gridWidth + prevCellX;
                 const wasInAir = prevIndex < 0 || prevIndex >= this.grid.length ||
@@ -368,18 +434,17 @@ export class GridSimulation {
                         // Spawn splash
                         this.spawnSplash(collision.x, collision.y, this.dropsVelX[i]!, this.dropsVelY[i]!);
 
-                        // Convert to puddle if hitting wall (but not void)
+                        // Convert to puddle if hitting glass wall
                         if (cellValue === CELL_GLASS) {
                             this.grid[cellIndex] = CELL_WATER;
-                            // Set initial energy based on impact velocity (for bounce)
-                            // Reduced multiplier for less jitter
+                            // Set initial energy based on impact velocity
                             const impactSpeed = Math.sqrt(
                                 this.dropsVelX[i]! * this.dropsVelX[i]! +
                                 this.dropsVelY[i]! * this.dropsVelY[i]!
                             );
-                            this.waterEnergy[cellIndex] = Math.min(impactSpeed * 0.008, 0.5);
-                        } else if (cellValue === CELL_VOID) {
-                            // Void cells stay void (no puddling in gaps between monitors)
+                            this.waterEnergy[cellIndex] = Math.min(impactSpeed * 0.01, 0.6);
+                            // Set initial momentum from rain's horizontal velocity (normalized to -1..1)
+                            this.waterMomentumX[cellIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
                         }
 
                         // Despawn drop
@@ -486,15 +551,19 @@ export class GridSimulation {
         // Cellular automata with bounce and cohesion
         // Water has energy (bounce) and is attracted to nearby water (cohesion)
 
+        // Reset processed flag array (prevents cascade bugs)
+        this.processedThisFrame.fill(0);
+
         const { wallAdhesion } = this.config;
-        const energyDecay = 0.7;        // Faster decay for quicker settling
-        const restThreshold = 0.05;     // Below this, water is at rest
-        const minFallEnergy = 0.02;     // Minimum energy added on fall (was 0.2)
+        const energyDecay = 0.922;
+        const restThreshold = 0.02;     // Very low threshold - water almost always flows
+        const minFallEnergy = 0.05;     // Energy boost on fall
+        const baseEnergy = 0.05;        // Minimum energy water always has (for gravity)
 
         // Bottom-up iteration (skip bottom row as it has nowhere to flow)
         for (let y = this.gridHeight - 2; y >= 0; y--) {
-            // Randomize horizontal scan direction each row (prevents bias)
-            const scanLeft = Math.random() > 0.5;
+            // Alternate scan direction by row (FLIPPED to test bias direction)
+            const scanLeft = y % 2 !== 0;
             const startX = scanLeft ? 0 : this.gridWidth - 1;
             const endX = scanLeft ? this.gridWidth : -1;
             const stepX = scanLeft ? 1 : -1;
@@ -503,7 +572,11 @@ export class GridSimulation {
                 const index = y * this.gridWidth + x;
                 if (this.grid[index] !== CELL_WATER) continue;
 
-                let energy = this.waterEnergy[index]!;
+                // Skip cells already processed this frame (prevents cascade bugs)
+                if (this.processedThisFrame[index]) continue;
+
+                // Ensure minimum energy so water always tries to flow
+                let energy = Math.max(baseEnergy, this.waterEnergy[index]!);
 
                 // Check if adjacent to wall (triggers adhesion mechanic)
                 const hasWallNeighbor = this.hasAdjacentWall(x, y);
@@ -514,40 +587,54 @@ export class GridSimulation {
                     continue;
                 }
 
-                // === REST STATE: Skip processing if energy is negligible ===
-                // Only check gravity - if we can fall, we're not at rest
-                const belowIndex = (y + 1) * this.gridWidth + x;
-                const canFall = y + 1 < this.gridHeight && this.grid[belowIndex] === CELL_AIR;
+                // Get momentum for sloshing
+                let momentum = this.waterMomentumX[index]!;
 
-                if (energy < restThreshold && !canFall) {
-                    // Truly at rest - zero out energy and skip
-                    this.waterEnergy[index] = 0;
-                    continue;
-                }
+                // Per-tick momentum decay (idle decay at 60 Hz)
+                this.waterMomentumX[index] = momentum * 0.959;
 
                 // === BOUNCE: If high energy, try to move UP first ===
-                if (energy > 0.3 && Math.random() < energy) {
-                    if (this.tryMoveWaterWithEnergy(index, x, y - 1, energy * 0.5)) {
+                if (energy > 0.4 && Math.random() < energy * 0.5) {
+                    if (this.tryMoveWaterWithEnergy(index, x, x, y - 1, energy * 0.4)) {
                         continue;
                     }
                     // Bounce failed (blocked), convert some energy to horizontal
                     const bounceDir = Math.random() > 0.5 ? 1 : -1;
-                    if (this.tryMoveWaterWithEnergy(index, x + bounceDir, y - 1, energy * 0.4)) {
+                    if (this.tryMoveWaterWithEnergy(index, x, x + bounceDir, y - 1, energy * 0.3)) {
                         continue;
                     }
+                    // Bounce completely blocked - spawn splash!
+                    if (energy > 0.5) {
+                        this.spawnPuddleSplash(x, y, energy);
+                    }
                 }
+
+                // === MOMENTUM SLOSH: DISABLED for bias testing ===
+                // if (Math.abs(momentum) > 0.3 && energy > 0.15) {
+                //     const pushDir = momentum > 0 ? 1 : -1;
+                //     const pushStrength = Math.abs(momentum);
+                //     if (this.tryMoveWaterWithEnergy(index, x, x + pushDir, y, energy * 0.9)) {
+                //         continue;
+                //     }
+                //     if (pushStrength > 0.6 && energy > 0.3) {
+                //         if (this.tryMoveWaterWithEnergy(index, x, x + pushDir, y - 1, energy * 0.7)) {
+                //             continue;
+                //         }
+                //     }
+                // }
 
                 // === COHESION: Count nearby water for mass-based speed ===
                 const nearbyMass = this.countNearbyWater(x, y);
                 const massBonus = Math.min(4, Math.floor(nearbyMass / 2));
 
                 // === GRAVITY: Try to move down (multiple cells for speed) ===
-                const baseFall = 2 + Math.floor(energy * 3);
+                // Always try to fall - gravity works regardless of energy
+                const baseFall = 2 + Math.floor(energy * 6);
                 const fallDist = Math.min(12, baseFall + massBonus);
                 let fell = false;
                 for (let dy = fallDist; dy >= 1; dy--) {
-                    // Minimal energy boost on fall, mostly preserve with decay
-                    if (this.tryMoveWaterWithEnergy(index, x, y + dy, energy * energyDecay + minFallEnergy)) {
+                    // Energy boost on fall keeps water flowing
+                    if (this.tryMoveWaterWithEnergy(index, x, x, y + dy, energy * energyDecay + minFallEnergy)) {
                         fell = true;
                         break;
                     }
@@ -555,37 +642,49 @@ export class GridSimulation {
                 if (fell) continue;
 
                 // === DIAGONAL DOWN ===
-                const tryLeftFirst = Math.random() > 0.5;
-                const diag1X = tryLeftFirst ? x - 1 : x + 1;
-                const diag2X = tryLeftFirst ? x + 1 : x - 1;
-
-                // Try diagonal at multiple distances
-                for (let dy = Math.min(3, 1 + massBonus); dy >= 1; dy--) {
-                    if (this.tryMoveWaterWithEnergy(index, diag1X, y + dy, energy * energyDecay)) { fell = true; break; }
-                    if (this.tryMoveWaterWithEnergy(index, diag2X, y + dy, energy * energyDecay)) { fell = true; break; }
+                // Pure random direction (checkerboard had subtle bias with scan order)
+                const diagDir = Math.random() > 0.5 ? -1 : 1;
+                if (this.tryMoveWaterWithEnergy(index, x, x + diagDir, y + 1, energy * energyDecay + minFallEnergy * 0.5)) {
+                    continue;
                 }
-                if (fell) continue;
+                if (this.tryMoveWaterWithEnergy(index, x, x - diagDir, y + 1, energy * energyDecay + minFallEnergy * 0.5)) {
+                    continue;
+                }
 
-                // === COHESION: Move toward nearby water masses (only if energy allows) ===
-                if (energy > restThreshold) {
-                    const cohesionDir = this.findCohesionDirection(x, y);
-                    if (cohesionDir !== 0) {
-                        // Single cell movement toward mass, no energy boost
-                        if (this.tryMoveWaterWithEnergy(index, x + cohesionDir, y, energy * energyDecay)) {
-                            continue;
+                // Check if water has settled (something below it)
+                const hasSupport = y + 1 >= this.gridHeight ||
+                    (y + 1 < this.gridHeight && this.grid[(y + 1) * this.gridWidth + x] !== CELL_AIR);
+
+                // === HORIZONTAL SPREAD: Aggressive spreading for fluid-like behavior ===
+                // Water seeks its own level - spread until height equalizes
+                if (hasSupport) {
+                    const spreadDir = Math.random() > 0.5 ? -1 : 1;
+                    let spread = false;
+                    // Try spreading up to 3 cells horizontally (finds gaps in puddles)
+                    for (let dist = 1; dist <= 3; dist++) {
+                        if (this.tryMoveWaterWithEnergy(index, x, x + spreadDir * dist, y, energy * energyDecay)) {
+                            spread = true;
+                            break;
                         }
                     }
-
-                    // === HORIZONTAL SPREAD ===
-                    const side1X = tryLeftFirst ? x - 1 : x + 1;
-                    const side2X = tryLeftFirst ? x + 1 : x - 1;
-
-                    if (this.tryMoveWaterWithEnergy(index, side1X, y, energy * energyDecay)) continue;
-                    if (this.tryMoveWaterWithEnergy(index, side2X, y, energy * energyDecay)) continue;
+                    if (spread) continue;
+                    // If first direction blocked, try the other
+                    for (let dist = 1; dist <= 3; dist++) {
+                        if (this.tryMoveWaterWithEnergy(index, x, x - spreadDir * dist, y, energy * energyDecay)) {
+                            spread = true;
+                            break;
+                        }
+                    }
+                    if (spread) continue;
                 }
 
                 // No valid moves → water stays, decay energy
-                this.waterEnergy[index] = energy * energyDecay;
+                // High-energy water that's completely stuck creates splash (impact spray)
+                if (energy > 0.45 && Math.random() < 0.3) {
+                    this.spawnPuddleSplash(x, y, energy);
+                }
+                this.waterEnergy[index] = Math.max(restThreshold, energy * energyDecay);
+                // Note: Momentum already decayed per-tick earlier in loop
             }
         }
 
@@ -597,11 +696,11 @@ export class GridSimulation {
 
                 const index = floorY * this.gridWidth + x;
                 if (this.grid[index] === CELL_WATER) {
-                    // 60% drain chance per tick
-                    if (Math.random() < 0.60) {
-                        this.grid[index] = CELL_AIR;
-                        this.waterEnergy[index] = 0;
-                    }
+                    // Floor drain DISABLED for testing - evaporation only
+                    // if (Math.random() < 0.05) {
+                    //     this.grid[index] = CELL_AIR;
+                    //     this.waterEnergy[index] = 0;
+                    // }
                 }
             }
         }
@@ -631,51 +730,46 @@ export class GridSimulation {
         return count;
     }
 
-    /**
-     * Find direction toward largest nearby water mass (cohesion).
-     * Returns -1 (left), 0 (no preference), or 1 (right).
-     */
-    private findCohesionDirection(x: number, y: number): number {
-        // Count water cells in a small radius on each side
-        const searchRadius = 3;
-        let leftCount = 0;
-        let rightCount = 0;
-
-        for (let dy = -1; dy <= 1; dy++) {
-            const ny = y + dy;
-            if (ny < 0 || ny >= this.gridHeight) continue;
-
-            // Check left side
-            for (let dx = 1; dx <= searchRadius; dx++) {
-                const nx = x - dx;
-                if (nx < 0) break;
-                if (this.grid[ny * this.gridWidth + nx] === CELL_WATER) {
-                    leftCount += (searchRadius - dx + 1); // Weight closer cells more
-                }
-            }
-
-            // Check right side
-            for (let dx = 1; dx <= searchRadius; dx++) {
-                const nx = x + dx;
-                if (nx >= this.gridWidth) break;
-                if (this.grid[ny * this.gridWidth + nx] === CELL_WATER) {
-                    rightCount += (searchRadius - dx + 1);
-                }
-            }
-        }
-
-        // Return direction toward larger mass (with threshold to avoid jitter)
-        const diff = rightCount - leftCount;
-        if (diff > 2) return 1;
-        if (diff < -2) return -1;
-        return 0;
-    }
+    // === COHESION FUNCTION DISABLED FOR BIAS TESTING ===
+    // /**
+    //  * Find direction toward largest nearby water mass (cohesion).
+    //  * Returns -1 (left), 0 (no preference), or 1 (right).
+    //  */
+    // private findCohesionDirection(x: number, y: number): number {
+    //     const searchRadius = 2;
+    //     let leftCount = 0;
+    //     let rightCount = 0;
+    //     for (let dy = -1; dy <= 1; dy++) {
+    //         const ny = y + dy;
+    //         if (ny < 0 || ny >= this.gridHeight) continue;
+    //         for (let dx = 1; dx <= searchRadius; dx++) {
+    //             const nx = x - dx;
+    //             if (nx < 0) break;
+    //             if (this.grid[ny * this.gridWidth + nx] === CELL_WATER) {
+    //                 leftCount += (searchRadius - dx + 1);
+    //             }
+    //         }
+    //         for (let dx = 1; dx <= searchRadius; dx++) {
+    //             const nx = x + dx;
+    //             if (nx >= this.gridWidth) break;
+    //             if (this.grid[ny * this.gridWidth + nx] === CELL_WATER) {
+    //                 rightCount += (searchRadius - dx + 1);
+    //             }
+    //         }
+    //     }
+    //     const diff = rightCount - leftCount;
+    //     if (diff > 2) return 1;
+    //     if (diff < -2) return -1;
+    //     return 0;
+    // }
 
     /**
-     * Move water and transfer energy.
+     * Move water, transfer energy, and update momentum.
+     * @param srcX Source X coordinate (needed for momentum calculation)
      */
     private tryMoveWaterWithEnergy(
         srcIndex: number,
+        _srcX: number,
         destX: number,
         destY: number,
         newEnergy: number
@@ -697,9 +791,18 @@ export class GridSimulation {
         this.grid[srcIndex] = CELL_AIR;
         this.grid[destIndex] = CELL_WATER;
 
+        // Mark destination as processed (prevents cascade bugs)
+        this.processedThisFrame[destIndex] = 1;
+
         // Transfer energy
         this.waterEnergy[srcIndex] = 0;
         this.waterEnergy[destIndex] = newEnergy;
+
+        // Preserve momentum with decay (don't add gain - causes feedback loops)
+        const oldMomentum = this.waterMomentumX[srcIndex]!;
+        const newMomentum = Math.max(-1, Math.min(1, oldMomentum * 0.922));
+        this.waterMomentumX[srcIndex] = 0;
+        this.waterMomentumX[destIndex] = newMomentum;
 
         return true;
     }
@@ -751,8 +854,7 @@ export class GridSimulation {
     }
 
     private spawnSplash(x: number, y: number, impactVelX: number, impactVelY: number): void {
-        // Spawn 3–5 splash particles
-        const count = 3 + Math.floor(Math.random() * 3);
+        const count = 2 + Math.floor(Math.random() * 3);
         const speed = Math.sqrt(impactVelX * impactVelX + impactVelY * impactVelY);
 
         for (let j = 0; j < count; j++) {
@@ -764,11 +866,44 @@ export class GridSimulation {
 
             // Random upward spray
             const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.8;
-            const splashSpeed = speed * (0.2 + Math.random() * 0.3);
+            const splashSpeed = speed * (0.16 + Math.random() * 0.24);
             this.splashVelX[i] = Math.cos(angle) * splashSpeed;
             this.splashVelY[i] = Math.sin(angle) * splashSpeed;
 
             this.splashLife[i] = 1.0;
+        }
+    }
+
+    /**
+     * Spawn splash particles from puddle physics (energy-based).
+     * Called when high-energy puddle water bounces or gets displaced.
+     * Throttled to prevent flash floods.
+     */
+    private spawnPuddleSplash(x: number, y: number, energy: number): void {
+        // Throttle: limit splashes per frame to prevent flash
+        if (this.splashesThisFrame >= this.MAX_SPLASHES_PER_FRAME) return;
+
+        // Fewer splashes, more conservative (1-2 based on energy)
+        const count = 1 + Math.floor(energy * 2);
+        // Convert grid energy to splash speed (energy 0.5 → ~60 speed)
+        const baseSpeed = energy * 120;
+
+        for (let j = 0; j < count; j++) {
+            if (this.splashCount >= this.config.maxSplashes) break;
+            if (this.splashesThisFrame >= this.MAX_SPLASHES_PER_FRAME) break;
+
+            const i = this.splashCount++;
+            this.splashesThisFrame++;
+            this.splashX[i] = x;
+            this.splashY[i] = y;
+
+            // Random spray direction (mostly upward, but wider spread than raindrop splashes)
+            const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.2;
+            const splashSpeed = baseSpeed * (0.3 + Math.random() * 0.7);
+            this.splashVelX[i] = Math.cos(angle) * splashSpeed;
+            this.splashVelY[i] = Math.sin(angle) * splashSpeed;
+
+            this.splashLife[i] = 0.8 + Math.random() * 0.4; // Slightly variable lifetime
         }
     }
 
@@ -834,37 +969,76 @@ export class GridSimulation {
 
     /**
      * Displace water when a window moves into it.
-     * 80% push to adjacent air, 20% destroy.
+     * Searches wide radius for air, energizes nearby water if trapped.
      */
     private displaceWater(x: number, y: number): void {
-        // 20% chance to just destroy (squeezed out)
-        if (Math.random() < 0.2) return;
+        const displacementEnergy = 0.55;
 
-        // 80% try to push - upward priority, then sideways
-        const directions = [
-            { dx: 0, dy: -1 }, // Up
-            { dx: -1, dy: -1 }, // Up-left
-            { dx: 1, dy: -1 },  // Up-right
-            { dx: 0, dy: -2 }, // Up 2
-            { dx: -1, dy: 0 }, // Left
-            { dx: 1, dy: 0 },  // Right
-            { dx: -2, dy: 0 }, // Left 2
-            { dx: 2, dy: 0 },  // Right 2
-        ];
+        // Always spawn splash for visual feedback
+        this.spawnPuddleSplash(x, y, displacementEnergy);
 
-        for (const { dx, dy } of directions) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || nx >= this.gridWidth || ny < 0 || ny >= this.gridHeight) continue;
+        // Randomize left/right to prevent directional bias
+        const lr = Math.random() > 0.5 ? 1 : -1;
 
-            const neighborIndex = ny * this.gridWidth + nx;
-            if (this.grid[neighborIndex] === CELL_AIR) {
-                this.grid[neighborIndex] = CELL_WATER;
-                this.waterEnergy[neighborIndex] = 0.15; // Reduced bounce energy
-                return;
+        // Search in expanding rings up to radius 8
+        for (let radius = 1; radius <= 8; radius++) {
+            // Try cells at this radius (prioritize up, then sides)
+            const candidates: { dx: number; dy: number }[] = [];
+
+            // Up directions first (water rises when squeezed)
+            for (let dx = -radius; dx <= radius; dx++) {
+                candidates.push({ dx: dx * lr, dy: -radius });
+            }
+            // Side directions
+            for (let dy = -radius + 1; dy <= 0; dy++) {
+                candidates.push({ dx: radius * lr, dy });
+                candidates.push({ dx: -radius * lr, dy });
+            }
+
+            // Shuffle candidates at this radius for fairness
+            for (let i = candidates.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const temp = candidates[i]!;
+                candidates[i] = candidates[j]!;
+                candidates[j] = temp;
+            }
+
+            for (const { dx, dy } of candidates) {
+                const nx = x + dx;
+                const ny = y + dy;
+                if (nx < 0 || nx >= this.gridWidth || ny < 0 || ny >= this.gridHeight) continue;
+
+                const neighborIndex = ny * this.gridWidth + nx;
+                if (this.grid[neighborIndex] === CELL_AIR) {
+                    this.grid[neighborIndex] = CELL_WATER;
+                    this.waterEnergy[neighborIndex] = displacementEnergy;
+                    const pushMomentum = dx > 0 ? 0.9 : dx < 0 ? -0.9 : (Math.random() > 0.5 ? 0.5 : -0.5);
+                    this.waterMomentumX[neighborIndex] = pushMomentum;
+                    return;
+                }
             }
         }
-        // No valid destination - water is destroyed (squeezed out)
+
+        // Truly trapped - energize nearest water to create sloshing response
+        for (let radius = 1; radius <= 4; radius++) {
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    if (nx < 0 || nx >= this.gridWidth || ny < 0 || ny >= this.gridHeight) continue;
+
+                    const neighborIndex = ny * this.gridWidth + nx;
+                    if (this.grid[neighborIndex] === CELL_WATER) {
+                        // Boost energy and momentum of nearby water
+                        this.waterEnergy[neighborIndex] = Math.min(1, this.waterEnergy[neighborIndex]! + 0.4);
+                        this.waterMomentumX[neighborIndex] = Math.max(-1, Math.min(1,
+                            this.waterMomentumX[neighborIndex]! + (dx > 0 ? 0.5 : -0.5) * lr));
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     private triggerAudio(
@@ -917,12 +1091,57 @@ export class GridSimulation {
     }
 
     /**
+     * Global evaporation system - maintains equilibrium with spawn rate.
+     * Timeline:
+     *   0-60s: No evaporation (warmup, puddles accumulate)
+     *   60-120s: Evaporation ramps from 0% to 100% of spawn rate (gentle transition)
+     *   120s+: Full evaporation at spawn rate (equilibrium)
+     */
+    private applyEvaporation(dt: number): void {
+        const warmupTime = 60;  // First 60 seconds: no evaporation
+        const rampTime = 60;    // Next 60 seconds: gentle ramp to full effect
+
+        // Calculate evaporation rate based on elapsed time
+        let evaporationRate = 0;
+        if (this.evaporationTimer > warmupTime) {
+            const rampProgress = Math.min(1, (this.evaporationTimer - warmupTime) / rampTime);
+            // Barely past equilibrium for testing
+            evaporationRate = this.config.spawnRate * rampProgress * 1.01;
+        }
+
+        // Calculate how many particles to evaporate this frame
+        const particlesToEvaporate = evaporationRate * dt;
+        if (particlesToEvaporate < 0.01) return; // Skip if negligible
+
+        // Count total water particles
+        let waterCount = 0;
+        for (let i = 0; i < this.grid.length; i++) {
+            if (this.grid[i] === CELL_WATER) waterCount++;
+        }
+
+        if (waterCount === 0) return;
+
+        // Evaporate particles randomly across the grid
+        // Probability per water particle = particlesToEvaporate / waterCount
+        // Cap at 10% to prevent runaway evaporation at low water counts
+        const evaporationChance = Math.min(0.1, particlesToEvaporate / waterCount);
+
+        for (let i = 0; i < this.grid.length; i++) {
+            if (this.grid[i] === CELL_WATER && Math.random() < evaporationChance) {
+                this.grid[i] = CELL_AIR;
+                this.waterEnergy[i] = 0;
+                this.waterMomentumX[i] = 0;
+            }
+        }
+    }
+
+    /**
      * Clean up resources.
      */
     dispose(): void {
         // TypedArrays are garbage collected, but we can help by nulling references
         // @ts-expect-error Intentional cleanup
-        this.grid = this.waterEnergy = null;
+        this.grid = this.waterEnergy = this.waterMomentumX = this.processedThisFrame = null;
         // @ts-expect-error Intentional cleanup
         this.dropsX = this.dropsY = this.dropsPrevX = this.dropsPrevY = null;
         // @ts-expect-error Intentional cleanup

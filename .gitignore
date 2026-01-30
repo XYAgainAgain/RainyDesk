@@ -36,6 +36,8 @@ yarn-error.log*
 # AI instruction files (shout-out to Claude for not sucking)
 .claude/
 CLAUDE.md
+.gemini/
+GEMINI.md
 
 # Backup
 .backup/

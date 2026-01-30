@@ -16,14 +16,17 @@
 use windows::{
     Win32::Foundation::{BOOL, HWND, LPARAM, RECT},
     Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible,
+        EnumWindows, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible, IsZoomed,
     },
+    Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WindowInfo {
     pub bounds: Bounds,
     pub title: String,
+    #[serde(rename = "isMaximized")]
+    pub is_maximized: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -67,10 +70,24 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         return BOOL(1);
     }
 
-    // Get window bounds
+    // Check if window is maximized
+    let is_maximized = IsZoomed(hwnd).as_bool();
+
+    // Get window bounds using DWM extended frame bounds (accurate visible area)
+    // Falls back to GetWindowRect if DWM fails
     let mut rect = RECT::default();
-    if GetWindowRect(hwnd, &mut rect).is_err() {
-        return BOOL(1);
+    let dwm_result = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut rect as *mut _ as *mut std::ffi::c_void,
+        std::mem::size_of::<RECT>() as u32,
+    );
+
+    if dwm_result.is_err() {
+        // Fallback to GetWindowRect (includes invisible frame)
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return BOOL(1);
+        }
     }
 
     let width = (rect.right - rect.left) as u32;
@@ -142,6 +159,7 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
             height,
         },
         title,
+        is_maximized,
     });
 
     BOOL(1) // Continue enumeration

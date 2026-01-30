@@ -34,6 +34,9 @@ export { MaterialManager } from './MaterialManager';
 // Export main orchestrator
 export { AudioSystem, type AudioSystemConfig } from './AudioSystem';
 
+// Export Tone.js for audio context initialization
+export * as Tone from 'tone';
+
 export const AUDIO_SYSTEM_VERSION = '2.0.0';
 
 // Default export for convenience

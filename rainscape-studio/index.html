@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RainyDesk | Rainscape Studio</title>
+    <link rel="stylesheet" href="css/studio.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <h1 class="logo">RainyDesk <span>Rainscape Studio</span></h1>
+            <div class="audio-status" id="audio-status">
+                <span class="status-dot"></span>
+                <span class="status-text">Audio Uninitialized</span>
+            </div>
+        </div>
+
+        <div class="transport-controls">
+            <button id="audio-start-btn" class="btn primary">Start Audio Engine</button>
+            <div class="transport-group hidden" id="transport-group">
+                <button id="play-pause-btn" class="btn icon" title="Toggle All Layers (Space)">
+                    <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                </button>
+                <div class="v-divider"></div>
+                <button id="mute-btn" class="btn icon" title="Mute (M)">
+                    <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                </button>
+                <div class="volume-slider-group">
+                    <input type="range" id="master-volume" min="-60" max="0" step="1" value="-12">
+                    <span id="master-volume-value">-12dB</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-right">
+            <div class="autosave-indicator" id="autosave-status">Unsaved •</div>
+            <button id="export-btn" class="btn">Make it .rain</button>
+        </div>
+    </header>
+
+    <main class="studio-layout">
+        <aside class="sidebar">
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-tab="master">Master</button>
+                <button class="nav-item" data-tab="impacts">Raindrop Impacts</button>
+                <button class="nav-item" data-tab="sheets">Rain Sheet</button>
+                <button class="nav-item" data-tab="winds">Wind Engine</button>
+                <button class="nav-item" data-tab="thunder">Thunder</button>
+                <button class="nav-item" data-tab="sfx">SFX Bus</button>
+                <button class="nav-item" data-tab="matrix">Matrix Mode</button>
+                <button class="nav-item" data-tab="io">I/O & Presets</button>
+            </nav>
+        </aside>
+
+        <section class="control-deck" id="control-deck">
+            <div class="module-container" id="tab-master">
+                <header class="module-header">
+                    <h2>Master Bus Control</h2>
+                    <div class="module-actions">
+                        <button class="btn small" id="reset-master">Reset to Defaults</button>
+                    </div>
+                </header>
+                <div class="control-grid"></div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="status-bar">
+        <div class="stats-group">
+            <span class="stat">Voices: <span id="stat-voices">0/36</span></span>
+            <span class="v-divider"></span>
+            <span class="stat">CPU: <span id="stat-cpu">0ms</span></span>
+        </div>
+        <div class="meters-group">
+            <div class="meter-label">Master L/R</div>
+            <div class="meter-bg">
+                <div class="meter-fill" id="meter-master"></div>
+            </div>
+        </div>
+        <div class="bpm-group">
+            <span id="stat-bpm">120 BPM</span>
+        </div>
+    </footer>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

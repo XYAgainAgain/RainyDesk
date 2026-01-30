@@ -78,6 +78,74 @@ let windowZoneCount = 0;
 
 // Fullscreen detection: hide rain when this monitor has a fullscreen window
 let isFullscreenActive = false;
+let fullscreenDebounceTimer = null;
+let pendingFullscreenState = false;
+
+/**
+ * Check if any window covers a monitor's work area (fullscreen/borderless detection).
+ * Returns monitor indices that have fullscreen windows, or empty array if none.
+ * @param {Array} windows - Window zones with screen coordinates
+ * @param {Array} monitors - Monitor regions with virtual desktop relative coordinates
+ * @param {Object} desktop - Virtual desktop info with originX/originY
+ * @returns {number[]} Array of monitor indices with fullscreen windows
+ */
+function getFullscreenMonitors(windows, monitors, desktop) {
+  if (!monitors || monitors.length === 0 || !desktop) return [];
+
+  const TOLERANCE = 50; // Allow differences for window chrome, DPI scaling, etc.
+  const fullscreenMonitors = [];
+
+  for (const win of windows) {
+    // Skip small windows
+    if (win.width < 800 || win.height < 600) continue;
+
+    // Convert window screen coordinates to virtual desktop relative coordinates
+    const winRelX = win.x - desktop.originX;
+    const winRelY = win.y - desktop.originY;
+
+    for (const mon of monitors) {
+      // Skip if already marked as fullscreen
+      if (fullscreenMonitors.includes(mon.index)) continue;
+
+      // Check if window covers this monitor's work area (or full monitor)
+      const coversWidth = win.width >= mon.workWidth - TOLERANCE;
+      const coversHeight = win.height >= mon.workHeight - TOLERANCE;
+
+      // Check position alignment (window starts near monitor work area origin)
+      const positionMatches =
+        Math.abs(winRelX - mon.workX) < TOLERANCE &&
+        Math.abs(winRelY - mon.workY) < TOLERANCE;
+
+      // Also check against full monitor bounds (for true fullscreen)
+      const coversFullWidth = win.width >= mon.width - TOLERANCE;
+      const coversFullHeight = win.height >= mon.height - TOLERANCE;
+      const fullPositionMatches =
+        Math.abs(winRelX - mon.x) < TOLERANCE &&
+        Math.abs(winRelY - mon.y) < TOLERANCE;
+
+      const isFullscreen =
+        (coversWidth && coversHeight && positionMatches) ||
+        (coversFullWidth && coversFullHeight && fullPositionMatches);
+
+      if (isFullscreen) {
+        fullscreenMonitors.push(mon.index);
+        // Log which window triggered fullscreen detection (once per window)
+        if (!window._loggedFullscreenWindows) window._loggedFullscreenWindows = new Set();
+        if (!window._loggedFullscreenWindows.has(win.title)) {
+          window._loggedFullscreenWindows.add(win.title);
+          window.rainydesk.log(`[Fullscreen] Matched: "${win.title?.substring(0, 30)}" (${win.width}x${win.height}) on monitor ${mon.index}`);
+        }
+      }
+    }
+  }
+
+  // Clear logged windows when no fullscreen detected
+  if (fullscreenMonitors.length === 0) {
+    window._loggedFullscreenWindows = null;
+  }
+
+  return fullscreenMonitors;
+}
 
 /**
  * Raindrop class (fallback for non-Matter.js mode)
@@ -682,7 +750,8 @@ async function init() {
         y: w.bounds.y,
         width: w.bounds.width,
         height: w.bounds.height,
-        title: w.title
+        title: w.title,
+        isMaximized: w.isMaximized || false
       }));
 
     // DEBUG: Log detected windows once per session
@@ -690,14 +759,56 @@ async function init() {
       windowDataLogged = true;
       window.rainydesk.log(`[WindowDebug] Detected ${windowZones.length} windows (global coords):`);
       windowZones.forEach((w, i) => {
-        window.rainydesk.log(`  [${i}] "${w.title?.substring(0, 25) || '?'}" at (${w.x},${w.y}) ${w.width}×${w.height}`);
+        const maxFlag = w.isMaximized ? ' [MAXIMIZED]' : '';
+        window.rainydesk.log(`  [${i}] "${w.title?.substring(0, 25) || '?'}" at (${w.x},${w.y}) ${w.width}×${w.height}${maxFlag}`);
       });
+    }
+
+    // Log when maximized windows are detected (help debug fullscreen issues)
+    const maximizedWindows = windowZones.filter(w => w.isMaximized);
+    if (maximizedWindows.length > 0 && !window._loggedMaximized) {
+      window._loggedMaximized = true;
+      window.rainydesk.log(`[WindowDebug] Maximized windows detected:`);
+      maximizedWindows.forEach(w => {
+        window.rainydesk.log(`  - "${w.title?.substring(0, 30)}" at (${w.x},${w.y}) ${w.width}×${w.height}`);
+      });
+    } else if (maximizedWindows.length === 0 && window._loggedMaximized) {
+      window._loggedMaximized = false;
     }
 
     // Log zone count changes
     if (windowZones.length !== windowZoneCount) {
       window.rainydesk.log(`[WindowDebug] Zone count: ${windowZoneCount} → ${windowZones.length}`);
       windowZoneCount = windowZones.length;
+    }
+
+    // Fullscreen detection: check which monitors have fullscreen windows
+    let fullscreenMonitors = [];
+    if (virtualDesktop && virtualDesktop.monitors) {
+      fullscreenMonitors = getFullscreenMonitors(windowZones, virtualDesktop.monitors, virtualDesktop);
+      // Only pause rain globally if PRIMARY monitor has fullscreen
+      const primaryIndex = virtualDesktop.primaryIndex || 0;
+      const newFullscreenState = fullscreenMonitors.includes(primaryIndex);
+
+      // Debounce fullscreen state changes (200ms) to avoid rapid toggling during window moves
+      if (newFullscreenState !== pendingFullscreenState) {
+        pendingFullscreenState = newFullscreenState;
+        if (fullscreenDebounceTimer) clearTimeout(fullscreenDebounceTimer);
+        fullscreenDebounceTimer = setTimeout(() => {
+          if (pendingFullscreenState !== isFullscreenActive) {
+            const wasFullscreen = isFullscreenActive;
+            isFullscreenActive = pendingFullscreenState;
+
+            if (isFullscreenActive && !wasFullscreen) {
+              window.rainydesk.log(`[Fullscreen] Primary monitor fullscreen - pausing physics (monitors: ${fullscreenMonitors.join(', ')})`);
+              // Don't mute audio - let sheets/wind continue for ambient vibes
+              // Just the particle count will drop to 0, naturally quieting impact sounds
+            } else if (!isFullscreenActive && wasFullscreen) {
+              window.rainydesk.log('[Fullscreen] Primary monitor clear - resuming rain');
+            }
+          }
+        }, 200);
+      }
     }
 
     // Update physics system (window data is already in global coordinates)
@@ -716,9 +827,7 @@ async function init() {
 
       if (param === 'gravity') {
         if (config.usePixiPhysics && gridSimulation) {
-          // Pixi uses config object, will be picked up on next sim creation
-          // For now, just log
-          window.rainydesk.log(`[Pixi] Gravity update: ${value} (requires restart)`);
+          gridSimulation.setGravity(value);
         } else if (physicsSystem) {
           physicsSystem.setGravity(value);
         }
@@ -738,6 +847,10 @@ async function init() {
       }
       if (param === 'intensity') {
         config.intensity = value;
+        // Update Pixi simulation intensity
+        if (config.usePixiPhysics && gridSimulation) {
+          gridSimulation.setIntensity(value / 100);
+        }
         // Update background rain intensity (normalize to 0..1)
         if (renderer && renderer.setBackgroundRainIntensity) {
           renderer.setBackgroundRainIntensity(value / 100);

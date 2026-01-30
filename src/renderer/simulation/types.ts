@@ -42,6 +42,7 @@ export interface WindowZone {
     height: number;
     title?: string;
     material?: string;
+    isMaximized?: boolean;
 }
 
 /** Monitor region within virtual desktop */
