@@ -122,8 +122,9 @@ None of this wacky wetness would have been possible without the hard work and re
 - ["Computational Real-Time Sound Synthesis of Rain"](https://www.diva-portal.org/smash/record.jsf?pid=diva2%3A19156&dswid=-6144) (2003) by Andreas Zita
 - ["On the Measurement and Prediction of Rainfall Noise"](https://www.sciencedirect.com/science/article/abs/pii/S0003682X20307404?via%3Dihub) (2021) by G. Schmid, M. J. Kingan, L. Panton, G. Willmott, Y. Yang, C. Decraene, E. Reynders, & A. Hall
 - ["Procedural Modeling of Interactive Sound Sources in Virtual Reality"](https://link.springer.com/chapter/10.1007/978-3-031-04021-4_2) (2023) by Federico Avanzini
-- ["Rainfall Observation Leveraging Raindrop Sounds Acquired Using Waterproof Enclosure: Exploring Optimal Length of Sounds for Frequency Analysis"](https://www.mdpi.com/1424-8220/24/13/4281) (2024) by Seunghyun Hwang, Changhyun Jun, Carlo De Michele, Hyeon-Joon Kim, & Jinwook Lee 
+- ["Rainfall Observation Leveraging Raindrop Sounds Acquired Using Waterproof Enclosure: Exploring Optimal Length of Sounds for Frequency Analysis"](https://www.mdpi.com/1424-8220/24/13/4281) (2024) by Seunghyun Hwang, Changhyun Jun, Carlo De Michele, Hyeon-Joon Kim, & Jinwook Lee
 - ["A Theoretical Study on Drop Impact Sound and Rain Noise"](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/abs/theoretical-study-on-drop-impact-sound-and-rain-noise/7A703959CA20067BB96BE8037030143E) (1991) by Y. P. Guo & J. E. Ffowcs Williams
+- ["Advances in Thunder Sound Synthesis"](https://arxiv.org/abs/2204.08026) (2022) by E. Fineberg, J. Walters, & J. Reiss — Thunder synthesis techniques from the [thunder-synthesis](https://github.com/bineferg/thunder-synthesis) project
 
 ---
 

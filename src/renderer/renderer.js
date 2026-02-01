@@ -450,6 +450,9 @@ async function initPixiPhysics() {
       floorMap
     );
 
+    // DEBUG: Hook up bias tracking log
+    gridSimulation.onDebugLog = (msg) => window.rainydesk.log(msg);
+
     // Set initial parameters from config
     gridSimulation.setIntensity(config.intensity / 100);
     gridSimulation.setWind(config.wind);

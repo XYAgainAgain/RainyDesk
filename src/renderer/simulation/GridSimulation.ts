@@ -91,6 +91,20 @@ export class GridSimulation {
     private lastAudioTime = 0;
     private readonly AUDIO_MIN_INTERVAL = 8; // ms
 
+    // === DEBUG: Movement bias tracking ===
+    private debugLeftMoves = 0;
+    private debugRightMoves = 0;
+    private debugDownMoves = 0;
+    private debugUpMoves = 0;
+    private debugDiagL = 0;
+    private debugDiagR = 0;
+    private debugSpreadL = 0;
+    private debugSpreadR = 0;
+    private debugFrameCount = 0;
+    private debugMoveContext: 'diag' | 'spread' | 'other' = 'other';
+    public onDebugLog: ((msg: string) => void) | null = null;
+    private _loggedWindows = false;
+
     /**
      * Create a new simulation.
      * @param logicWidth Grid width in logic pixels (screen width × 0.25)
@@ -206,6 +220,24 @@ export class GridSimulation {
             const cell = this.grid[i]!;
             if (cell !== CELL_WATER && cell !== CELL_VOID) {
                 this.grid[i] = CELL_AIR;
+            }
+        }
+
+        // DEBUG: Log all windows once on first update
+        if (this.onDebugLog && !this._loggedWindows) {
+            this._loggedWindows = true;
+            this.onDebugLog(`[GridWindows] Painting ${windows.length} windows to grid:`);
+            for (const win of windows) {
+                const scale = 0.25;
+                const x1 = Math.floor((win.x - this.globalOffsetX) * scale);
+                const y1 = Math.floor((win.y - this.globalOffsetY) * scale);
+                const x2 = Math.ceil((win.x + win.width - this.globalOffsetX) * scale);
+                const y2 = Math.ceil((win.y + win.height - this.globalOffsetY) * scale);
+                const startX = Math.max(0, x1);
+                const startY = Math.max(0, y1);
+                const endX = Math.min(this.gridWidth, x2);
+                const endY = Math.min(this.gridHeight, y2);
+                this.onDebugLog(`  "${win.title?.substring(0,20) || '?'}" global(${win.x},${win.y}) -> grid(${startX}-${endX}, ${startY}-${endY})`);
             }
         }
 
@@ -642,39 +674,45 @@ export class GridSimulation {
                 if (fell) continue;
 
                 // === DIAGONAL DOWN ===
-                // Pure random direction (checkerboard had subtle bias with scan order)
-                const diagDir = Math.random() > 0.5 ? -1 : 1;
-                if (this.tryMoveWaterWithEnergy(index, x, x + diagDir, y + 1, energy * energyDecay + minFallEnergy * 0.5)) {
-                    continue;
+                // Independent coin flip: try both directions in random order
+                // This breaks scan-order correlation
+                this.debugMoveContext = 'diag';
+                {
+                    const tryLeft = Math.random() > 0.5;
+                    const dir1 = tryLeft ? -1 : 1;
+                    const dir2 = tryLeft ? 1 : -1;
+                    if (this.tryMoveWaterWithEnergy(index, x, x + dir1, y + 1, energy * energyDecay + minFallEnergy * 0.5)) {
+                        this.debugMoveContext = 'other';
+                        continue;
+                    }
+                    if (this.tryMoveWaterWithEnergy(index, x, x + dir2, y + 1, energy * energyDecay + minFallEnergy * 0.5)) {
+                        this.debugMoveContext = 'other';
+                        continue;
+                    }
                 }
-                if (this.tryMoveWaterWithEnergy(index, x, x - diagDir, y + 1, energy * energyDecay + minFallEnergy * 0.5)) {
-                    continue;
-                }
+                this.debugMoveContext = 'other';
 
                 // Check if water has settled (something below it)
                 const hasSupport = y + 1 >= this.gridHeight ||
                     (y + 1 < this.gridHeight && this.grid[(y + 1) * this.gridWidth + x] !== CELL_AIR);
 
-                // === HORIZONTAL SPREAD: Aggressive spreading for fluid-like behavior ===
-                // Water seeks its own level - spread until height equalizes
+                // === HORIZONTAL SPREAD ===
+                // Use independent coin flip at each distance to break scan-order bias
                 if (hasSupport) {
-                    const spreadDir = Math.random() > 0.5 ? -1 : 1;
+                    this.debugMoveContext = 'spread';
                     let spread = false;
-                    // Try spreading up to 3 cells horizontally (finds gaps in puddles)
-                    for (let dist = 1; dist <= 3; dist++) {
-                        if (this.tryMoveWaterWithEnergy(index, x, x + spreadDir * dist, y, energy * energyDecay)) {
+                    for (let dist = 1; dist <= 3 && !spread; dist++) {
+                        // Fresh coin flip at each distance
+                        const tryLeft = Math.random() > 0.5;
+                        const dir1 = tryLeft ? -1 : 1;
+                        const dir2 = tryLeft ? 1 : -1;
+                        if (this.tryMoveWaterWithEnergy(index, x, x + dir1 * dist, y, energy * energyDecay)) {
                             spread = true;
-                            break;
+                        } else if (this.tryMoveWaterWithEnergy(index, x, x + dir2 * dist, y, energy * energyDecay)) {
+                            spread = true;
                         }
                     }
-                    if (spread) continue;
-                    // If first direction blocked, try the other
-                    for (let dist = 1; dist <= 3; dist++) {
-                        if (this.tryMoveWaterWithEnergy(index, x, x - spreadDir * dist, y, energy * energyDecay)) {
-                            spread = true;
-                            break;
-                        }
-                    }
+                    this.debugMoveContext = 'other';
                     if (spread) continue;
                 }
 
@@ -703,6 +741,27 @@ export class GridSimulation {
                     // }
                 }
             }
+        }
+
+        // DEBUG: Log movement bias every 120 frames (~2 seconds at 60Hz)
+        this.debugFrameCount++;
+        if (this.debugFrameCount >= 120) {
+            const total = this.debugLeftMoves + this.debugRightMoves;
+            if (total > 0 && this.onDebugLog) {
+                const ratio = this.debugRightMoves / Math.max(1, this.debugLeftMoves);
+                const diagRatio = this.debugDiagR / Math.max(1, this.debugDiagL);
+                const spreadRatio = this.debugSpreadR / Math.max(1, this.debugSpreadL);
+                this.onDebugLog(`[BiasDebug] Total L/R: ${this.debugLeftMoves}/${this.debugRightMoves} (${ratio.toFixed(2)}) | Diag: ${this.debugDiagL}/${this.debugDiagR} (${diagRatio.toFixed(2)}) | Spread: ${this.debugSpreadL}/${this.debugSpreadR} (${spreadRatio.toFixed(2)})`);
+            }
+            this.debugLeftMoves = 0;
+            this.debugRightMoves = 0;
+            this.debugDownMoves = 0;
+            this.debugUpMoves = 0;
+            this.debugDiagL = 0;
+            this.debugDiagR = 0;
+            this.debugSpreadL = 0;
+            this.debugSpreadR = 0;
+            this.debugFrameCount = 0;
         }
     }
 
@@ -769,7 +828,7 @@ export class GridSimulation {
      */
     private tryMoveWaterWithEnergy(
         srcIndex: number,
-        _srcX: number,
+        srcX: number,
         destX: number,
         destY: number,
         newEnergy: number
@@ -786,6 +845,22 @@ export class GridSimulation {
         if (destCell !== CELL_AIR) {
             return false;
         }
+
+        // DEBUG: Track movement direction by context
+        const dx = destX - srcX;
+        const srcY = Math.floor(srcIndex / this.gridWidth);
+        const dy = destY - srcY;
+        if (dx > 0) {
+            this.debugRightMoves++;
+            if (this.debugMoveContext === 'diag') this.debugDiagR++;
+            else if (this.debugMoveContext === 'spread') this.debugSpreadR++;
+        } else if (dx < 0) {
+            this.debugLeftMoves++;
+            if (this.debugMoveContext === 'diag') this.debugDiagL++;
+            else if (this.debugMoveContext === 'spread') this.debugSpreadL++;
+        }
+        if (dy > 0) this.debugDownMoves++;
+        else if (dy < 0) this.debugUpMoves++;
 
         // Move water
         this.grid[srcIndex] = CELL_AIR;
