@@ -1055,11 +1055,11 @@ pub fn run() {
                 log::error!("Failed to create mega-overlay: {}", e);
             }
 
-            // Start window detection polling (50ms for responsive physics)
+            // Start window detection polling (25ms for responsive physics)
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(std::time::Duration::from_millis(25));
 
                     match window_detector::get_visible_windows() {
                         Ok(window_data) => {

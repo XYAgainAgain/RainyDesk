@@ -368,7 +368,7 @@ export class RainPixiRenderer {
         }
 
         // Convert grid to pixel buffer (Uint8Array → Uint32Array RGBA)
-        this.updatePuddleBuffer(grid.data);
+        this.updatePuddleBuffer(grid.data, grid.width, grid.displayFloorMap);
 
         // Upload to GPU
         this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
@@ -423,12 +423,10 @@ export class RainPixiRenderer {
      * Converts Uint8Array cell values to RGBA colors.
      * Applies bottom-fade for taskbar visibility.
      */
-    private updatePuddleBuffer(grid: Uint8Array): void {
+    private updatePuddleBuffer(grid: Uint8Array, width: number, floorMap: Int16Array | null): void {
         if (!this.puddlePixelBuffer || !this.puddleCanvas) return;
 
         const buffer = this.puddlePixelBuffer;
-        const width = this.puddleCanvas.width;
-        const height = this.puddleCanvas.height;
 
         // Color components (RGB: 99, aa, bb in AABBGGRR format)
         const COLOR_AIR = 0x00000000;
@@ -437,21 +435,28 @@ export class RainPixiRenderer {
         const waterB = 0xbb;
         const baseAlpha = 0xA0; // ~63% opacity
 
-        // Bottom fade: start fading at 85% height, reach minimum at 100%
-        const fadeStartY = Math.floor(height * 0.85);
-        const minAlpha = 0x0D; // ~5% opacity (95% transparent)
+        // Bottom fade based on distance to floor/void
+        const minAlpha = 0x33; // ~20% opacity
+        const fadeDistance = 72; // Fade over ~72 cells
 
         for (let i = 0; i < grid.length; i++) {
             const cellValue = grid[i]!;
 
             if (cellValue === CELL_WATER) {
+                const x = i % width;
                 const y = Math.floor(i / width);
 
-                // Calculate alpha with bottom fade
+                // Calculate alpha based on distance to floor
                 let alpha = baseAlpha;
-                if (y > fadeStartY) {
-                    const fadeProgress = (y - fadeStartY) / (height - fadeStartY);
-                    alpha = Math.floor(baseAlpha - (baseAlpha - minAlpha) * fadeProgress);
+                if (floorMap) {
+                    const floorY = floorMap[x];
+                    if (floorY !== undefined) {
+                        const distToFloor = floorY - y;
+                        if (distToFloor < fadeDistance) {
+                            const fadeProgress = 1 - (distToFloor / fadeDistance);
+                            alpha = Math.floor(baseAlpha - (baseAlpha - minAlpha) * fadeProgress);
+                        }
+                    }
                 }
 
                 // Pack as AABBGGRR (little-endian)

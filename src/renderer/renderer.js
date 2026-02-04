@@ -48,6 +48,12 @@ let config = {
 // FPS limiter state
 let lastFrameTime = 0;
 
+// Startup initialization state
+let firstWindowDataReceived = false;
+let windowUpdateDebounceTimer = null;
+let lastWindowData = null; // For change detection
+let isInitializing = true; // Track initialization phase
+
 // Physics system (Matter.js - legacy)
 let physicsSystem = null;
 
@@ -80,6 +86,52 @@ let windowZoneCount = 0;
 let isFullscreenActive = false;
 let fullscreenDebounceTimer = null;
 let pendingFullscreenState = false;
+
+/**
+ * Classify a window based on its coverage of a monitor.
+ * @param {Object} win - Window with x, y, width, height
+ * @param {Object} mon - Monitor with work area and full bounds
+ * @param {Object} desktop - Virtual desktop info
+ * @returns {string} 'work-area' | 'full-resolution' | 'snapped' | 'normal'
+ */
+function classifyWindow(win, mon, desktop) {
+  const winRelX = win.x - desktop.originX;
+  const winRelY = win.y - desktop.originY;
+
+  // Check work area match (exact)
+  const workAreaMatch =
+    win.width === mon.workWidth &&
+    win.height === mon.workHeight &&
+    winRelX === mon.workX &&
+    winRelY === mon.workY;
+
+  if (workAreaMatch) return 'work-area';
+
+  // Check full resolution match (exact)
+  const fullResMatch =
+    win.width === mon.width &&
+    win.height === mon.height &&
+    winRelX === mon.x &&
+    winRelY === mon.y;
+
+  if (fullResMatch) return 'full-resolution';
+
+  // Check snapped windows (Windows standard snap positions)
+  const isHalfWidth = win.width === Math.floor(mon.workWidth / 2);
+  const isHalfHeight = win.height === Math.floor(mon.workHeight / 2);
+  const isFullWidth = win.width === mon.workWidth;
+  const isFullHeight = win.height === mon.workHeight;
+
+  // Half-screen snap (left/right or top/bottom)
+  const isHalfSnap = (isHalfWidth && isFullHeight) || (isFullWidth && isHalfHeight);
+
+  // Quarter-screen snap (corner)
+  const isQuarterSnap = isHalfWidth && isHalfHeight;
+
+  if (isHalfSnap || isQuarterSnap) return 'snapped';
+
+  return 'normal';
+}
 
 /**
  * Check if any window covers a monitor's work area (fullscreen/borderless detection).
@@ -372,7 +424,8 @@ function computeSpawnMap(voidMask, gridWidth, gridHeight) {
 }
 
 /**
- * Compute floor map (per-column bottom of work area).
+ * Compute splash floor map (per-column bottom of work area).
+ * This is where rain splashes - top of taskbar.
  * floorY[x] = gridHeight if column has no floor
  */
 function computeFloorMap(desktop, scale, gridWidth, gridHeight) {
@@ -383,16 +436,62 @@ function computeFloorMap(desktop, scale, gridWidth, gridHeight) {
     const mx = Math.floor(monitor.x * scale);
     const mw = Math.ceil(monitor.width * scale);
 
-    // Floor is bottom of work area (excludes taskbar)
+    // Splash floor is bottom of work area (top of taskbar)
     const workBottom = Math.floor((monitor.workY + monitor.workHeight) * scale);
 
     for (let x = mx; x < mx + mw && x < gridWidth; x++) {
-      // Use lowest floor if columns overlap
       floorMap[x] = Math.min(floorMap[x], workBottom);
     }
   }
 
   return floorMap;
+}
+
+/**
+ * Compute display floor map (per-column bottom of actual display).
+ * This is where puddles accumulate - bottom of monitor including taskbar.
+ * Puddles sit inside the taskbar zone.
+ */
+function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
+  const displayFloorMap = new Int16Array(gridWidth);
+  displayFloorMap.fill(gridHeight);
+
+  for (const monitor of desktop.monitors) {
+    const mx = Math.floor(monitor.x * scale);
+    const mw = Math.ceil(monitor.width * scale);
+
+    // Display floor is bottom of actual monitor (includes taskbar)
+    const displayBottom = Math.floor((monitor.y + monitor.height) * scale);
+
+    for (let x = mx; x < mx + mw && x < gridWidth; x++) {
+      displayFloorMap[x] = Math.min(displayFloorMap[x], displayBottom);
+    }
+  }
+
+  return displayFloorMap;
+}
+
+/**
+ * Compare two window arrays to detect changes.
+ * Returns true if windows have changed (position, size, or count).
+ */
+function windowsChanged(oldWindows, newWindows) {
+  if (!oldWindows || !newWindows) return true;
+  if (oldWindows.length !== newWindows.length) return true;
+
+  // Compare each window (order matters for detection)
+  for (let i = 0; i < oldWindows.length; i++) {
+    const a = oldWindows[i];
+    const b = newWindows[i];
+    if (!a || !b) return true;
+    if (a.x !== b.x || a.y !== b.y ||
+        a.width !== b.width || a.height !== b.height ||
+        a.title !== b.title) {
+      return true;
+    }
+  }
+
+  return false; // No changes detected
 }
 
 /**
@@ -418,10 +517,11 @@ async function initPixiPhysics() {
     const logicWidth = Math.ceil(virtualDesktop.width * scale);
     const logicHeight = Math.ceil(virtualDesktop.height * scale);
 
-    // Build void mask, spawn map, floor map
+    // Build void mask, spawn map, floor maps
     const voidMask = buildVoidMask(virtualDesktop, scale);
     const spawnMap = computeSpawnMap(voidMask, logicWidth, logicHeight);
     const floorMap = computeFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
+    const displayFloorMap = computeDisplayFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
 
     globalGridBounds = {
       minX: virtualDesktop.originX,
@@ -447,7 +547,8 @@ async function initPixiPhysics() {
       {}, // Default config
       voidMask,
       spawnMap,
-      floorMap
+      floorMap,
+      displayFloorMap
     );
 
     // DEBUG: Hook up bias tracking log
@@ -744,8 +845,19 @@ async function init() {
   let windowDataLogged = false;
 
   window.rainydesk.onWindowData((data) => {
+    // DEBUG: Log raw window data from Rust
+    if (!window._loggedRawWindowData) {
+      window._loggedRawWindowData = true;
+      window.rainydesk.log(`[WindowDebug] Raw data from Rust: ${data.windows?.length || 0} windows`);
+      if (data.windows && data.windows.length > 0) {
+        data.windows.forEach((w, i) => {
+          window.rainydesk.log(`  [Raw ${i}] "${w.title?.substring(0, 30)}" bounds: ${JSON.stringify(w.bounds)}`);
+        });
+      }
+    }
+
     // Filter out RainyDesk and DevTools windows
-    windowZones = data.windows
+    const newWindowZones = data.windows
       .filter(w => !w.title || !w.title.includes('RainyDesk'))
       .filter(w => !w.title || !w.title.includes('DevTools'))
       .map(w => ({
@@ -756,6 +868,44 @@ async function init() {
         title: w.title,
         isMaximized: w.isMaximized || false
       }));
+
+    // DEBUG: Log filtered zones
+    if (!window._loggedFilteredZones) {
+      window._loggedFilteredZones = true;
+      window.rainydesk.log(`[WindowDebug] After filter: ${newWindowZones.length} windows`);
+    }
+
+    // Start gameLoop on first window data (delay initial render until detection ready)
+    if (!firstWindowDataReceived) {
+      firstWindowDataReceived = true;
+      window.rainydesk.log('[Init] First window data received, starting render loop');
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Skip update if windows haven't actually changed (before any debouncing)
+    if (!windowsChanged(lastWindowData, newWindowZones)) {
+      return; // No change, skip everything
+    }
+
+    // Windows changed - apply immediately (no debounce that blocks updates)
+    windowZones = newWindowZones;
+    lastWindowData = [...windowZones]; // Store copy for next comparison
+
+    // DEBUG: Confirm window zones updated
+    if (!window._loggedZonesUpdated) {
+      window._loggedZonesUpdated = true;
+      window.rainydesk.log(`[WindowDebug] windowZones updated to ${windowZones.length} zones`);
+    }
+
+    // Debounce the EXPENSIVE operations (classification, physics update) - 150ms
+    if (windowUpdateDebounceTimer) clearTimeout(windowUpdateDebounceTimer);
+    const capturedZones = [...windowZones]; // Capture snapshot for closure
+    windowUpdateDebounceTimer = setTimeout(() => {
+      // DEBUG: Log debounce execution
+      if (!window._loggedDebounce) {
+        window._loggedDebounce = true;
+        window.rainydesk.log(`[WindowDebug] Debounce fired with ${capturedZones.length} zones`);
+      }
 
     // DEBUG: Log detected windows once per session
     if (!windowDataLogged) {
@@ -785,13 +935,66 @@ async function init() {
       windowZoneCount = windowZones.length;
     }
 
-    // Fullscreen detection: check which monitors have fullscreen windows
-    let fullscreenMonitors = [];
+    // Classify windows for sophisticated handling
+    let hasWorkAreaMatch = false;
+    let hasPrimaryFullResolution = false;
+    const voidWindows = []; // Windows treated as void (no collision, no spawn)
+    const normalWindows = []; // Windows for regular collision (GLASS)
+    const spawnBlockWindows = []; // Windows that block spawn but allow collision (snapped)
+
     if (virtualDesktop && virtualDesktop.monitors) {
-      fullscreenMonitors = getFullscreenMonitors(windowZones, virtualDesktop.monitors, virtualDesktop);
-      // Only pause rain globally if PRIMARY monitor has fullscreen
       const primaryIndex = virtualDesktop.primaryIndex || 0;
-      const newFullscreenState = fullscreenMonitors.includes(primaryIndex);
+      const classifiedWindows = new Set(); // Track logged windows
+
+      for (const win of windowZones) {
+        let classified = false;
+
+        // Check each monitor for best classification match
+        for (const mon of virtualDesktop.monitors) {
+          const classification = classifyWindow(win, mon, virtualDesktop);
+
+          if (classification === 'work-area') {
+            if (!classified) {
+              hasWorkAreaMatch = true;
+              voidWindows.push(win);
+              if (!classifiedWindows.has(win.title)) {
+                classifiedWindows.add(win.title);
+                window.rainydesk.log(`[Window] Work area: "${win.title?.substring(0, 30)}" on M${mon.index} → VOID + muffle`);
+              }
+              classified = true;
+            }
+          } else if (classification === 'full-resolution' && mon.index === primaryIndex) {
+            if (!classified) {
+              hasPrimaryFullResolution = true;
+              normalWindows.push(win);
+              if (!classifiedWindows.has(win.title)) {
+                classifiedWindows.add(win.title);
+                window.rainydesk.log(`[Window] Full res primary: "${win.title?.substring(0, 30)}" → hide overlay`);
+              }
+              classified = true;
+            }
+          } else if (classification === 'snapped') {
+            if (!classified) {
+              // Snapped windows: block SPAWN but allow collision (GLASS + spawn block)
+              normalWindows.push(win);       // GLASS collision (puddles can form)
+              spawnBlockWindows.push(win);   // Block spawn in these columns
+              if (!classifiedWindows.has(win.title)) {
+                classifiedWindows.add(win.title);
+                window.rainydesk.log(`[Window] Snapped: "${win.title?.substring(0, 30)}" on M${mon.index} → GLASS + spawn block`);
+              }
+              classified = true;
+            }
+          }
+        }
+
+        // Default to normal if not classified
+        if (!classified) {
+          normalWindows.push(win);
+        }
+      }
+
+      // Handle primary full resolution (hide overlay)
+      const newFullscreenState = hasPrimaryFullResolution;
 
       // Debounce fullscreen state changes (200ms) to avoid rapid toggling during window moves
       if (newFullscreenState !== pendingFullscreenState) {
@@ -803,24 +1006,82 @@ async function init() {
             isFullscreenActive = pendingFullscreenState;
 
             if (isFullscreenActive && !wasFullscreen) {
-              window.rainydesk.log(`[Fullscreen] Primary monitor fullscreen - pausing physics (monitors: ${fullscreenMonitors.join(', ')})`);
-              // Don't mute audio - let sheets/wind continue for ambient vibes
-              // Just the particle count will drop to 0, naturally quieting impact sounds
+              window.rainydesk.log(`[Fullscreen] Primary monitor fullscreen - hiding overlay`);
+              canvas.style.opacity = '0';
             } else if (!isFullscreenActive && wasFullscreen) {
-              window.rainydesk.log('[Fullscreen] Primary monitor clear - resuming rain');
+              window.rainydesk.log('[Fullscreen] Primary monitor clear - showing overlay');
+              canvas.style.opacity = '1';
             }
           }
         }, 200);
       }
     }
 
-    // Update physics system (window data is already in global coordinates)
-    if (config.usePixiPhysics && gridSimulation) {
-      gridSimulation.updateWindowZones(windowZones);
-    } else if (physicsSystem) {
-      // Matter.js still uses local coords (legacy)
-      physicsSystem.setWindowZones(windowZones);
+    // Update audio muffling based on fullscreen coverage (spatial)
+    // Calculate what percentage of the desktop is covered by fullscreen windows
+    if (audioSystem && virtualDesktop && virtualDesktop.monitors) {
+      let coveredWidth = 0;
+      const totalWidth = virtualDesktop.width;
+
+      // Track which monitors have work-area-matching windows
+      const fullscreenMonitorIndices = new Set();
+      for (const win of voidWindows) {
+        for (const mon of virtualDesktop.monitors) {
+          const classification = classifyWindow(win, mon, virtualDesktop);
+          if (classification === 'work-area') {
+            fullscreenMonitorIndices.add(mon.index);
+          }
+        }
+      }
+
+      // Sum up the width of fullscreen monitors
+      for (const mon of virtualDesktop.monitors) {
+        if (fullscreenMonitorIndices.has(mon.index)) {
+          coveredWidth += mon.width;
+        }
+      }
+
+      // Calculate coverage ratio (0.0 to 1.0)
+      const coverageRatio = totalWidth > 0 ? coveredWidth / totalWidth : 0;
+
+      // Apply spatial muffling proportional to coverage
+      // Scale down: 100% coverage = 0.7 muffle (not fully muted)
+      // This way a single 1/3 width monitor fullscreen = ~23% muffle
+      const muffleAmount = coverageRatio * 0.7;
+      audioSystem.setMuffleAmount(muffleAmount);
+    } else if (audioSystem) {
+      audioSystem.setMuffleAmount(0);
     }
+
+      // Update physics system with classified windows
+      if (config.usePixiPhysics && gridSimulation) {
+        // DEBUG: Log classification results
+        if (!window._loggedClassification) {
+          window._loggedClassification = true;
+          window.rainydesk.log(`[WindowDebug] Classification: ${normalWindows.length} normal, ${voidWindows.length} void, ${spawnBlockWindows.length} spawn-block`);
+          normalWindows.forEach((w, i) => {
+            window.rainydesk.log(`  [Normal ${i}] "${w.title?.substring(0, 25)}" at (${w.x},${w.y}) ${w.width}x${w.height}`);
+          });
+          voidWindows.forEach((w, i) => {
+            window.rainydesk.log(`  [Void ${i}] "${w.title?.substring(0, 25)}" at (${w.x},${w.y}) ${w.width}x${w.height}`);
+          });
+          spawnBlockWindows.forEach((w, i) => {
+            window.rainydesk.log(`  [SpawnBlock ${i}] "${w.title?.substring(0, 25)}" at (${w.x},${w.y}) ${w.width}x${w.height}`);
+          });
+        }
+
+        // Update window zones: normal=GLASS, void=VOID, spawnBlock=spawn only
+        gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
+
+        // OPTION B: Visual masking only (commented out for future testing)
+        // This would render zones but not block physics:
+        // gridSimulation.updateWindowZones(windowZones, []); // All windows as normal collision
+        // gridSimulation.setVisualMaskZones(voidWindows); // Separate visual mask
+      } else if (physicsSystem) {
+        // Matter.js still uses local coords (legacy)
+        physicsSystem.setWindowZones(windowZones);
+      }
+    }, 32); // Debounce window updates ~2 frames
   });
 
   // Handle Parameter Sync
@@ -1030,7 +1291,26 @@ async function init() {
     window.rainydesk.triggerAudioStart();
   }, 500);
 
-  requestAnimationFrame(gameLoop);
+  // Start canvas hidden, will fade in after first window data
+  canvas.style.opacity = '0';
+  canvas.style.transition = 'opacity 5s ease-in-out';
+
+  // Fade in canvas after initialization completes (coordinate with audio fade-in)
+  // Audio fades in over 5s, match visual fade-in
+  setTimeout(() => {
+    if (firstWindowDataReceived) {
+      canvas.style.opacity = '1';
+      isInitializing = false;
+      window.rainydesk.log('[Init] Fade-in complete');
+
+      // Remove transition after fade-in completes so fullscreen changes are instant
+      setTimeout(() => {
+        canvas.style.transition = 'none';
+      }, 5000); // Wait for 5s fade to finish
+    }
+  }, 800); // Wait 800ms for first window data + debounce, then start fade
+
+  // Note: gameLoop now starts on first window data (see onWindowData callback)
 }
 
 document.addEventListener('DOMContentLoaded', init);
