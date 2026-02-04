@@ -7,8 +7,71 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::path::PathBuf;
+use chrono::Local;
 
 mod window_detector;
+
+/// Clean up old log files, keeping only the N most recent.
+/// Returns the path to the new log file for this session.
+fn setup_session_log(log_dir: &PathBuf, max_logs: usize, max_size_bytes: u64) -> PathBuf {
+    // Create log directory if it doesn't exist
+    if !log_dir.exists() {
+        let _ = fs::create_dir_all(log_dir);
+    }
+
+    // Generate timestamped filename for this session
+    let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
+    let log_filename = format!("RainyDesk_{}.log", timestamp);
+    let new_log_path = log_dir.join(&log_filename);
+
+    // Get all existing log files (RainyDesk_*.log pattern)
+    let mut log_files: Vec<_> = fs::read_dir(log_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("RainyDesk_")
+                && e.file_name()
+                    .to_string_lossy()
+                    .ends_with(".log")
+        })
+        .collect();
+
+    // Sort by modification time (oldest first)
+    log_files.sort_by(|a, b| {
+        let a_time = a.metadata().and_then(|m| m.modified()).ok();
+        let b_time = b.metadata().and_then(|m| m.modified()).ok();
+        a_time.cmp(&b_time)
+    });
+
+    // Delete old logs, keeping only (max_logs - 1) to make room for the new one
+    while log_files.len() >= max_logs {
+        if let Some(oldest) = log_files.first() {
+            let _ = fs::remove_file(oldest.path());
+            log_files.remove(0);
+        }
+    }
+
+    // Also delete any logs that exceed max size (cleanup from previous runs)
+    for log_file in &log_files {
+        if let Ok(metadata) = log_file.metadata() {
+            if metadata.len() > max_size_bytes {
+                let _ = fs::remove_file(log_file.path());
+            }
+        }
+    }
+
+    // Delete the legacy single log file if it exists
+    let legacy_log = log_dir.join("RainyDesk.log");
+    if legacy_log.exists() {
+        let _ = fs::remove_file(&legacy_log);
+    }
+
+    new_log_path
+}
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -17,6 +80,10 @@ use windows::Win32::Foundation::POINT;
 
 // Global pause state
 static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
+
+// Fade-in coordination: both windows must be ready before synchronized fade
+static OVERLAY_READY: AtomicBool = AtomicBool::new(false);
+static BACKGROUND_READY: AtomicBool = AtomicBool::new(false);
 
 /// Get the rainscapes directory, creating structure if needed:
 /// rainscapes/
@@ -713,6 +780,33 @@ fn trigger_audio_start(app: tauri::AppHandle) {
     let _ = app.emit("start-audio", ());
 }
 
+/// Check if both windows are ready and broadcast fade-in signal
+fn check_both_ready(app: &tauri::AppHandle) {
+    if OVERLAY_READY.load(Ordering::SeqCst) && BACKGROUND_READY.load(Ordering::SeqCst) {
+        log::info!("[FadeIn] Both windows ready, broadcasting start-fade-in");
+        if let Err(e) = app.emit("start-fade-in", ()) {
+            log::error!("[FadeIn] Failed to emit start-fade-in: {}", e);
+        }
+        // Reset flags after broadcast so hot reload can coordinate fresh
+        OVERLAY_READY.store(false, Ordering::SeqCst);
+        BACKGROUND_READY.store(false, Ordering::SeqCst);
+    }
+}
+
+#[tauri::command]
+fn renderer_ready(app: tauri::AppHandle) {
+    log::info!("[FadeIn] Overlay renderer ready");
+    OVERLAY_READY.store(true, Ordering::SeqCst);
+    check_both_ready(&app);
+}
+
+#[tauri::command]
+fn background_ready(app: tauri::AppHandle) {
+    log::info!("[FadeIn] Background renderer ready");
+    BACKGROUND_READY.store(true, Ordering::SeqCst);
+    check_both_ready(&app);
+}
+
 #[tauri::command]
 fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
     // Extract monitor index from window label (e.g., "overlay-0" or "background-0" -> 0)
@@ -1014,7 +1108,9 @@ pub fn run() {
             load_rainscapes,
             read_rainscape,
             update_rainscape_param,
-            trigger_audio_start
+            trigger_audio_start,
+            renderer_ready,
+            background_ready
         ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("overlay") {
@@ -1022,15 +1118,30 @@ pub fn run() {
             }
             log::info!("Second instance blocked: RainyDesk is already running");
         }))
-        .plugin(
+        .plugin({
+            // Set up session-specific log file with rolling cleanup
+            // Keep 5 most recent logs, max 1 MB each
+            let log_dir = dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("com.rainydesk.app")
+                .join("logs");
+            let log_path = setup_session_log(&log_dir, 5, 1_048_576); // 1 MB = 1,048,576 bytes
+            let log_filename = log_path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.trim_end_matches(".log").to_string())
+                .unwrap_or_else(|| "RainyDesk".to_string());
+
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
+                .max_file_size(1_048_576) // 1 MB max per log file
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some(log_filename),
+                    }),
                 ])
-                .build(),
-        )
+                .build()
+        })
         .setup(|app| {
             log::info!("RainyDesk Tauri starting...");
 

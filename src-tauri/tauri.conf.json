@@ -4,7 +4,6 @@
   "version": "1.0.0",
   "identifier": "com.rainydesk.app",
   "build": {
-    "beforeDevCommand": "npm run build",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../src/renderer"
   },

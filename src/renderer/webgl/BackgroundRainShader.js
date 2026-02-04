@@ -64,9 +64,13 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
     float depthFactor = 1.0 - layerIndex * 0.15;  // Farther layers are slower
     float scale = 200.0 + layerIndex * 80.0;      // Higher scale = finer rain streaks
 
-    // Apply wind slant - shift horizontally based on vertical position
-    // Negate wind to match physics rain direction (due to Y-flip)
-    float slant = -wind * 0.5;
+    // Apply wind slant - gentler than physics to account for visual perception
+    // Physics: 150/350 = 0.43, but shader looks steeper due to full-screen stretching
+    // Use 0.22 base (roughly half) for visual match
+    // Negate wind due to UV coordinate system (Y-flip)
+    // Add slight oscillation for atmospheric realism
+    float windOscillation = sin(time * 0.4 + layerIndex * 1.5) * 0.04;
+    float slant = -wind * (0.18 + windOscillation);
     uv.x += uv.y * slant;
 
     // Stretch UV for rain streaks (taller than wide)
@@ -76,7 +80,7 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
     // Fast atmospheric rain - should feel distant and quick
     rainUV.y -= time * 50.0 * depthFactor;
 
-    // Add slight horizontal drift from wind (negated to match physics)
+    // Add horizontal drift from wind (negated for UV coords)
     rainUV.x -= time * wind * 2.0 * depthFactor;
 
     // Sample noise for this layer

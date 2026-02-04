@@ -482,26 +482,48 @@ export class AudioSystem {
 
   /**
    * Set muffled state (for fullscreen detection).
-   * When muffled, reduces volume by 6 dB and applies low-pass filter at 800 Hz
-   * to simulate rain heard through a layer of insulation.
+   * When muffled, applies gentle high-frequency rolloff to simulate rain
+   * heard through a layer of insulation without killing the audio.
+   * @deprecated Use setMuffleAmount() for spatial muffling
    */
   setMuffled(muffled: boolean): void {
-    if (this._isMuffled === muffled) return;
-    this._isMuffled = muffled;
+    // Convert boolean to amount (0 = off, 1 = full muffle)
+    this.setMuffleAmount(muffled ? 1.0 : 0.0);
+  }
+
+  /**
+   * Set spatial muffle amount based on fullscreen coverage.
+   * @param amount 0.0 = no muffling, 1.0 = full muffling (still gentle)
+   *
+   * Muffling is designed to be subtle:
+   * - Cutoff: 20kHz → 3kHz (gentle high-freq rolloff, not 800Hz which kills audio)
+   * - Gain: 0dB → -3dB (slight reduction, not -6dB which nearly mutes)
+   */
+  setMuffleAmount(amount: number): void {
+    const clampedAmount = Math.max(0, Math.min(1, amount));
+    const wasFullyOff = this._isMuffled === false && clampedAmount === 0;
+    const isFullyOff = clampedAmount === 0;
+
+    this._isMuffled = clampedAmount > 0;
 
     const rampTime = 0.5;
 
     if (this._muffleFilter) {
-      const targetFreq = muffled ? 800 : 20000;
+      // Interpolate: 20kHz (open) → 3kHz (muffled) — gentler than 800Hz
+      const targetFreq = 20000 - (17000 * clampedAmount);
       this._muffleFilter.frequency.rampTo(targetFreq, rampTime);
     }
 
     if (this._muffleGain) {
-      const targetGain = muffled ? Tone.dbToGain(-6) : 1;
+      // Interpolate: 0dB → -3dB — gentler than -6dB
+      const targetGain = Tone.dbToGain(-3 * clampedAmount);
       this._muffleGain.gain.rampTo(targetGain, rampTime);
     }
 
-    console.log(`[AudioSystem] Muffle ${muffled ? 'ON' : 'OFF'}`);
+    // Only log state changes, not every adjustment
+    if (wasFullyOff !== isFullyOff) {
+      console.log(`[AudioSystem] Muffle ${isFullyOff ? 'OFF' : `ON (${Math.round(clampedAmount * 100)}%)`}`);
+    }
   }
 
   get isMuffled(): boolean {

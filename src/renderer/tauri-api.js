@@ -101,6 +101,13 @@ window.rainydesk = {
     listen('start-audio', () => callback());
   },
 
+  // Fade-in coordination: signal readiness and wait for synchronized start
+  rendererReady: () => invoke('renderer_ready'),
+  backgroundReady: () => invoke('background_ready'),
+  onStartFadeIn: (callback) => {
+    listen('start-fade-in', () => callback());
+  },
+
   // Fullscreen detection: hide rain on this monitor when fullscreen window detected
   onFullscreenStatus: (callback) => {
     listen('fullscreen-status', (event) => callback(event.payload));
@@ -113,6 +120,22 @@ window.rainydesk = {
 
   // Log messages to main process console
   log: (message) => invoke('log_message', { message })
+};
+
+// Intercept console.warn and console.error to pipe to Rust log
+const originalWarn = console.warn;
+const originalError = console.error;
+
+console.warn = (...args) => {
+  originalWarn.apply(console, args);
+  const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  invoke('log_message', { message: `[ConsoleWarn] ${message}` }).catch(() => {});
+};
+
+console.error = (...args) => {
+  originalError.apply(console, args);
+  const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  invoke('log_message', { message: `[ConsoleError] ${message}` }).catch(() => {});
 };
 
 console.log('Tauri API shim loaded');

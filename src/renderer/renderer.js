@@ -1,13 +1,33 @@
 /**
  * RainyDesk Renderer - Overlay Mode
- * Physics rain, particles, audio, and Rainscaper UI
+ * Pixi hybrid physics, audio, and Rainscaper UI
  *
- * Note: Background mode uses separate file (background-renderer.js)
+ * SEQUENTIAL STARTUP ARCHITECTURE:
+ * 1. Hide canvas immediately (synchronous, at script top)
+ * 2. Wait for Tauri API
+ * 3. Get display info and calculate maps
+ * 4. Init simulation (Pixi only)
+ * 5. Register event listeners
+ * 6. Init UI
+ * 7. Wait for first window data
+ * 8. Start game loop (still hidden)
+ * 9. Signal ready, wait for coordinated fade-in
  */
 
-import RainPhysicsSystem from './physicsSystem.js';
-import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
-import Canvas2DRenderer from './Canvas2DRenderer.js';
+// PHASE 1: Hide canvas (only on first load, not hot-reloads)
+const canvas = document.getElementById('rain-canvas');
+
+// Check if we recently initialized (within last 30 seconds) - survives WebView recreation
+const lastInit = parseInt(localStorage.getItem('__RAINYDESK_OVERLAY_INIT_TIME__') || '0', 10);
+const isRecentInit = (Date.now() - lastInit) < 30000;
+
+if (!isRecentInit) {
+  canvas.style.opacity = '0';
+  canvas.style.visibility = 'hidden';
+  canvas.style.transition = 'opacity 5s ease-in-out';
+} else {
+  console.log('[Overlay] Skipping canvas hide - recent init detected');
+}
 
 // Audio system (TypeScript, voice-pooled)
 let audioSystem = null;
@@ -15,13 +35,7 @@ let audioSystem = null;
 // Rainscaper UI panel
 let rainscaper = null;
 
-// Canvas and context
-const canvas = document.getElementById('rain-canvas');
-let renderer = null;  // Will be WebGLRainRenderer or Canvas2DRenderer
-
 // Render scale for pixelated 8-bit aesthetic (0.25 = 25% resolution)
-// Physics runs at this scale, then upscaled with nearest-neighbor for blocky look
-// Mutable so it can be adjusted via Rainscaper
 let renderScale = 0.25;
 
 // Virtual desktop info (mega-window architecture)
@@ -40,38 +54,22 @@ let config = {
   dropColor: 'rgba(160, 196, 232, 0.6)',
   dropMinSize: 2,
   dropMaxSize: 6,
-  useMatterJS: true,
-  usePixiPhysics: true,  // Toggle between Pixi (true) and Matter.js (false)
   fpsLimit: 0  // 0 = uncapped, otherwise target FPS
 };
 
 // FPS limiter state
 let lastFrameTime = 0;
 
-// Startup initialization state
-let firstWindowDataReceived = false;
-let windowUpdateDebounceTimer = null;
-let lastWindowData = null; // For change detection
-let isInitializing = true; // Track initialization phase
-
-// Physics system (Matter.js - legacy)
-let physicsSystem = null;
-
-// Pixi hybrid physics (new system)
+// Pixi hybrid physics
 let gridSimulation = null;
 let pixiRenderer = null;
-let globalGridBounds = null;  // { minX, minY, width, height, logicWidth, logicHeight }
-
-// Custom physics arrays (fallback)
-let raindrops = [];
-let splashParticles = [];
+let globalGridBounds = null;
 
 // Autosave data (loaded during init, applied after audio starts)
 let pendingAutosave = null;
 
 // Timing
 let lastTime = performance.now();
-let deltaTime = 0;
 let fpsCounter = 0;
 let fpsTime = performance.now();
 
@@ -82,17 +80,43 @@ let audioInitialized = false;
 let windowZones = [];
 let windowZoneCount = 0;
 
-// Fullscreen detection: hide rain when this monitor has a fullscreen window
+// Fullscreen detection
 let isFullscreenActive = false;
 let fullscreenDebounceTimer = null;
 let pendingFullscreenState = false;
 
+// Window update state
+let windowUpdateDebounceTimer = null;
+let lastWindowData = null;
+
+/**
+ * Wait for Tauri API to be available
+ */
+function waitForTauriAPI() {
+  return new Promise((resolve) => {
+    if (window.rainydesk) return resolve();
+    const check = setInterval(() => {
+      if (window.rainydesk) {
+        clearInterval(check);
+        resolve();
+      }
+    }, 50);
+  });
+}
+
+/**
+ * Wait for first window data to be received
+ */
+function waitForFirstWindowData() {
+  return new Promise((resolve) => {
+    const unsubscribe = window.rainydesk.onWindowData((data) => {
+      resolve(data);
+    });
+  });
+}
+
 /**
  * Classify a window based on its coverage of a monitor.
- * @param {Object} win - Window with x, y, width, height
- * @param {Object} mon - Monitor with work area and full bounds
- * @param {Object} desktop - Virtual desktop info
- * @returns {string} 'work-area' | 'full-resolution' | 'snapped' | 'normal'
  */
 function classifyWindow(win, mon, desktop) {
   const winRelX = win.x - desktop.originX;
@@ -122,10 +146,7 @@ function classifyWindow(win, mon, desktop) {
   const isFullWidth = win.width === mon.workWidth;
   const isFullHeight = win.height === mon.workHeight;
 
-  // Half-screen snap (left/right or top/bottom)
   const isHalfSnap = (isHalfWidth && isFullHeight) || (isFullWidth && isHalfHeight);
-
-  // Quarter-screen snap (corner)
   const isQuarterSnap = isHalfWidth && isHalfHeight;
 
   if (isHalfSnap || isQuarterSnap) return 'snapped';
@@ -134,193 +155,113 @@ function classifyWindow(win, mon, desktop) {
 }
 
 /**
- * Check if any window covers a monitor's work area (fullscreen/borderless detection).
- * Returns monitor indices that have fullscreen windows, or empty array if none.
- * @param {Array} windows - Window zones with screen coordinates
- * @param {Array} monitors - Monitor regions with virtual desktop relative coordinates
- * @param {Object} desktop - Virtual desktop info with originX/originY
- * @returns {number[]} Array of monitor indices with fullscreen windows
+ * Build void mask from virtual desktop monitor regions.
+ * Void mask: 1 = void (gap between monitors), 0 = usable
  */
-function getFullscreenMonitors(windows, monitors, desktop) {
-  if (!monitors || monitors.length === 0 || !desktop) return [];
+function buildVoidMask(desktop, scale) {
+  const gridWidth = Math.ceil(desktop.width * scale);
+  const gridHeight = Math.ceil(desktop.height * scale);
 
-  const TOLERANCE = 50; // Allow differences for window chrome, DPI scaling, etc.
-  const fullscreenMonitors = [];
+  const voidMask = new Uint8Array(gridWidth * gridHeight);
+  voidMask.fill(1);
 
-  for (const win of windows) {
-    // Skip small windows
-    if (win.width < 800 || win.height < 600) continue;
+  for (const monitor of desktop.monitors) {
+    const mx = Math.floor(monitor.x * scale);
+    const my = Math.floor(monitor.y * scale);
+    const mw = Math.ceil(monitor.width * scale);
+    const mh = Math.ceil(monitor.height * scale);
 
-    // Convert window screen coordinates to virtual desktop relative coordinates
-    const winRelX = win.x - desktop.originX;
-    const winRelY = win.y - desktop.originY;
-
-    for (const mon of monitors) {
-      // Skip if already marked as fullscreen
-      if (fullscreenMonitors.includes(mon.index)) continue;
-
-      // Check if window covers this monitor's work area (or full monitor)
-      const coversWidth = win.width >= mon.workWidth - TOLERANCE;
-      const coversHeight = win.height >= mon.workHeight - TOLERANCE;
-
-      // Check position alignment (window starts near monitor work area origin)
-      const positionMatches =
-        Math.abs(winRelX - mon.workX) < TOLERANCE &&
-        Math.abs(winRelY - mon.workY) < TOLERANCE;
-
-      // Also check against full monitor bounds (for true fullscreen)
-      const coversFullWidth = win.width >= mon.width - TOLERANCE;
-      const coversFullHeight = win.height >= mon.height - TOLERANCE;
-      const fullPositionMatches =
-        Math.abs(winRelX - mon.x) < TOLERANCE &&
-        Math.abs(winRelY - mon.y) < TOLERANCE;
-
-      const isFullscreen =
-        (coversWidth && coversHeight && positionMatches) ||
-        (coversFullWidth && coversFullHeight && fullPositionMatches);
-
-      if (isFullscreen) {
-        fullscreenMonitors.push(mon.index);
-        // Log which window triggered fullscreen detection (once per window)
-        if (!window._loggedFullscreenWindows) window._loggedFullscreenWindows = new Set();
-        if (!window._loggedFullscreenWindows.has(win.title)) {
-          window._loggedFullscreenWindows.add(win.title);
-          window.rainydesk.log(`[Fullscreen] Matched: "${win.title?.substring(0, 30)}" (${win.width}x${win.height}) on monitor ${mon.index}`);
-        }
+    for (let y = my; y < my + mh && y < gridHeight; y++) {
+      for (let x = mx; x < mx + mw && x < gridWidth; x++) {
+        voidMask[y * gridWidth + x] = 0;
       }
     }
   }
 
-  // Clear logged windows when no fullscreen detected
-  if (fullscreenMonitors.length === 0) {
-    window._loggedFullscreenWindows = null;
-  }
+  const voidCount = voidMask.reduce((sum, v) => sum + v, 0);
+  window.rainydesk.log(`[VoidMask] Grid ${gridWidth}x${gridHeight}, void=${voidCount}, usable=${voidMask.length - voidCount}`);
 
-  return fullscreenMonitors;
+  return voidMask;
 }
 
 /**
- * Raindrop class (fallback for non-Matter.js mode)
+ * Compute spawn map (per-column topmost non-void Y).
  */
-class Raindrop {
-  constructor(x, y) {
-    this.x = x;
-    this.y = y;
-    this.mass = 0.5 + Math.random() * 1.5;
-    this.radius = config.dropMinSize + (this.mass / 2) * (config.dropMaxSize - config.dropMinSize);
-    this.length = this.radius * (4 + Math.random() * 4);
+function computeSpawnMap(voidMask, gridWidth, gridHeight) {
+  const spawnMap = new Int16Array(gridWidth);
+  spawnMap.fill(-1);
 
-    this.vx = (config.wind / 100) * 50 + (Math.random() - 0.5) * 20;
-    this.vy = 200 + Math.random() * 200;
-
-    this.opacity = 0.3 + Math.random() * 0.4;
-  }
-
-  update(dt) {
-    const GRAVITY = 980;
-    const AIR_RESISTANCE = 0.02;
-    const TERMINAL_VELOCITY = 800;
-
-    this.vy += GRAVITY * dt;
-
-    const windForce = (config.wind / 100) * 200 * (1 / this.mass);
-    this.vx += windForce * dt;
-
-    this.vx *= (1 - AIR_RESISTANCE);
-    this.vy *= (1 - AIR_RESISTANCE);
-
-    if (this.vy > TERMINAL_VELOCITY) {
-      this.vy = TERMINAL_VELOCITY;
+  for (let x = 0; x < gridWidth; x++) {
+    for (let y = 0; y < gridHeight; y++) {
+      if (voidMask[y * gridWidth + x] === 0) {
+        spawnMap[x] = y;
+        break;
+      }
     }
-
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    return this.y < canvasHeight + 50 &&
-           this.x > -50 &&
-           this.x < canvasWidth + 50;
   }
 
-  render(ctx) {
-    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-    const normalizedVx = this.vx / speed;
-    const normalizedVy = this.vy / speed;
-
-    const trailLength = Math.min(this.length, speed * 0.03);
-    const endX = this.x - normalizedVx * trailLength;
-    const endY = this.y - normalizedVy * trailLength;
-
-    const gradient = ctx.createLinearGradient(endX, endY, this.x, this.y);
-    gradient.addColorStop(0, 'rgba(160, 196, 232, 0)');
-    gradient.addColorStop(1, `rgba(160, 196, 232, ${this.opacity})`);
-
-    ctx.beginPath();
-    ctx.moveTo(endX, endY);
-    ctx.lineTo(this.x, this.y);
-    ctx.strokeStyle = gradient;
-    ctx.lineWidth = this.radius;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-  }
+  return spawnMap;
 }
 
 /**
- * SplashParticle class (fallback for non-Matter.js mode)
+ * Compute splash floor map (per-column bottom of work area).
  */
-class SplashParticle {
-  constructor(x, y, impactVelocity) {
-    this.x = x;
-    this.y = y;
+function computeFloorMap(desktop, scale, gridWidth, gridHeight) {
+  const floorMap = new Int16Array(gridWidth);
+  floorMap.fill(gridHeight);
 
-    const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI;
-    const speed = 50 + Math.random() * impactVelocity * 0.3;
+  for (const monitor of desktop.monitors) {
+    const mx = Math.floor(monitor.x * scale);
+    const mw = Math.ceil(monitor.width * scale);
+    const workBottom = Math.floor((monitor.workY + monitor.workHeight) * scale);
 
-    this.vx = Math.cos(angle) * speed;
-    this.vy = Math.sin(angle) * speed;
-
-    this.radius = 0.5 + Math.random() * 1.5;
-    this.opacity = 0.6;
-    this.life = 0.3 + Math.random() * 0.3;
+    for (let x = mx; x < mx + mw && x < gridWidth; x++) {
+      floorMap[x] = Math.min(floorMap[x], workBottom);
+    }
   }
 
-  update(dt) {
-    this.vy += 980 * 0.5 * dt;
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-    this.life -= dt;
-    this.opacity = Math.max(0, this.life * 2);
-
-    return this.life > 0;
-  }
-
-  render(ctx) {
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(160, 196, 232, ${this.opacity})`;
-    ctx.fill();
-  }
+  return floorMap;
 }
 
 /**
- * Check if two rectangles truly overlap (not just touching edges)
+ * Compute display floor map (per-column bottom of actual display).
  */
-function rectsOverlap(a, b) {
-  // Use strict inequality to exclude windows that merely touch the boundary
-  return !(a.x + a.width <= b.x || a.x >= b.x + b.width ||
-           a.y + a.height <= b.y || a.y >= b.y + b.height);
+function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
+  const displayFloorMap = new Int16Array(gridWidth);
+  displayFloorMap.fill(gridHeight);
+
+  for (const monitor of desktop.monitors) {
+    const mx = Math.floor(monitor.x * scale);
+    const mw = Math.ceil(monitor.width * scale);
+    const displayBottom = Math.floor((monitor.y + monitor.height) * scale);
+
+    for (let x = mx; x < mx + mw && x < gridWidth; x++) {
+      displayFloorMap[x] = Math.min(displayFloorMap[x], displayBottom);
+    }
+  }
+
+  return displayFloorMap;
 }
 
 /**
- * Calculate what percentage of rectangle 'a' overlaps with rectangle 'b'
- * Returns 0-1 (0% to 100%)
+ * Compare two window arrays to detect changes.
  */
-function overlapPercentage(a, b) {
-  // Find overlap rectangle
-  const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
-  const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
-  const overlapArea = overlapX * overlapY;
-  const aArea = a.width * a.height;
-  return aArea > 0 ? overlapArea / aArea : 0;
+function windowsChanged(oldWindows, newWindows) {
+  if (!oldWindows || !newWindows) return true;
+  if (oldWindows.length !== newWindows.length) return true;
+
+  for (let i = 0; i < oldWindows.length; i++) {
+    const a = oldWindows[i];
+    const b = newWindows[i];
+    if (!a || !b) return true;
+    if (a.x !== b.x || a.y !== b.y ||
+        a.width !== b.width || a.height !== b.height ||
+        a.title !== b.title) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -330,7 +271,6 @@ async function initAudio() {
   if (audioInitialized) return;
 
   try {
-    // Load and initialize audio system
     const { AudioSystem } = await import('./audio.bundle.js');
     audioSystem = new AudioSystem({
       impactPoolSize: 12,
@@ -342,12 +282,6 @@ async function initAudio() {
     // Start with fade-in
     await audioSystem.start(true);
     window.rainydesk.log('[Audio] Started with fade-in');
-
-    // Connect to physics for collision events
-    if (physicsSystem) {
-      physicsSystem.setAudioSystem(audioSystem);
-      window.rainydesk.log('[Audio] Connected to Matter.js physics system');
-    }
 
     // Connect to Pixi physics for collision events
     if (gridSimulation) {
@@ -364,7 +298,7 @@ async function initAudio() {
     }
 
     audioInitialized = true;
-    rainscaper.refresh();
+    if (rainscaper) rainscaper.refresh();
   } catch (error) {
     window.rainydesk.log(`Audio init error: ${error.message}`);
     console.error('[Audio] Error:', error);
@@ -372,234 +306,395 @@ async function initAudio() {
 }
 
 /**
- * Build void mask from virtual desktop monitor regions.
- * Void mask: 1 = void (gap between monitors), 0 = usable
+ * Resize canvas to match display
  */
-function buildVoidMask(desktop, scale) {
-  const gridWidth = Math.ceil(desktop.width * scale);
-  const gridHeight = Math.ceil(desktop.height * scale);
+function resizeCanvas() {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
 
-  // Initialize all cells as void
-  const voidMask = new Uint8Array(gridWidth * gridHeight);
-  voidMask.fill(1);
+  canvasWidth = width;
+  canvasHeight = height;
 
-  // Carve out monitor regions
-  for (const monitor of desktop.monitors) {
-    const mx = Math.floor(monitor.x * scale);
-    const my = Math.floor(monitor.y * scale);
-    const mw = Math.ceil(monitor.width * scale);
-    const mh = Math.ceil(monitor.height * scale);
+  canvas.width = width;
+  canvas.height = height;
 
-    for (let y = my; y < my + mh && y < gridHeight; y++) {
-      for (let x = mx; x < mx + mw && x < gridWidth; x++) {
-        voidMask[y * gridWidth + x] = 0; // Not void
+  window.rainydesk.log(`[Resize] Canvas: ${width}x${height}`);
+}
+
+/**
+ * Update simulation
+ */
+function update(dt) {
+  if (gridSimulation) {
+    gridSimulation.step(dt);
+  }
+}
+
+/**
+ * Render simulation
+ */
+function render() {
+  if (pixiRenderer && gridSimulation) {
+    pixiRenderer.render(gridSimulation);
+  }
+}
+
+/**
+ * Main game loop with delta time and optional FPS limiting
+ */
+function gameLoop(currentTime) {
+  // FPS limiting
+  if (config.fpsLimit > 0) {
+    const minFrameTime = 1000 / config.fpsLimit;
+    if (currentTime - lastFrameTime < minFrameTime) {
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+    lastFrameTime = currentTime;
+  }
+
+  const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
+  lastTime = currentTime;
+
+  // Skip physics/rendering when fullscreen window detected
+  if (!isFullscreenActive) {
+    update(dt);
+    render();
+
+    // Feed particle count to audio system
+    if (audioSystem && gridSimulation) {
+      const particleCount = gridSimulation.getActiveDropCount();
+      audioSystem.setParticleCount(particleCount);
+    }
+  } else {
+    // When fullscreen, feed zero particles to quiet the sheet layer
+    if (audioSystem) {
+      audioSystem.setParticleCount(0);
+    }
+  }
+
+  // FPS monitoring (every 5 seconds)
+  fpsCounter++;
+  if (currentTime - fpsTime > 5000) {
+    const fps = Math.round(fpsCounter / 5);
+    const particles = gridSimulation ? gridSimulation.getActiveDropCount() : 0;
+    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}${isFullscreenActive ? ', FULLSCREEN' : ''}`);
+    fpsCounter = 0;
+    fpsTime = currentTime;
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+/**
+ * Register all event listeners
+ */
+function registerEventListeners() {
+  window.rainydesk.onToggleRain((enabled) => {
+    config.enabled = enabled;
+    if (audioSystem) {
+      if (enabled) {
+        audioSystem.start();
+      } else {
+        audioSystem.stop();
       }
     }
-  }
+  });
 
-  const voidCount = voidMask.reduce((sum, v) => sum + v, 0);
-  window.rainydesk.log(`[VoidMask] Grid ${gridWidth}×${gridHeight}, void=${voidCount}, usable=${voidMask.length - voidCount}`);
-
-  return voidMask;
-}
-
-/**
- * Compute spawn map (per-column topmost non-void Y).
- * spawnY[x] = -1 if column is entirely void
- */
-function computeSpawnMap(voidMask, gridWidth, gridHeight) {
-  const spawnMap = new Int16Array(gridWidth);
-  spawnMap.fill(-1);
-
-  for (let x = 0; x < gridWidth; x++) {
-    for (let y = 0; y < gridHeight; y++) {
-      if (voidMask[y * gridWidth + x] === 0) {
-        spawnMap[x] = y; // First non-void cell from top
-        break;
+  window.rainydesk.onToggleAudio((enabled) => {
+    if (audioSystem) {
+      if (enabled) {
+        audioSystem.start();
+        window.rainydesk.log('Audio resumed');
+      } else {
+        audioSystem.stop();
+        window.rainydesk.log('Audio paused');
       }
     }
-  }
+  });
 
-  return spawnMap;
-}
-
-/**
- * Compute splash floor map (per-column bottom of work area).
- * This is where rain splashes - top of taskbar.
- * floorY[x] = gridHeight if column has no floor
- */
-function computeFloorMap(desktop, scale, gridWidth, gridHeight) {
-  const floorMap = new Int16Array(gridWidth);
-  floorMap.fill(gridHeight);
-
-  for (const monitor of desktop.monitors) {
-    const mx = Math.floor(monitor.x * scale);
-    const mw = Math.ceil(monitor.width * scale);
-
-    // Splash floor is bottom of work area (top of taskbar)
-    const workBottom = Math.floor((monitor.workY + monitor.workHeight) * scale);
-
-    for (let x = mx; x < mx + mw && x < gridWidth; x++) {
-      floorMap[x] = Math.min(floorMap[x], workBottom);
+  window.rainydesk.onSetIntensity((value) => {
+    config.intensity = value;
+    if (gridSimulation) {
+      gridSimulation.setIntensity(value / 100);
     }
-  }
+  });
 
-  return floorMap;
-}
-
-/**
- * Compute display floor map (per-column bottom of actual display).
- * This is where puddles accumulate - bottom of monitor including taskbar.
- * Puddles sit inside the taskbar zone.
- */
-function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
-  const displayFloorMap = new Int16Array(gridWidth);
-  displayFloorMap.fill(gridHeight);
-
-  for (const monitor of desktop.monitors) {
-    const mx = Math.floor(monitor.x * scale);
-    const mw = Math.ceil(monitor.width * scale);
-
-    // Display floor is bottom of actual monitor (includes taskbar)
-    const displayBottom = Math.floor((monitor.y + monitor.height) * scale);
-
-    for (let x = mx; x < mx + mw && x < gridWidth; x++) {
-      displayFloorMap[x] = Math.min(displayFloorMap[x], displayBottom);
+  window.rainydesk.onSetVolume((value) => {
+    config.volume = value;
+    if (audioInitialized && audioSystem) {
+      const db = value <= 0 ? -Infinity : (value / 100 * 60) - 60;
+      audioSystem.setMasterVolume(db);
     }
-  }
+    window.rainydesk.log(`Volume set to ${value}%`);
+  });
 
-  return displayFloorMap;
-}
-
-/**
- * Compare two window arrays to detect changes.
- * Returns true if windows have changed (position, size, or count).
- */
-function windowsChanged(oldWindows, newWindows) {
-  if (!oldWindows || !newWindows) return true;
-  if (oldWindows.length !== newWindows.length) return true;
-
-  // Compare each window (order matters for detection)
-  for (let i = 0; i < oldWindows.length; i++) {
-    const a = oldWindows[i];
-    const b = newWindows[i];
-    if (!a || !b) return true;
-    if (a.x !== b.x || a.y !== b.y ||
-        a.width !== b.width || a.height !== b.height ||
-        a.title !== b.title) {
-      return true;
+  window.rainydesk.onLoadRainscape(async (filename) => {
+    try {
+      const data = await window.rainydesk.readRainscape(filename);
+      if (rainscaper && data) {
+        rainscaper.applyRainscape(data);
+        window.rainydesk.log(`Loaded rainscape: ${filename}`);
+      }
+    } catch (err) {
+      window.rainydesk.log(`Failed to load rainscape ${filename}: ${err}`);
     }
-  }
+  });
 
-  return false; // No changes detected
+  // Window data handler
+  let windowDataLogged = false;
+  window.rainydesk.onWindowData((data) => {
+    // Filter out RainyDesk and DevTools windows
+    const newWindowZones = data.windows
+      .filter(w => !w.title || !w.title.includes('RainyDesk'))
+      .filter(w => !w.title || !w.title.includes('DevTools'))
+      .map(w => ({
+        x: w.bounds.x,
+        y: w.bounds.y,
+        width: w.bounds.width,
+        height: w.bounds.height,
+        title: w.title,
+        isMaximized: w.isMaximized || false
+      }));
+
+    // Skip update if windows haven't changed
+    if (!windowsChanged(lastWindowData, newWindowZones)) {
+      return;
+    }
+
+    windowZones = newWindowZones;
+    lastWindowData = [...windowZones];
+
+    // Debounce expensive operations
+    if (windowUpdateDebounceTimer) clearTimeout(windowUpdateDebounceTimer);
+    const capturedZones = [...windowZones];
+    windowUpdateDebounceTimer = setTimeout(() => {
+      // Log detected windows once per session
+      if (!windowDataLogged) {
+        windowDataLogged = true;
+        window.rainydesk.log(`[WindowDebug] Detected ${windowZones.length} windows`);
+      }
+
+      if (windowZones.length !== windowZoneCount) {
+        window.rainydesk.log(`[WindowDebug] Zone count: ${windowZoneCount} -> ${windowZones.length}`);
+        windowZoneCount = windowZones.length;
+      }
+
+      // Classify windows
+      const voidWindows = [];
+      const normalWindows = [];
+      const spawnBlockWindows = [];
+      let hasPrimaryFullResolution = false;
+
+      if (virtualDesktop && virtualDesktop.monitors) {
+        const primaryIndex = virtualDesktop.primaryIndex || 0;
+
+        for (const win of windowZones) {
+          let classified = false;
+
+          for (const mon of virtualDesktop.monitors) {
+            const classification = classifyWindow(win, mon, virtualDesktop);
+
+            if (classification === 'work-area') {
+              if (!classified) {
+                voidWindows.push(win);
+                classified = true;
+              }
+            } else if (classification === 'full-resolution' && mon.index === primaryIndex) {
+              if (!classified) {
+                hasPrimaryFullResolution = true;
+                normalWindows.push(win);
+                classified = true;
+              }
+            } else if (classification === 'snapped') {
+              if (!classified) {
+                normalWindows.push(win);
+                spawnBlockWindows.push(win);
+                classified = true;
+              }
+            }
+          }
+
+          if (!classified) {
+            normalWindows.push(win);
+          }
+        }
+
+        // Handle fullscreen state with debounce
+        const newFullscreenState = hasPrimaryFullResolution;
+        if (newFullscreenState !== pendingFullscreenState) {
+          pendingFullscreenState = newFullscreenState;
+          if (fullscreenDebounceTimer) clearTimeout(fullscreenDebounceTimer);
+          fullscreenDebounceTimer = setTimeout(() => {
+            if (pendingFullscreenState !== isFullscreenActive) {
+              const wasFullscreen = isFullscreenActive;
+              isFullscreenActive = pendingFullscreenState;
+
+              if (isFullscreenActive && !wasFullscreen) {
+                window.rainydesk.log('[Fullscreen] Primary monitor fullscreen - hiding overlay');
+                canvas.style.opacity = '0';
+              } else if (!isFullscreenActive && wasFullscreen) {
+                window.rainydesk.log('[Fullscreen] Primary monitor clear - showing overlay');
+                canvas.style.opacity = '1';
+              }
+            }
+          }, 200);
+        }
+      }
+
+      // Update audio muffling
+      if (audioSystem && virtualDesktop && virtualDesktop.monitors) {
+        let coveredWidth = 0;
+        const totalWidth = virtualDesktop.width;
+
+        const fullscreenMonitorIndices = new Set();
+        for (const win of voidWindows) {
+          for (const mon of virtualDesktop.monitors) {
+            const classification = classifyWindow(win, mon, virtualDesktop);
+            if (classification === 'work-area') {
+              fullscreenMonitorIndices.add(mon.index);
+            }
+          }
+        }
+
+        for (const mon of virtualDesktop.monitors) {
+          if (fullscreenMonitorIndices.has(mon.index)) {
+            coveredWidth += mon.width;
+          }
+        }
+
+        const coverageRatio = totalWidth > 0 ? coveredWidth / totalWidth : 0;
+        const muffleAmount = coverageRatio * 0.7;
+        audioSystem.setMuffleAmount(muffleAmount);
+      } else if (audioSystem) {
+        audioSystem.setMuffleAmount(0);
+      }
+
+      // Update physics with classified windows
+      if (gridSimulation) {
+        gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
+      }
+    }, 32);
+  });
+
+  // Parameter sync
+  window.rainydesk.onUpdateRainscapeParam((path, value) => {
+    if (path.startsWith('physics.')) {
+      const param = path.split('.')[1];
+
+      if (param === 'gravity' && gridSimulation) {
+        gridSimulation.setGravity(value);
+      }
+      if (param === 'wind') {
+        config.wind = value;
+        if (gridSimulation) {
+          gridSimulation.setWind(value);
+        }
+      }
+      if (param === 'intensity') {
+        config.intensity = value;
+        if (gridSimulation) {
+          gridSimulation.setIntensity(value / 100);
+        }
+      }
+      if (param === 'renderScale') {
+        renderScale = Math.max(0.125, Math.min(1.0, value));
+        resizeCanvas();
+        window.rainydesk.log(`Render scale set to ${renderScale * 100}%`);
+      }
+    } else if (path === 'system.fpsLimit') {
+      const numValue = typeof value === 'string' ? parseInt(value, 10) : value;
+      config.fpsLimit = Math.max(0, Math.min(240, numValue || 0));
+      window.rainydesk.log(`FPS limit set to ${config.fpsLimit === 0 ? 'uncapped' : config.fpsLimit}`);
+    } else if (audioSystem) {
+      audioSystem.updateParam(path, value);
+    }
+  });
+
+  window.rainydesk.onToggleRainscaper(() => {
+    if (rainscaper) rainscaper.toggle();
+  });
+
+  window.rainydesk.onFullscreenStatus((isFullscreen) => {
+    isFullscreenActive = isFullscreen;
+    if (isFullscreen) {
+      window.rainydesk.log('[Fullscreen] Detected - hiding rain');
+    } else {
+      window.rainydesk.log('[Fullscreen] Ended - showing rain');
+    }
+  });
+
+  window.rainydesk.onAudioMuffle((shouldMuffle) => {
+    if (audioSystem) {
+      audioSystem.setMuffled(shouldMuffle);
+      window.rainydesk.log(`Audio muffling: ${shouldMuffle ? 'ON' : 'OFF'}`);
+    }
+  });
+
+  window.addEventListener('resize', resizeCanvas);
 }
 
 /**
  * Initialize Pixi hybrid physics system
  */
 async function initPixiPhysics() {
-  if (gridSimulation || pixiRenderer) {
-    window.rainydesk.log('[Pixi] Already initialized');
-    return;
-  }
+  window.rainydesk.log('[Pixi] Initializing hybrid physics...');
 
-  try {
-    window.rainydesk.log('[Pixi] Initializing hybrid physics...');
+  const { GridSimulation, RainPixiRenderer } = await import('./simulation.bundle.js');
 
-    // Dynamically import simulation modules
-    const { GridSimulation, RainPixiRenderer } = await import('./simulation.bundle.js');
+  const scale = 0.25;
+  const logicWidth = Math.ceil(virtualDesktop.width * scale);
+  const logicHeight = Math.ceil(virtualDesktop.height * scale);
 
-    // Fetch virtual desktop info
-    virtualDesktop = await window.rainydesk.getVirtualDesktop();
-    window.rainydesk.log(`[Pixi] Virtual desktop: ${virtualDesktop.width}×${virtualDesktop.height} at (${virtualDesktop.originX}, ${virtualDesktop.originY}), ${virtualDesktop.monitors.length} monitors`);
+  // Build void mask, spawn map, floor maps
+  const voidMask = buildVoidMask(virtualDesktop, scale);
+  const spawnMap = computeSpawnMap(voidMask, logicWidth, logicHeight);
+  const floorMap = computeFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
+  const displayFloorMap = computeDisplayFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
 
-    const scale = 0.25;
-    const logicWidth = Math.ceil(virtualDesktop.width * scale);
-    const logicHeight = Math.ceil(virtualDesktop.height * scale);
+  globalGridBounds = {
+    minX: virtualDesktop.originX,
+    minY: virtualDesktop.originY,
+    width: virtualDesktop.width,
+    height: virtualDesktop.height,
+    logicWidth,
+    logicHeight
+  };
 
-    // Build void mask, spawn map, floor maps
-    const voidMask = buildVoidMask(virtualDesktop, scale);
-    const spawnMap = computeSpawnMap(voidMask, logicWidth, logicHeight);
-    const floorMap = computeFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
-    const displayFloorMap = computeDisplayFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
+  window.rainydesk.log(`[Pixi] Virtual desktop: ${virtualDesktop.width}x${virtualDesktop.height} at (${virtualDesktop.originX}, ${virtualDesktop.originY}), ${virtualDesktop.monitors.length} monitors`);
+  window.rainydesk.log(`[Pixi] Global grid: ${logicWidth}x${logicHeight} logic`);
 
-    globalGridBounds = {
-      minX: virtualDesktop.originX,
-      minY: virtualDesktop.originY,
-      width: virtualDesktop.width,
-      height: virtualDesktop.height,
-      logicWidth,
-      logicHeight
-    };
+  // Initialize GridSimulation
+  gridSimulation = new GridSimulation(
+    logicWidth,
+    logicHeight,
+    virtualDesktop.originX,
+    virtualDesktop.originY,
+    {},
+    voidMask,
+    spawnMap,
+    floorMap,
+    displayFloorMap
+  );
 
-    window.rainydesk.log(`[Pixi] Global grid: (${virtualDesktop.originX},${virtualDesktop.originY}) ${virtualDesktop.width}×${virtualDesktop.height} → ${logicWidth}×${logicHeight} logic`);
+  gridSimulation.onDebugLog = (msg) => window.rainydesk.log(msg);
+  gridSimulation.setIntensity(config.intensity / 100);
+  gridSimulation.setWind(config.wind);
 
-    // Calculate local offset for this monitor (use window bounds)
-    const localOffsetX = 0; // Mega-window starts at origin
-    const localOffsetY = 0;
+  // Initialize Pixi renderer
+  pixiRenderer = new RainPixiRenderer({
+    canvas: canvas,
+    width: canvasWidth,
+    height: canvasHeight,
+    localOffsetX: 0,
+    localOffsetY: 0,
+    backgroundColor: 0x000000,
+    preferWebGPU: true
+  });
 
-    // Initialize GridSimulation with void/spawn/floor maps
-    gridSimulation = new GridSimulation(
-      logicWidth,
-      logicHeight,
-      virtualDesktop.originX,
-      virtualDesktop.originY,
-      {}, // Default config
-      voidMask,
-      spawnMap,
-      floorMap,
-      displayFloorMap
-    );
-
-    // DEBUG: Hook up bias tracking log
-    gridSimulation.onDebugLog = (msg) => window.rainydesk.log(msg);
-
-    // Set initial parameters from config
-    gridSimulation.setIntensity(config.intensity / 100);
-    gridSimulation.setWind(config.wind);
-
-    // Wire up audio callback
-    if (audioSystem) {
-      gridSimulation.onCollision = (event) => {
-        audioSystem.handleCollision(event);
-      };
-      window.rainydesk.log('[Pixi] Audio callback connected');
-    }
-
-    // Initialize Pixi renderer
-    pixiRenderer = new RainPixiRenderer({
-      canvas: canvas,
-      width: canvasWidth,
-      height: canvasHeight,
-      localOffsetX,
-      localOffsetY,
-      backgroundColor: 0x000000,
-      preferWebGPU: true
-    });
-
-    await pixiRenderer.init();
-    window.rainydesk.log('[Pixi] Renderer initialized');
-
-    window.rainydesk.log('[Pixi] Hybrid physics ready!');
-  } catch (error) {
-    window.rainydesk.log(`[Pixi] Init error: ${error.message}`);
-    console.error('[Pixi] Error:', error);
-  }
-}
-
-/**
- * Switch between Matter.js and Pixi physics
- */
-function switchPhysicsEngine(usePixi) {
-  config.usePixiPhysics = usePixi;
-  window.rainydesk.log(`[Physics] Switched to ${usePixi ? 'Pixi' : 'Matter.js'}`);
-
-  // Initialize the appropriate system if not already done
-  if (usePixi && !gridSimulation) {
-    initPixiPhysics();
-  } else if (!usePixi && !physicsSystem) {
-    // Matter.js will be initialized in the existing init flow
-  }
+  await pixiRenderer.init();
+  window.rainydesk.log('[Pixi] Renderer initialized');
+  window.rainydesk.log('[Pixi] Hybrid physics ready!');
 }
 
 /**
@@ -616,635 +711,46 @@ function startAutosave() {
 }
 
 /**
- * Spawn new raindrops based on intensity
- */
-function spawnRaindrops(dt) {
-  if (!config.enabled) return;
-
-  const MAX_PARTICLES = 1000; 
-  const currentParticles = config.useMatterJS && physicsSystem
-    ? physicsSystem.getParticleCount()
-    : raindrops.length + splashParticles.length;
-
-  if (currentParticles >= MAX_PARTICLES) return;
-
-  const baseRate = (config.intensity / 100) * 80;
-  const spawnCount = baseRate * dt;
-  const actualSpawn = Math.floor(spawnCount + Math.random());
-
-  for (let i = 0; i < actualSpawn; i++) {
-    if (currentParticles + i >= MAX_PARTICLES) break;
-
-    const windOffset = (config.wind / 100) * -200;
-    const x = Math.random() * (canvasWidth + 200) - 100 + windOffset;
-    const y = -20 - Math.random() * 100;
-    const mass = 0.5 + Math.random() * 1.5;
-
-    if (config.useMatterJS && physicsSystem) {
-      physicsSystem.createRaindrop(x, y, mass);
-    } else {
-      raindrops.push(new Raindrop(x, y));
-    }
-  }
-}
-
-/**
- * Update all particles
- */
-function update(dt) {
-  if (config.usePixiPhysics && gridSimulation) {
-    // Pixi hybrid physics
-    gridSimulation.step(dt);
-  } else if (config.useMatterJS && physicsSystem) {
-    // Matter.js physics
-    spawnRaindrops(dt);
-    physicsSystem.update(dt);
-  } else {
-    // Fallback: custom physics (non-Matter.js mode)
-    spawnRaindrops(dt);
-    raindrops = raindrops.filter(drop => {
-      const alive = drop.update(dt);
-      return alive;
-    });
-    splashParticles = splashParticles.filter(particle => particle.update(dt));
-  }
-}
-
-/**
- * Render all particles
- */
-function render() {
-  if (config.usePixiPhysics && pixiRenderer && gridSimulation) {
-    // Pixi hybrid renderer
-    pixiRenderer.render(gridSimulation);
-  } else if (config.useMatterJS && physicsSystem && renderer) {
-    // Matter.js + WebGL renderer
-    renderer.render(physicsSystem);
-  } else if (!config.useMatterJS) {
-    // Fallback canvas 2D renderer
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    raindrops.forEach(drop => drop.render(ctx));
-    splashParticles.forEach(particle => particle.render(ctx));
-  }
-}
-
-/**
- * Main game loop with delta time and optional FPS limiting
- */
-function gameLoop(currentTime) {
-  // FPS limiting: skip frame if we're ahead of schedule
-  if (config.fpsLimit > 0) {
-    const minFrameTime = 1000 / config.fpsLimit;
-    if (currentTime - lastFrameTime < minFrameTime) {
-      requestAnimationFrame(gameLoop);
-      return;
-    }
-    lastFrameTime = currentTime;
-  }
-
-  const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
-  lastTime = currentTime;
-
-  // Skip physics/rendering when fullscreen window detected on this monitor
-  if (!isFullscreenActive) {
-    update(dt);
-    render();
-
-    // Feed particle count to audio system for sheet layer modulation
-    if (audioSystem) {
-      let particleCount = 0;
-      if (config.usePixiPhysics && gridSimulation) {
-        particleCount = gridSimulation.getActiveDropCount();
-      } else if (physicsSystem) {
-        particleCount = physicsSystem.getParticleCount();
-      } else {
-        particleCount = raindrops.length;
-      }
-      audioSystem.setParticleCount(particleCount);
-    }
-  } else {
-    // When fullscreen, feed zero particles to quiet the sheet layer
-    if (audioSystem) {
-      audioSystem.setParticleCount(0);
-    }
-  }
-
-  // FPS monitoring
-  fpsCounter++;
-  if (currentTime - fpsTime > 5000) {
-    const fps = Math.round(fpsCounter / 5);
-    let particles = 0;
-    if (config.usePixiPhysics && gridSimulation) {
-      particles = gridSimulation.getActiveDropCount();
-    } else if (physicsSystem) {
-      particles = physicsSystem.getParticleCount();
-    } else {
-      particles = raindrops.length;
-    }
-    const engineName = config.usePixiPhysics ? 'Pixi' : 'Matter';
-    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}, Engine: ${engineName}${isFullscreenActive ? ', FULLSCREEN' : ''}`);
-    fpsCounter = 0;
-    fpsTime = currentTime;
-  }
-
-  requestAnimationFrame(gameLoop);
-}
-
-/**
- * Resize canvas to match display
- */
-function resizeCanvas() {
-  const dpr = window.devicePixelRatio || 1;
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-
-  canvasWidth = width;
-  canvasHeight = height;
-
-  // Set canvas backing store dimensions (not just CSS)
-  canvas.width = width;
-  canvas.height = height;
-
-  // Pass scale factor to renderer for pixelated rendering
-  if (renderer) renderer.resize(width, height, dpr, renderScale);
-
-  window.rainydesk.log(`[Resize] Canvas: ${width}×${height}`);
-
-  // Physics system handles its own scaling internally (floorY handled by floor map)
-  if (physicsSystem) physicsSystem.resize(width, height, height);
-}
-
-/**
- * Initialize the rain simulation (overlay mode)
+ * Main initialization - SINGLE SEQUENTIAL FLOW
  */
 async function init() {
+  // PHASE 2: Wait for Tauri API
+  await waitForTauriAPI();
   window.rainydesk.log('Initializing RainyDesk renderer...');
 
-  // Mega-window: canvas sized to full window (spans entire virtual desktop)
+  // PHASE 3: Get display info and calculate
+  virtualDesktop = await window.rainydesk.getVirtualDesktop();
   resizeCanvas();
 
-  window.rainydesk.onToggleRain((enabled) => {
-    config.enabled = enabled;
-    // Also pause/resume audio when rain is toggled
-    if (audioSystem) {
-      if (enabled) {
-        audioSystem.start();
-      } else {
-        audioSystem.stop();
+  // PHASE 4: Init simulation (Pixi only)
+  await initPixiPhysics();
+
+  // Position Rainscaper on primary monitor
+  const positionRainscaper = () => {
+    if (virtualDesktop && rainscaper) {
+      const primary = virtualDesktop.monitors[virtualDesktop.primaryIndex];
+      const panel = document.getElementById('rainscaper');
+      if (panel && primary) {
+        panel.style.right = `${canvasWidth - (primary.x + primary.width) + 20}px`;
+        panel.style.bottom = `${canvasHeight - (primary.workY + primary.workHeight) + 20}px`;
+        window.rainydesk.log(`[Rainscaper] Positioned at right=${panel.style.right}, bottom=${panel.style.bottom}`);
       }
     }
-  });
+  };
 
-  // Audio pause/resume (from tray menu "Pause RainyDesk")
-  window.rainydesk.onToggleAudio((enabled) => {
-    if (audioSystem) {
-      if (enabled) {
-        audioSystem.start();
-        window.rainydesk.log('Audio resumed');
-      } else {
-        audioSystem.stop();
-        window.rainydesk.log('Audio paused');
-      }
-    }
-  });
+  // PHASE 5: Register event listeners
+  registerEventListeners();
 
-  window.rainydesk.onSetIntensity((value) => {
-    config.intensity = value;
-    // Update Pixi simulation if active
-    if (config.usePixiPhysics && gridSimulation) {
-      gridSimulation.setIntensity(value / 100);
-    }
-    // Audio responds to particle count, not intensity directly
-  });
-
-  window.rainydesk.onSetVolume((value) => {
-    config.volume = value;
-    // Convert 0-100 slider to dB range (-60 to 0)
-    if (audioInitialized && audioSystem) {
-      const db = value <= 0 ? -Infinity : (value / 100 * 60) - 60;
-      audioSystem.setMasterVolume(db);
-    }
-    window.rainydesk.log(`Volume set to ${value}%`);
-  });
-
-  // Quick-select rainscape from tray menu
-  window.rainydesk.onLoadRainscape(async (filename) => {
-    try {
-      const data = await window.rainydesk.readRainscape(filename);
-      if (rainscaper && data) {
-        rainscaper.applyRainscape(data);
-        window.rainydesk.log(`Loaded rainscape: ${filename}`);
-      }
-    } catch (err) {
-      window.rainydesk.log(`Failed to load rainscape ${filename}: ${err}`);
-    }
-  });
-
-  // Track if we've logged window info for this session (log once per startup)
-  let windowDataLogged = false;
-
-  window.rainydesk.onWindowData((data) => {
-    // DEBUG: Log raw window data from Rust
-    if (!window._loggedRawWindowData) {
-      window._loggedRawWindowData = true;
-      window.rainydesk.log(`[WindowDebug] Raw data from Rust: ${data.windows?.length || 0} windows`);
-      if (data.windows && data.windows.length > 0) {
-        data.windows.forEach((w, i) => {
-          window.rainydesk.log(`  [Raw ${i}] "${w.title?.substring(0, 30)}" bounds: ${JSON.stringify(w.bounds)}`);
-        });
-      }
-    }
-
-    // Filter out RainyDesk and DevTools windows
-    const newWindowZones = data.windows
-      .filter(w => !w.title || !w.title.includes('RainyDesk'))
-      .filter(w => !w.title || !w.title.includes('DevTools'))
-      .map(w => ({
-        x: w.bounds.x,
-        y: w.bounds.y,
-        width: w.bounds.width,
-        height: w.bounds.height,
-        title: w.title,
-        isMaximized: w.isMaximized || false
-      }));
-
-    // DEBUG: Log filtered zones
-    if (!window._loggedFilteredZones) {
-      window._loggedFilteredZones = true;
-      window.rainydesk.log(`[WindowDebug] After filter: ${newWindowZones.length} windows`);
-    }
-
-    // Start gameLoop on first window data (delay initial render until detection ready)
-    if (!firstWindowDataReceived) {
-      firstWindowDataReceived = true;
-      window.rainydesk.log('[Init] First window data received, starting render loop');
-      requestAnimationFrame(gameLoop);
-    }
-
-    // Skip update if windows haven't actually changed (before any debouncing)
-    if (!windowsChanged(lastWindowData, newWindowZones)) {
-      return; // No change, skip everything
-    }
-
-    // Windows changed - apply immediately (no debounce that blocks updates)
-    windowZones = newWindowZones;
-    lastWindowData = [...windowZones]; // Store copy for next comparison
-
-    // DEBUG: Confirm window zones updated
-    if (!window._loggedZonesUpdated) {
-      window._loggedZonesUpdated = true;
-      window.rainydesk.log(`[WindowDebug] windowZones updated to ${windowZones.length} zones`);
-    }
-
-    // Debounce the EXPENSIVE operations (classification, physics update) - 150ms
-    if (windowUpdateDebounceTimer) clearTimeout(windowUpdateDebounceTimer);
-    const capturedZones = [...windowZones]; // Capture snapshot for closure
-    windowUpdateDebounceTimer = setTimeout(() => {
-      // DEBUG: Log debounce execution
-      if (!window._loggedDebounce) {
-        window._loggedDebounce = true;
-        window.rainydesk.log(`[WindowDebug] Debounce fired with ${capturedZones.length} zones`);
-      }
-
-    // DEBUG: Log detected windows once per session
-    if (!windowDataLogged) {
-      windowDataLogged = true;
-      window.rainydesk.log(`[WindowDebug] Detected ${windowZones.length} windows (global coords):`);
-      windowZones.forEach((w, i) => {
-        const maxFlag = w.isMaximized ? ' [MAXIMIZED]' : '';
-        window.rainydesk.log(`  [${i}] "${w.title?.substring(0, 25) || '?'}" at (${w.x},${w.y}) ${w.width}×${w.height}${maxFlag}`);
-      });
-    }
-
-    // Log when maximized windows are detected (help debug fullscreen issues)
-    const maximizedWindows = windowZones.filter(w => w.isMaximized);
-    if (maximizedWindows.length > 0 && !window._loggedMaximized) {
-      window._loggedMaximized = true;
-      window.rainydesk.log(`[WindowDebug] Maximized windows detected:`);
-      maximizedWindows.forEach(w => {
-        window.rainydesk.log(`  - "${w.title?.substring(0, 30)}" at (${w.x},${w.y}) ${w.width}×${w.height}`);
-      });
-    } else if (maximizedWindows.length === 0 && window._loggedMaximized) {
-      window._loggedMaximized = false;
-    }
-
-    // Log zone count changes
-    if (windowZones.length !== windowZoneCount) {
-      window.rainydesk.log(`[WindowDebug] Zone count: ${windowZoneCount} → ${windowZones.length}`);
-      windowZoneCount = windowZones.length;
-    }
-
-    // Classify windows for sophisticated handling
-    let hasWorkAreaMatch = false;
-    let hasPrimaryFullResolution = false;
-    const voidWindows = []; // Windows treated as void (no collision, no spawn)
-    const normalWindows = []; // Windows for regular collision (GLASS)
-    const spawnBlockWindows = []; // Windows that block spawn but allow collision (snapped)
-
-    if (virtualDesktop && virtualDesktop.monitors) {
-      const primaryIndex = virtualDesktop.primaryIndex || 0;
-      const classifiedWindows = new Set(); // Track logged windows
-
-      for (const win of windowZones) {
-        let classified = false;
-
-        // Check each monitor for best classification match
-        for (const mon of virtualDesktop.monitors) {
-          const classification = classifyWindow(win, mon, virtualDesktop);
-
-          if (classification === 'work-area') {
-            if (!classified) {
-              hasWorkAreaMatch = true;
-              voidWindows.push(win);
-              if (!classifiedWindows.has(win.title)) {
-                classifiedWindows.add(win.title);
-                window.rainydesk.log(`[Window] Work area: "${win.title?.substring(0, 30)}" on M${mon.index} → VOID + muffle`);
-              }
-              classified = true;
-            }
-          } else if (classification === 'full-resolution' && mon.index === primaryIndex) {
-            if (!classified) {
-              hasPrimaryFullResolution = true;
-              normalWindows.push(win);
-              if (!classifiedWindows.has(win.title)) {
-                classifiedWindows.add(win.title);
-                window.rainydesk.log(`[Window] Full res primary: "${win.title?.substring(0, 30)}" → hide overlay`);
-              }
-              classified = true;
-            }
-          } else if (classification === 'snapped') {
-            if (!classified) {
-              // Snapped windows: block SPAWN but allow collision (GLASS + spawn block)
-              normalWindows.push(win);       // GLASS collision (puddles can form)
-              spawnBlockWindows.push(win);   // Block spawn in these columns
-              if (!classifiedWindows.has(win.title)) {
-                classifiedWindows.add(win.title);
-                window.rainydesk.log(`[Window] Snapped: "${win.title?.substring(0, 30)}" on M${mon.index} → GLASS + spawn block`);
-              }
-              classified = true;
-            }
-          }
-        }
-
-        // Default to normal if not classified
-        if (!classified) {
-          normalWindows.push(win);
-        }
-      }
-
-      // Handle primary full resolution (hide overlay)
-      const newFullscreenState = hasPrimaryFullResolution;
-
-      // Debounce fullscreen state changes (200ms) to avoid rapid toggling during window moves
-      if (newFullscreenState !== pendingFullscreenState) {
-        pendingFullscreenState = newFullscreenState;
-        if (fullscreenDebounceTimer) clearTimeout(fullscreenDebounceTimer);
-        fullscreenDebounceTimer = setTimeout(() => {
-          if (pendingFullscreenState !== isFullscreenActive) {
-            const wasFullscreen = isFullscreenActive;
-            isFullscreenActive = pendingFullscreenState;
-
-            if (isFullscreenActive && !wasFullscreen) {
-              window.rainydesk.log(`[Fullscreen] Primary monitor fullscreen - hiding overlay`);
-              canvas.style.opacity = '0';
-            } else if (!isFullscreenActive && wasFullscreen) {
-              window.rainydesk.log('[Fullscreen] Primary monitor clear - showing overlay');
-              canvas.style.opacity = '1';
-            }
-          }
-        }, 200);
-      }
-    }
-
-    // Update audio muffling based on fullscreen coverage (spatial)
-    // Calculate what percentage of the desktop is covered by fullscreen windows
-    if (audioSystem && virtualDesktop && virtualDesktop.monitors) {
-      let coveredWidth = 0;
-      const totalWidth = virtualDesktop.width;
-
-      // Track which monitors have work-area-matching windows
-      const fullscreenMonitorIndices = new Set();
-      for (const win of voidWindows) {
-        for (const mon of virtualDesktop.monitors) {
-          const classification = classifyWindow(win, mon, virtualDesktop);
-          if (classification === 'work-area') {
-            fullscreenMonitorIndices.add(mon.index);
-          }
-        }
-      }
-
-      // Sum up the width of fullscreen monitors
-      for (const mon of virtualDesktop.monitors) {
-        if (fullscreenMonitorIndices.has(mon.index)) {
-          coveredWidth += mon.width;
-        }
-      }
-
-      // Calculate coverage ratio (0.0 to 1.0)
-      const coverageRatio = totalWidth > 0 ? coveredWidth / totalWidth : 0;
-
-      // Apply spatial muffling proportional to coverage
-      // Scale down: 100% coverage = 0.7 muffle (not fully muted)
-      // This way a single 1/3 width monitor fullscreen = ~23% muffle
-      const muffleAmount = coverageRatio * 0.7;
-      audioSystem.setMuffleAmount(muffleAmount);
-    } else if (audioSystem) {
-      audioSystem.setMuffleAmount(0);
-    }
-
-      // Update physics system with classified windows
-      if (config.usePixiPhysics && gridSimulation) {
-        // DEBUG: Log classification results
-        if (!window._loggedClassification) {
-          window._loggedClassification = true;
-          window.rainydesk.log(`[WindowDebug] Classification: ${normalWindows.length} normal, ${voidWindows.length} void, ${spawnBlockWindows.length} spawn-block`);
-          normalWindows.forEach((w, i) => {
-            window.rainydesk.log(`  [Normal ${i}] "${w.title?.substring(0, 25)}" at (${w.x},${w.y}) ${w.width}x${w.height}`);
-          });
-          voidWindows.forEach((w, i) => {
-            window.rainydesk.log(`  [Void ${i}] "${w.title?.substring(0, 25)}" at (${w.x},${w.y}) ${w.width}x${w.height}`);
-          });
-          spawnBlockWindows.forEach((w, i) => {
-            window.rainydesk.log(`  [SpawnBlock ${i}] "${w.title?.substring(0, 25)}" at (${w.x},${w.y}) ${w.width}x${w.height}`);
-          });
-        }
-
-        // Update window zones: normal=GLASS, void=VOID, spawnBlock=spawn only
-        gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
-
-        // OPTION B: Visual masking only (commented out for future testing)
-        // This would render zones but not block physics:
-        // gridSimulation.updateWindowZones(windowZones, []); // All windows as normal collision
-        // gridSimulation.setVisualMaskZones(voidWindows); // Separate visual mask
-      } else if (physicsSystem) {
-        // Matter.js still uses local coords (legacy)
-        physicsSystem.setWindowZones(windowZones);
-      }
-    }, 32); // Debounce window updates ~2 frames
-  });
-
-  // Handle Parameter Sync
-  window.rainydesk.onUpdateRainscapeParam((path, value) => {
-    if (path.startsWith('physics.')) {
-      const param = path.split('.')[1];
-
-      if (param === 'gravity') {
-        if (config.usePixiPhysics && gridSimulation) {
-          gridSimulation.setGravity(value);
-        } else if (physicsSystem) {
-          physicsSystem.setGravity(value);
-        }
-      }
-
-      if (param === 'wind') {
-        config.wind = value;
-        if (config.usePixiPhysics && gridSimulation) {
-          gridSimulation.setWind(value);
-        } else if (physicsSystem) {
-          physicsSystem.setWind(value);
-        }
-        // Also update background rain wind (normalize to -1..1)
-        if (renderer && renderer.setBackgroundRainWind) {
-          renderer.setBackgroundRainWind(value / 100);
-        }
-      }
-      if (param === 'intensity') {
-        config.intensity = value;
-        // Update Pixi simulation intensity
-        if (config.usePixiPhysics && gridSimulation) {
-          gridSimulation.setIntensity(value / 100);
-        }
-        // Update background rain intensity (normalize to 0..1)
-        if (renderer && renderer.setBackgroundRainIntensity) {
-          renderer.setBackgroundRainIntensity(value / 100);
-        }
-      }
-      if (param === 'dropMinSize') config.dropMinSize = value;
-      if (param === 'dropMaxSize') config.dropMaxSize = value;
-      if (param === 'renderScale') {
-        // Update render scale and resize both systems
-        renderScale = Math.max(0.125, Math.min(1.0, value));
-        if (physicsSystem) physicsSystem.setScaleFactor(renderScale);
-        resizeCanvas(); // Triggers renderer.resize with new scale
-        window.rainydesk.log(`Render scale set to ${renderScale * 100}%`);
-      }
-      if (param === 'terminalVelocity' && physicsSystem) {
-        physicsSystem.setTerminalVelocity(value);
-      }
-    } else if (path.startsWith('backgroundRain.')) {
-      // Handle background rain shader parameters
-      const param = path.split('.')[1];
-      if (renderer && renderer.setBackgroundRainConfig) {
-        const configUpdate = {};
-        if (param === 'intensity') configUpdate.intensity = value / 100;
-        else if (param === 'layerCount') configUpdate.layerCount = value;
-        else if (param === 'speed') configUpdate.speed = value;
-        else if (param === 'enabled') configUpdate.enabled = value;
-        renderer.setBackgroundRainConfig(configUpdate);
-      }
-    } else if (path === 'system.fpsLimit') {
-      // FPS limiter: 0 = uncapped, otherwise target FPS (Select sends string values)
-      const numValue = typeof value === 'string' ? parseInt(value, 10) : value;
-      config.fpsLimit = Math.max(0, Math.min(240, numValue || 0));
-      window.rainydesk.log(`FPS limit set to ${config.fpsLimit === 0 ? 'uncapped' : config.fpsLimit}`);
-    } else if (path === 'system.usePixiPhysics') {
-      // Physics engine toggle
-      switchPhysicsEngine(!!value);
-    } else if (audioSystem) {
-      audioSystem.updateParam(path, value);
-    }
-  });
-
-  // Hook up Rainscaper toggle
-  window.rainydesk.onToggleRainscaper(() => {
-    if (rainscaper) rainscaper.toggle();
-  });
-
-  // Fullscreen detection: hide rain when fullscreen window detected
-  window.rainydesk.onFullscreenStatus((isFullscreen) => {
-    isFullscreenActive = isFullscreen;
-    if (isFullscreen) {
-      window.rainydesk.log('[Fullscreen] Detected - hiding rain');
-      if (renderer) renderer.clear();
-    } else {
-      window.rainydesk.log('[Fullscreen] Ended - showing rain');
-    }
-  });
-
-  // Audio muffling: triggered when fullscreen detected
-  window.rainydesk.onAudioMuffle((shouldMuffle) => {
-    if (audioSystem) {
-      audioSystem.setMuffled(shouldMuffle);
-      window.rainydesk.log(`Audio muffling: ${shouldMuffle ? 'ON' : 'OFF'}`);
-    }
-  });
-
-  // Initialize renderer (only for Matter.js mode - Pixi has its own renderer)
-  if (!config.usePixiPhysics) {
-    try {
-      renderer = new WebGLRainRenderer(canvas);
-      renderer.init();
-    } catch (error) {
-      renderer = new Canvas2DRenderer(canvas);
-      renderer.init();
-    }
-
-    // Set initial background rain config (matches physics defaults)
-    if (renderer.setBackgroundRainConfig) {
-      renderer.setBackgroundRainConfig({
-        intensity: config.intensity / 100,
-        wind: config.wind / 100,
-        layerCount: 3,
-        speed: 1.0,
-        enabled: true
-      });
-    }
-  }
-
-  resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-
-  if (config.useMatterJS) {
-    // Create physics system with render scale for pixelated effect
-    physicsSystem = new RainPhysicsSystem(canvasWidth, canvasHeight, renderScale);
-  }
-
-  const initialConfig = await window.rainydesk.getConfig();
-  config.enabled = initialConfig.rainEnabled;
-  config.intensity = initialConfig.intensity;
-  config.volume = initialConfig.volume;
-
-  // Load autosave config before audio starts (so fade-in uses correct values)
-  try {
-    pendingAutosave = await window.rainydesk.readRainscape('autosave.json');
-    if (pendingAutosave) {
-      window.rainydesk.log('Loading autosaved rainscape settings');
-
-      // Extract basic config values for fade-in
-      if (pendingAutosave.physics) {
-        if (pendingAutosave.physics.intensity !== undefined) config.intensity = pendingAutosave.physics.intensity;
-        if (pendingAutosave.physics.wind !== undefined) config.wind = pendingAutosave.physics.wind;
-      }
-
-      // Full preset will be applied after audio initializes
-    }
-  } catch (err) {
-    window.rainydesk.log(`Autosave load failed: ${err.message}`);
-  }
-
-  // Init Rainscaper
+  // PHASE 6: Init UI
   try {
     const { rainscaper: rsModule } = await import('./rainscaper.bundle.js');
     rainscaper = rsModule;
-    await rainscaper.init(physicsSystem, config);
+    await rainscaper.init(null, config);  // No physicsSystem (Matter.js removed)
     window.rainydesk.log('[Rainscaper] Initialized');
 
-    // Add physics engine toggle to Rainscaper (exposed as window function for UI)
-    window.switchPhysicsEngine = switchPhysicsEngine;
+    positionRainscaper();
 
     // Broadcast initial physics values to background windows
-    // This ensures background rain starts with correct settings
     window.rainydesk.updateRainscapeParam('physics.intensity', config.intensity);
     window.rainydesk.updateRainscapeParam('physics.wind', config.wind || 0);
     window.rainydesk.updateRainscapeParam('physics.renderScale', renderScale);
@@ -1255,62 +761,90 @@ async function init() {
     console.error('[Rainscaper] Error:', err);
   }
 
-  // Initialize Pixi physics if enabled by default
-  if (config.usePixiPhysics) {
-    window.rainydesk.log('[Init] Pixi physics enabled, initializing...');
-    await initPixiPhysics();
-
-    // Position Rainscaper on primary monitor (now that virtualDesktop is set)
-    if (virtualDesktop && rainscaper) {
-      const primary = virtualDesktop.monitors[virtualDesktop.primaryIndex];
-      const panel = document.getElementById('rainscaper');
-      if (panel && primary) {
-        // Position at bottom-right of primary monitor's work area
-        panel.style.right = `${canvasWidth - (primary.x + primary.width) + 20}px`;
-        panel.style.bottom = `${canvasHeight - (primary.workY + primary.workHeight) + 20}px`;
-        window.rainydesk.log(`[Rainscaper] Positioned at right=${panel.style.right}, bottom=${panel.style.bottom}`);
+  // Load autosave config
+  try {
+    pendingAutosave = await window.rainydesk.readRainscape('autosave.json');
+    if (pendingAutosave) {
+      window.rainydesk.log('Loading autosaved rainscape settings');
+      if (pendingAutosave.physics) {
+        if (pendingAutosave.physics.intensity !== undefined) config.intensity = pendingAutosave.physics.intensity;
+        if (pendingAutosave.physics.wind !== undefined) config.wind = pendingAutosave.physics.wind;
       }
     }
+  } catch (err) {
+    window.rainydesk.log(`Autosave load failed: ${err.message}`);
+  }
+
+  const initialConfig = await window.rainydesk.getConfig();
+  config.enabled = initialConfig.rainEnabled;
+  config.intensity = initialConfig.intensity;
+  config.volume = initialConfig.volume;
+
+  // Update simulation with loaded config
+  if (gridSimulation) {
+    gridSimulation.setIntensity(config.intensity / 100);
+    gridSimulation.setWind(config.wind);
   }
 
   startAutosave();
 
-  // Enable click-through immediately (Tauri autoplay policy allows immediate start)
+  // Enable click-through
   window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
 
-  // Listen for audio start broadcast from main process
-  window.rainydesk.onStartAudio(async () => {
-    window.rainydesk.log('Received audio start signal');
-    await initAudio();
-  });
+  // PHASE 7: Wait for first window data
+  window.rainydesk.log('[Init] Waiting for first window data...');
+  await waitForFirstWindowData();
+  window.rainydesk.log('[Init] First window data received');
 
-  // Auto-start audio after a short delay
-  // No click required since autoplayPolicy: 'no-user-gesture-required' is set
+  // PHASE 8: Start game loop (still hidden)
+  requestAnimationFrame(gameLoop);
+  window.rainydesk.log('[Init] Game loop started (hidden)');
+
+  // PHASE 9: Start audio and fade-in (no cross-window coordination needed)
+  window.rainydesk.log('[Init] Starting audio and fade-in...');
+
+  // Start audio with fade-in
+  await initAudio();
+  window.rainydesk.log('[Init] Audio init complete');
+
+  // Start visual fade FIRST (before applying rainscape which may fail)
   setTimeout(() => {
-    window.rainydesk.log('Auto-triggering audio start');
-    window.rainydesk.triggerAudioStart();
-  }, 500);
+    window.rainydesk.log('[FadeIn] Starting overlay fade-in');
+    canvas.style.visibility = 'visible';
+    canvas.style.opacity = '1';
 
-  // Start canvas hidden, will fade in after first window data
-  canvas.style.opacity = '0';
-  canvas.style.transition = 'opacity 5s ease-in-out';
+    // Mark init time so hot-reloads don't flash (localStorage survives WebView recreation)
+    localStorage.setItem('__RAINYDESK_OVERLAY_INIT_TIME__', Date.now().toString());
 
-  // Fade in canvas after initialization completes (coordinate with audio fade-in)
-  // Audio fades in over 5s, match visual fade-in
-  setTimeout(() => {
-    if (firstWindowDataReceived) {
-      canvas.style.opacity = '1';
-      isInitializing = false;
-      window.rainydesk.log('[Init] Fade-in complete');
+    // Clean up transition after it completes
+    setTimeout(() => {
+      canvas.style.transition = 'none';
+    }, 5000);
+  }, 300);
 
-      // Remove transition after fade-in completes so fullscreen changes are instant
-      setTimeout(() => {
-        canvas.style.transition = 'none';
-      }, 5000); // Wait for 5s fade to finish
+  // Apply pending autosave after fade-in is scheduled
+  if (pendingAutosave && rainscaper) {
+    try {
+      rainscaper.applyRainscape(pendingAutosave);
+      window.rainydesk.log('[Init] Applied autosave settings');
+    } catch (err) {
+      window.rainydesk.log(`[Init] Failed to apply autosave: ${err.message}`);
     }
-  }, 800); // Wait 800ms for first window data + debounce, then start fade
+  }
 
-  // Note: gameLoop now starts on first window data (see onWindowData callback)
+  window.rainydesk.log('[Init] Initialization complete');
 }
 
-document.addEventListener('DOMContentLoaded', init);
+// INIT GUARD - prevents re-initialization on script re-execution
+if (window.__RAINYDESK_OVERLAY_INITIALIZED__) {
+  window.rainydesk?.log?.('[Overlay] Already initialized, skipping re-init');
+} else {
+  window.__RAINYDESK_OVERLAY_INITIALIZED__ = true;
+
+  // Single entry point
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
+}

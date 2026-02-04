@@ -368,7 +368,7 @@ export class RainPixiRenderer {
         }
 
         // Convert grid to pixel buffer (Uint8Array → Uint32Array RGBA)
-        this.updatePuddleBuffer(grid.data, grid.width, grid.displayFloorMap);
+        this.updatePuddleBuffer(grid.data, grid.width, grid.displayFloorMap, grid.depth);
 
         // Upload to GPU
         this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
@@ -422,8 +422,9 @@ export class RainPixiRenderer {
      * Update the pixel buffer from grid data.
      * Converts Uint8Array cell values to RGBA colors.
      * Applies bottom-fade for taskbar visibility.
+     * Uses depth for opacity modulation (stacked water = more opaque).
      */
-    private updatePuddleBuffer(grid: Uint8Array, width: number, floorMap: Int16Array | null): void {
+    private updatePuddleBuffer(grid: Uint8Array, width: number, floorMap: Int16Array | null, depth: Float32Array | null): void {
         if (!this.puddlePixelBuffer || !this.puddleCanvas) return;
 
         const buffer = this.puddlePixelBuffer;
@@ -433,7 +434,8 @@ export class RainPixiRenderer {
         const waterR = 0x99;
         const waterG = 0xaa;
         const waterB = 0xbb;
-        const baseAlpha = 0xA0; // ~63% opacity
+        const minDepthAlpha = 0x60; // ~38% opacity at depth 1
+        const maxDepthAlpha = 0xE0; // ~88% opacity at max depth (10)
 
         // Bottom fade based on distance to floor/void
         const minAlpha = 0x33; // ~20% opacity
@@ -446,15 +448,19 @@ export class RainPixiRenderer {
                 const x = i % width;
                 const y = Math.floor(i / width);
 
-                // Calculate alpha based on distance to floor
-                let alpha = baseAlpha;
+                // Base alpha from depth (higher depth = more opaque)
+                const cellDepth = depth ? Math.min(10, depth[i] || 1) : 1;
+                const depthFactor = (cellDepth - 1) / 9; // 0 at depth 1, 1 at depth 10
+                let alpha = Math.floor(minDepthAlpha + (maxDepthAlpha - minDepthAlpha) * depthFactor);
+
+                // Apply bottom-fade based on distance to floor
                 if (floorMap) {
                     const floorY = floorMap[x];
                     if (floorY !== undefined) {
                         const distToFloor = floorY - y;
                         if (distToFloor < fadeDistance) {
                             const fadeProgress = 1 - (distToFloor / fadeDistance);
-                            alpha = Math.floor(baseAlpha - (baseAlpha - minAlpha) * fadeProgress);
+                            alpha = Math.floor(alpha - (alpha - minAlpha) * fadeProgress);
                         }
                     }
                 }

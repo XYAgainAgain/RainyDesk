@@ -38,6 +38,8 @@ export class GridSimulation {
     private waterEnergyBuffer: Float32Array;
     private waterMomentumX: Float32Array;
     private waterMomentumXBuffer: Float32Array;
+    private waterDepth: Float32Array;      // Water depth per cell (stacking)
+    private waterDepthBuffer: Float32Array;
     private processedThisFrame: Uint8Array;
 
     // === Void mask & spawn/floor maps (mega-window architecture) ===
@@ -154,6 +156,8 @@ export class GridSimulation {
         this.waterEnergyBuffer = new Float32Array(gridSize);
         this.waterMomentumX = new Float32Array(gridSize);
         this.waterMomentumXBuffer = new Float32Array(gridSize);
+        this.waterDepth = new Float32Array(gridSize);
+        this.waterDepthBuffer = new Float32Array(gridSize);
         this.processedThisFrame = new Uint8Array(gridSize);
 
         // Initialize grid with void cells if void mask provided
@@ -425,6 +429,7 @@ export class GridSimulation {
     get gridState() {
         return {
             data: this.grid,
+            depth: this.waterDepth,
             width: this.gridWidth,
             height: this.gridHeight,
             floorMap: this.floorMap,
@@ -602,14 +607,19 @@ export class GridSimulation {
                     const waterY = floorY - 1;
                     if (waterY >= 0) {
                         const waterIndex = waterY * this.gridWidth + cellX;
-                        if (waterIndex >= 0 && waterIndex < this.grid.length && this.grid[waterIndex] === CELL_AIR) {
-                            this.grid[waterIndex] = CELL_WATER;
+                        if (waterIndex >= 0 && waterIndex < this.grid.length) {
                             const impactSpeed = Math.sqrt(
                                 this.dropsVelX[i]! * this.dropsVelX[i]! +
                                 this.dropsVelY[i]! * this.dropsVelY[i]!
                             );
+                            if (this.grid[waterIndex] === CELL_AIR) {
+                                this.grid[waterIndex] = CELL_WATER;
+                                this.waterDepth[waterIndex] = 1.0;
+                            } else if (this.grid[waterIndex] === CELL_WATER) {
+                                // Stack on existing water
+                                this.waterDepth[waterIndex] = Math.min(10.0, this.waterDepth[waterIndex]! + 1.0);
+                            }
                             this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
-                            // Set initial momentum from rain's horizontal velocity
                             this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
                         }
                     }
@@ -710,17 +720,19 @@ export class GridSimulation {
                             }
 
                             const waterIndex = waterY * this.gridWidth + waterX;
-                            // Only place water if target cell is air (not already occupied)
-                            if (waterIndex >= 0 && waterIndex < this.grid.length &&
-                                this.grid[waterIndex] === CELL_AIR) {
-                                this.grid[waterIndex] = CELL_WATER;
-                                // Set initial energy based on impact velocity
+                            if (waterIndex >= 0 && waterIndex < this.grid.length) {
                                 const impactSpeed = Math.sqrt(
                                     this.dropsVelX[i]! * this.dropsVelX[i]! +
                                     this.dropsVelY[i]! * this.dropsVelY[i]!
                                 );
+                                if (this.grid[waterIndex] === CELL_AIR) {
+                                    this.grid[waterIndex] = CELL_WATER;
+                                    this.waterDepth[waterIndex] = 1.0;
+                                } else if (this.grid[waterIndex] === CELL_WATER) {
+                                    // Stack on existing water
+                                    this.waterDepth[waterIndex] = Math.min(10.0, this.waterDepth[waterIndex]! + 1.0);
+                                }
                                 this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
-                                // Set initial momentum from rain's horizontal velocity
                                 this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
                             }
                         }
@@ -830,6 +842,7 @@ export class GridSimulation {
         this.gridBuffer.set(this.grid);
         this.waterEnergyBuffer.set(this.waterEnergy);
         this.waterMomentumXBuffer.set(this.waterMomentumX);
+        this.waterDepthBuffer.set(this.waterDepth);
         this.processedThisFrame.fill(0);
 
         const { wallAdhesion } = this.config;
@@ -1031,6 +1044,7 @@ export class GridSimulation {
         [this.grid, this.gridBuffer] = [this.gridBuffer, this.grid];
         [this.waterEnergy, this.waterEnergyBuffer] = [this.waterEnergyBuffer, this.waterEnergy];
         [this.waterMomentumX, this.waterMomentumXBuffer] = [this.waterMomentumXBuffer, this.waterMomentumX];
+        [this.waterDepth, this.waterDepthBuffer] = [this.waterDepthBuffer, this.waterDepth];
     }
 
     /**
@@ -1149,6 +1163,12 @@ export class GridSimulation {
         const newMomentum = Math.max(-1, Math.min(1, oldMomentum * 0.922));
         this.waterMomentumXBuffer[srcIndex] = 0;
         this.waterMomentumXBuffer[destIndex] = newMomentum;
+
+        // Transfer depth to destination (or merge if dest already had water)
+        const srcDepth = this.waterDepth[srcIndex] || 1.0;
+        const destDepth = this.waterDepthBuffer[destIndex] || 0;
+        this.waterDepthBuffer[srcIndex] = 0;
+        this.waterDepthBuffer[destIndex] = Math.min(10.0, srcDepth + destDepth);
 
         return true;
     }
@@ -1329,6 +1349,7 @@ export class GridSimulation {
                 if (this.grid[neighborIndex] === CELL_AIR) {
                     this.grid[neighborIndex] = CELL_WATER;
                     this.waterEnergy[neighborIndex] = displacementEnergy;
+                    this.waterDepth[neighborIndex] = 1.0;
                     const pushMomentum = dx > 0 ? 0.9 : dx < 0 ? -0.9 : (Math.random() > 0.5 ? 0.5 : -0.5);
                     this.waterMomentumX[neighborIndex] = pushMomentum;
                     return;
@@ -1377,6 +1398,7 @@ export class GridSimulation {
             const idx = best.y * this.gridWidth + best.x;
             this.grid[idx] = CELL_WATER;
             this.waterEnergy[idx] = displacementEnergy;
+            this.waterDepth[idx] = 1.0;
             // Momentum towards center (it was pushed outward)
             this.waterMomentumX[idx] = best.x < x ? 0.5 : best.x > x ? -0.5 : 0;
             return;
@@ -1471,7 +1493,7 @@ export class GridSimulation {
         if (this.evaporationTimer > warmupTime) {
             const rampProgress = Math.min(1, (this.evaporationTimer - warmupTime) / rampTime);
             // Drain rate higher than spawn rate to prevent buildup at floor
-            evaporationRate = this.config.spawnRate * rampProgress * 2.0;
+            evaporationRate = this.config.spawnRate * rampProgress * 1.0;
         }
 
         if (evaporationRate < 0.01) return;
@@ -1511,9 +1533,14 @@ export class GridSimulation {
                 if (y2 < 0) continue;
                 const index = y2 * this.gridWidth + x;
                 if (this.grid[index] === CELL_WATER && Math.random() < evaporationChance) {
-                    this.grid[index] = CELL_AIR;
-                    this.waterEnergy[index] = 0;
-                    this.waterMomentumX[index] = 0;
+                    // Reduce depth instead of removing water
+                    this.waterDepth[index] = (this.waterDepth[index] || 1.0) - 1.0;
+                    if (this.waterDepth[index]! <= 0) {
+                        this.grid[index] = CELL_AIR;
+                        this.waterEnergy[index] = 0;
+                        this.waterMomentumX[index] = 0;
+                        this.waterDepth[index] = 0;
+                    }
                 }
             }
         }
@@ -1525,7 +1552,7 @@ export class GridSimulation {
     dispose(): void {
         // TypedArrays are garbage collected, but we can help by nulling references
         // @ts-expect-error Intentional cleanup
-        this.grid = this.waterEnergy = this.waterMomentumX = this.processedThisFrame = null;
+        this.grid = this.waterEnergy = this.waterMomentumX = this.waterDepth = this.processedThisFrame = null;
         // @ts-expect-error Intentional cleanup
         this.dropsX = this.dropsY = this.dropsPrevX = this.dropsPrevY = null;
         // @ts-expect-error Intentional cleanup
