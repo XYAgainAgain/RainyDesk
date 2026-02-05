@@ -389,6 +389,46 @@ export class GridSimulation {
     }
 
     /**
+     * Set splash scale (affects BOTH particle count AND visual size together).
+     * @param scale 0.5-2.0 multiplier (1.0 = default)
+     */
+    setSplashScale(scale: number): void {
+        this.config.splashScale = Math.max(0.5, Math.min(2.0, scale));
+    }
+
+    /**
+     * Set turbulence (wind gust strength).
+     * @param intensity 0-1 (0 = no gusts, 1 = strong gusts)
+     */
+    setTurbulence(intensity: number): void {
+        this.config.windTurbulence = intensity * 50; // Scale to logic px/s variance
+    }
+
+    /**
+     * Set evaporation rate multiplier.
+     * @param rate 0-2 multiplier (1.0 = default, 0 = no evaporation, 2 = fast evaporation)
+     */
+    setEvaporationRate(rate: number): void {
+        this.config.evaporationRate = Math.max(0, Math.min(2, rate));
+    }
+
+    /**
+     * Set maximum drop radius.
+     * @param max 1.0-4.0 in logic pixels
+     */
+    setDropMaxRadius(max: number): void {
+        this.config.radiusMax = Math.max(1.0, Math.min(4.0, max));
+    }
+
+    /**
+     * Enable or disable reverse gravity mode.
+     * @param reversed true = rain falls up, false = normal
+     */
+    setReverseGravity(reversed: boolean): void {
+        this.config.reverseGravity = reversed;
+    }
+
+    /**
      * Get active drop count (for SheetLayer modulation).
      */
     getActiveDropCount(): number {
@@ -443,7 +483,7 @@ export class GridSimulation {
         if (this.dropCount >= this.config.maxDrops) return;
 
         const i = this.dropCount++;
-        const { radiusMin, radiusMax, windBase, windTurbulence } = this.config;
+        const { radiusMin, radiusMax, windBase, windTurbulence, reverseGravity } = this.config;
 
         // Wind threshold for side-spawning (25% of max wind = ~37.5 logic px/s)
         // At strong wind, some drops should come from the windward side
@@ -456,7 +496,7 @@ export class GridSimulation {
         let spawnX: number;
         let spawnY: number;
 
-        // Decide spawn location: top or side
+        // Decide spawn location: top/bottom or side
         if (sideSpawnChance > 0 && Math.random() < sideSpawnChance) {
             // Side spawn: simulate drops that fell from above and blew in from off-screen
             // They should look identical to top-spawned drops, just entering from the side
@@ -490,22 +530,40 @@ export class GridSimulation {
                 spawnX = validX;
             }
 
-            // Start above screen (like top-spawned drops) - they're just entering from angle
-            spawnY = -2 - Math.random() * 10;
+            // Spawn position depends on gravity direction
+            if (reverseGravity) {
+                // In reverse mode, side-spawned drops enter from below
+                spawnY = this.gridHeight + 2 + Math.random() * 10;
+            } else {
+                // Normal mode: start above screen
+                spawnY = -2 - Math.random() * 10;
+            }
         } else {
-            // Normal top spawn
+            // Normal spawn (top or bottom depending on gravity)
             spawnX = Math.floor(Math.random() * this.gridWidth);
 
-            // Spawn at top of valid region for this column (or -2 if no spawn map)
-            spawnY = -2;
-            if (this.spawnMap) {
-                const mapSpawnY = this.spawnMap[spawnX];
-                if (mapSpawnY === undefined || mapSpawnY < 0) {
-                    // Column is entirely void or invalid, skip spawn
-                    this.dropCount--; // Revert spawn
-                    return;
+            if (reverseGravity) {
+                // Spawn from bottom in reverse gravity mode
+                // Use displayFloorMap for bottom spawn position (below work area)
+                spawnY = this.gridHeight + 2;
+                if (this.displayFloorMap) {
+                    const mapFloorY = this.displayFloorMap[spawnX];
+                    if (mapFloorY !== undefined && mapFloorY >= 0) {
+                        spawnY = mapFloorY + 2; // Start just below the floor
+                    }
                 }
-                spawnY = mapSpawnY;
+            } else {
+                // Normal top spawn
+                spawnY = -2;
+                if (this.spawnMap) {
+                    const mapSpawnY = this.spawnMap[spawnX];
+                    if (mapSpawnY === undefined || mapSpawnY < 0) {
+                        // Column is entirely void or invalid, skip spawn
+                        this.dropCount--; // Revert spawn
+                        return;
+                    }
+                    spawnY = mapSpawnY;
+                }
             }
         }
 
@@ -517,51 +575,77 @@ export class GridSimulation {
         // Random radius
         this.dropsRadius[i] = radiusMin + Math.random() * (radiusMax - radiusMin);
 
-        // Initial velocity (wind-influenced horizontal + gravity)
+        // Initial velocity (wind-influenced horizontal + gravity direction)
         this.dropsVelX[i] = windBase + (Math.random() - 0.5) * windTurbulence;
 
-        // All drops (top and side) get identical velocity - they're the same rain
-        // Side-spawned drops just enter from a different position (off-screen angle)
-        // No special treatment needed - same wind influence, same gravity response
-        this.dropsVelY[i] = 200 + Math.random() * 150; // Normal downward momentum (200-350)
+        // Vertical velocity depends on gravity direction
+        if (reverseGravity) {
+            // In reverse mode, start with upward momentum
+            this.dropsVelY[i] = -(200 + Math.random() * 150); // Upward momentum (-350 to -200)
+        } else {
+            // Normal downward momentum (200-350)
+            this.dropsVelY[i] = 200 + Math.random() * 150;
+        }
 
         // Full opacity
         this.dropsOpacity[i] = 1.0;
     }
 
     private stepRain(dt: number): void {
-        const { gravity, windBase, slipThreshold } = this.config;
+        const { gravity, windBase, slipThreshold, reverseGravity } = this.config;
         // Terminal velocity scales with gravity (default: 980 → 350 logic px/s)
         // Higher gravity = faster terminal velocity, lower gravity = slower
         // Minimum of 50 prevents zero-gravity from freezing drops
         const terminalVelocity = Math.max(50, 350 * (gravity / 980));
+        // Effective gravity direction (negative when reversed)
+        const effectiveGravity = reverseGravity ? -gravity : gravity;
 
         for (let i = 0; i < this.dropCount; i++) {
             // Store previous position for collision detection
             this.dropsPrevX[i] = this.dropsX[i]!;
             this.dropsPrevY[i] = this.dropsY[i]!;
 
-            // Apply gravity
-            this.dropsVelY[i] = this.dropsVelY[i]! + gravity * dt;
+            // Apply gravity (reversed when in reverse mode)
+            this.dropsVelY[i] = this.dropsVelY[i]! + effectiveGravity * dt;
 
-            // Cap at terminal velocity
-            if (this.dropsVelY[i]! > terminalVelocity) {
-                this.dropsVelY[i] = terminalVelocity;
+            // Cap at terminal velocity (both directions)
+            if (reverseGravity) {
+                if (this.dropsVelY[i]! < -terminalVelocity) {
+                    this.dropsVelY[i] = -terminalVelocity;
+                }
+            } else {
+                if (this.dropsVelY[i]! > terminalVelocity) {
+                    this.dropsVelY[i] = terminalVelocity;
+                }
             }
 
             // Apply wind (lerp toward target, faster response)
             this.dropsVelX[i] = this.dropsVelX[i]! + (windBase - this.dropsVelX[i]!) * 0.3 * dt * 60;
+
+            // Apply turbulence (wind gusts) during flight
+            if (this.config.windTurbulence > 0) {
+                this.dropsVelX[i]! += (Math.random() - 0.5) * this.config.windTurbulence * dt * 3.0;
+            }
 
             // Integrate position
             this.dropsX[i] = this.dropsX[i]! + this.dropsVelX[i]! * dt;
             this.dropsY[i] = this.dropsY[i]! + this.dropsVelY[i]! * dt;
 
             // Check boundaries and collisions
-            if (this.dropsY[i]! >= this.gridHeight) {
-                // Silent void despawn (fell off bottom)
-                this.despawnDrop(i);
-                i--;
-                continue;
+            if (reverseGravity) {
+                // In reverse mode, drops exit at the top
+                if (this.dropsY[i]! < 0) {
+                    this.despawnDrop(i);
+                    i--;
+                    continue;
+                }
+            } else {
+                // Normal mode: drops exit at the bottom
+                if (this.dropsY[i]! >= this.gridHeight) {
+                    this.despawnDrop(i);
+                    i--;
+                    continue;
+                }
             }
 
             if (this.dropsX[i]! < 0 || this.dropsX[i]! >= this.gridWidth) {
@@ -617,7 +701,7 @@ export class GridSimulation {
                                 this.waterDepth[waterIndex] = 1.0;
                             } else if (this.grid[waterIndex] === CELL_WATER) {
                                 // Stack on existing water
-                                this.waterDepth[waterIndex] = Math.min(10.0, this.waterDepth[waterIndex]! + 1.0);
+                                this.waterDepth[waterIndex] = Math.min(15.0, this.waterDepth[waterIndex]! + 1.0);
                             }
                             this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
                             this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
@@ -642,6 +726,25 @@ export class GridSimulation {
                 for (let scanY = prevCellY + 1; scanY <= cellY; scanY++) {
                     // Interpolate X position for this Y
                     const t = (scanY - prevCellY) / (cellY - prevCellY);
+                    const scanX = Math.floor(prevCellX + (cellX - prevCellX) * t);
+
+                    if (scanX >= 0 && scanX < this.gridWidth && scanY >= 0 && scanY < this.gridHeight) {
+                        const scanIndex = scanY * this.gridWidth + scanX;
+                        const scanValue = this.grid[scanIndex]!;
+                        if (scanValue !== CELL_AIR) {
+                            hitCell = scanIndex;
+                            hitCellX = scanX;
+                            hitCellY = scanY;
+                            hitValue = scanValue;
+                            break; // Found first collision
+                        }
+                    }
+                }
+            } else if (prevCellY > cellY) {
+                // Rising upward (reverse gravity) - scan each row between prev and current
+                for (let scanY = prevCellY - 1; scanY >= cellY; scanY--) {
+                    // Interpolate X position for this Y
+                    const t = (prevCellY - scanY) / (prevCellY - cellY);
                     const scanX = Math.floor(prevCellX + (cellX - prevCellX) * t);
 
                     if (scanX >= 0 && scanX < this.gridWidth && scanY >= 0 && scanY < this.gridHeight) {
@@ -730,7 +833,7 @@ export class GridSimulation {
                                     this.waterDepth[waterIndex] = 1.0;
                                 } else if (this.grid[waterIndex] === CELL_WATER) {
                                     // Stack on existing water
-                                    this.waterDepth[waterIndex] = Math.min(10.0, this.waterDepth[waterIndex]! + 1.0);
+                                    this.waterDepth[waterIndex] = Math.min(15.0, this.waterDepth[waterIndex]! + 1.0);
                                 }
                                 this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
                                 this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
@@ -963,10 +1066,30 @@ export class GridSimulation {
                 const hasSupport = atFloor || y + 1 >= this.gridHeight ||
                     (y + 1 < this.gridHeight && this.grid[(y + 1) * this.gridWidth + x] !== CELL_AIR);
 
+                // === VERTICAL STACKING ===
+                // Before spreading, try to stack on existing water (creates thicker puddles)
+                // Higher priority than horizontal spread
+                if (hasSupport && energy > 0.05) {
+                    const belowIndex = (y + 1) * this.gridWidth + x;
+                    if (belowIndex < this.grid.length && this.grid[belowIndex] === CELL_WATER) {
+                        // Water below us - increase depth instead of spreading
+                        const currentDepth = this.waterDepth[index] || 1.0;
+                        const belowDepth = this.waterDepthBuffer[belowIndex] || 1.0;
+                        // Transfer depth downward if not at max
+                        if (belowDepth < 15.0) {
+                            this.waterDepthBuffer[belowIndex] = Math.min(15.0, belowDepth + currentDepth * 0.3);
+                            // Reduce our depth after transfer
+                            this.waterDepthBuffer[index] = currentDepth * 0.7;
+                            this.waterEnergyBuffer[index] = energy * energyDecay;
+                            continue; // Skip spread attempt
+                        }
+                    }
+                }
+
                 // === HORIZONTAL SPREAD ===
                 // Spread when supported. Use probability to reduce excessive oscillation.
-                // Higher energy = more likely to spread (creates natural settling)
-                const spreadChance = atFloor ? 0.10 : 0.25;
+                // Much lower chance for thicker puddles - only spread when necessary
+                const spreadChance = atFloor ? 0.04 : 0.12;
                 const energyBonus = Math.min(0.15, energy * 0.3);
                 if (hasSupport && Math.random() < spreadChance + energyBonus) {
                     this.debugMoveContext = 'spread';
@@ -1003,11 +1126,14 @@ export class GridSimulation {
 
                 const index = floorY * this.gridWidth + x;
                 if (this.grid[index] === CELL_WATER) {
-                    // Floor drain DISABLED for testing - evaporation only
-                    // if (Math.random() < 0.05) {
-                    //     this.grid[index] = CELL_AIR;
-                    //     this.waterEnergy[index] = 0;
-                    // }
+                    // Floor drain: removes water at work area edge
+                    // Lower chance (5%) for thicker puddles that linger
+                    if (Math.random() < 0.05) {
+                        this.gridBuffer[index] = CELL_AIR;
+                        this.waterEnergyBuffer[index] = 0;
+                        this.waterMomentumXBuffer[index] = 0;
+                        this.waterDepthBuffer[index] = 0;
+                    }
                 }
             }
         }
@@ -1168,7 +1294,7 @@ export class GridSimulation {
         const srcDepth = this.waterDepth[srcIndex] || 1.0;
         const destDepth = this.waterDepthBuffer[destIndex] || 0;
         this.waterDepthBuffer[srcIndex] = 0;
-        this.waterDepthBuffer[destIndex] = Math.min(10.0, srcDepth + destDepth);
+        this.waterDepthBuffer[destIndex] = Math.min(15.0, srcDepth + destDepth);
 
         return true;
     }
@@ -1223,7 +1349,9 @@ export class GridSimulation {
     }
 
     private spawnSplash(x: number, y: number, impactVelX: number, impactVelY: number): void {
-        const count = 2 + Math.floor(Math.random() * 3);
+        // Scale splash count by config.splashScale (0.5-2.0)
+        const baseCount = 2 + Math.floor(Math.random() * 3);
+        const count = Math.max(1, Math.round(baseCount * this.config.splashScale));
         const speed = Math.sqrt(impactVelX * impactVelX + impactVelY * impactVelY);
 
         for (let j = 0; j < count; j++) {
@@ -1252,8 +1380,9 @@ export class GridSimulation {
         // Throttle: limit splashes per frame to prevent flash
         if (this.splashesThisFrame >= this.MAX_SPLASHES_PER_FRAME) return;
 
-        // Fewer splashes, more conservative (1-2 based on energy)
-        const count = 1 + Math.floor(energy * 2);
+        // Scale splash count by config.splashScale (0.5-2.0)
+        const baseCount = 1 + Math.floor(energy * 2);
+        const count = Math.max(1, Math.round(baseCount * this.config.splashScale));
         // Convert grid energy to splash speed (energy 0.5 → ~60 speed)
         const baseSpeed = energy * 120;
 
@@ -1485,15 +1614,18 @@ export class GridSimulation {
      *   60s+: Full evaporation at floor level only
      */
     private applyEvaporation(dt: number): void {
-        const warmupTime = 30;  // First 30 seconds: no evaporation
-        const rampTime = 30;    // Next 30 seconds: gentle ramp to full effect
+        // Early exit if evaporation is disabled via config
+        if (this.config.evaporationRate <= 0) return;
+
+        const warmupTime = 15;  // First 15 seconds: no evaporation (shorter warmup)
+        const rampTime = 20;    // Next 20 seconds: gentle ramp to full effect
 
         // Calculate evaporation rate based on elapsed time
         let evaporationRate = 0;
         if (this.evaporationTimer > warmupTime) {
             const rampProgress = Math.min(1, (this.evaporationTimer - warmupTime) / rampTime);
-            // Drain rate higher than spawn rate to prevent buildup at floor
-            evaporationRate = this.config.spawnRate * rampProgress * 1.0;
+            // Drain rate 0.8x spawn rate, scaled by config evaporationRate
+            evaporationRate = this.config.spawnRate * rampProgress * 0.8 * this.config.evaporationRate;
         }
 
         if (evaporationRate < 0.01) return;
@@ -1544,6 +1676,25 @@ export class GridSimulation {
                 }
             }
         }
+    }
+
+    /**
+     * Get current simulation stats for debug display.
+     */
+    getStats(): { waterCount: number; activeDrops: number; puddleCells: number; splashCount: number } {
+        let waterCount = 0;
+        if (this.grid) {
+            for (let i = 0; i < this.grid.length; i++) {
+                if (this.grid[i] === CELL_WATER) waterCount++;
+            }
+        }
+
+        return {
+            waterCount,
+            activeDrops: this.dropCount,
+            puddleCells: waterCount,  // Same as waterCount for now
+            splashCount: this.splashCount,
+        };
     }
 
     /**

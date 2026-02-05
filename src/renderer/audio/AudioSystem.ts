@@ -464,6 +464,20 @@ export class AudioSystem {
     }
   }
 
+  /**
+   * Set combined rain audio intensity (sheet + impacts + bubbles).
+   * @param intensity 0-100 percentage
+   */
+  setRainMix(intensity: number): void {
+    const scale = Math.max(0, Math.min(1, intensity / 100));
+    // Scale the rain bus gain
+    if (this._rainBus) {
+      // Convert scale to dB: 0 = -60dB (muted), 1 = 0dB (full)
+      const db = scale <= 0 ? -60 : (scale * 12) - 12; // -12dB at 0%, 0dB at 100%
+      this._rainBus.updateConfig({ gain: db });
+    }
+  }
+
   getMasterVolume(): number {
     return this._config.masterVolume;
   }

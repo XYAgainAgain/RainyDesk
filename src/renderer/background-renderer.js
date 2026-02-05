@@ -33,6 +33,7 @@ if (!isRecentInit) {
 let renderer = null;
 let renderScale = 0.25;
 let virtualDesktop = null;
+let isPaused = false;
 let lastTime = performance.now();
 
 /**
@@ -74,7 +75,8 @@ function renderLoop() {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  if (renderer) {
+  // Skip rendering when paused (keep last frame visible)
+  if (renderer && !isPaused) {
     renderer.clear();
     renderer.renderBackgroundOnly(dt);
   }
@@ -131,11 +133,30 @@ function registerEventListeners() {
     if (path === 'backgroundRain.intensity') {
       renderer.setBackgroundRainConfig({ intensity: value / 100 });
     }
-    if (path === 'backgroundRain.layerCount') {
+    if (path === 'backgroundRain.layerCount' || path === 'backgroundRain.layers') {
       renderer.setBackgroundRainConfig({ layerCount: Math.max(1, Math.min(5, value)) });
     }
     if (path === 'backgroundRain.speed') {
       renderer.setBackgroundRainConfig({ speed: Math.max(0.1, Math.min(3, value)) });
+    }
+
+    if (path === 'system.paused') {
+      isPaused = Boolean(value);
+      window.rainydesk.log(`[Background] Pause state: ${isPaused ? 'PAUSED' : 'RESUMED'}`);
+    }
+
+    // Gay Mode / Rainbow Mode sync
+    if (path === 'visual.gayMode' || path === 'visual.rainbowMode') {
+      renderer.setBackgroundRainConfig({ rainbowMode: Boolean(value) });
+    }
+
+    // Rain Color sync
+    if (path === 'visual.rainColor') {
+      const hex = value.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16) / 255;
+      const g = parseInt(hex.substring(2, 4), 16) / 255;
+      const b = parseInt(hex.substring(4, 6), 16) / 255;
+      renderer.setBackgroundRainConfig({ colorTint: [r, g, b] });
     }
   });
 }
@@ -168,6 +189,7 @@ async function init() {
     return;
   }
 
+  // Set initial defaults
   renderer.setBackgroundRainConfig({
     intensity: 0.5,
     wind: 0,
@@ -175,6 +197,33 @@ async function init() {
     speed: 1.0,
     enabled: true
   });
+
+  // Try to load startup rainscape settings
+  try {
+    const startup = await window.rainydesk.getStartupRainscape();
+    if (startup && startup.data) {
+      const data = startup.data;
+      // Apply rain settings
+      if (data.rain && typeof data.rain === 'object') {
+        const rain = data.rain;
+        if (typeof rain.intensity === 'number') {
+          const normalized = rain.intensity / 100;
+          renderer.setBackgroundRainConfig({
+            intensity: normalized,
+            layerCount: Math.round(1 + normalized * 4),
+            speed: 0.5 + normalized
+          });
+        }
+        if (typeof rain.wind === 'number') {
+          const wind = Math.max(-1, Math.min(1, rain.wind / 100));
+          renderer.setBackgroundRainConfig({ wind });
+        }
+      }
+      window.rainydesk.log('[Background] Applied startup rainscape settings');
+    }
+  } catch (err) {
+    window.rainydesk.log(`[Background] Failed to load startup rainscape: ${err}`);
+  }
 
   resizeCanvas();
 

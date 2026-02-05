@@ -1,5 +1,5 @@
 use tauri::{
-    Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder,
     menu::{Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -80,6 +80,12 @@ use windows::Win32::Foundation::POINT;
 
 // Global pause state
 static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
+
+// Global reference to pause menu item for sync between panel and tray
+static PAUSE_MENU_ITEM: Mutex<Option<MenuItem<tauri::Wry>>> = Mutex::new(None);
+
+// Rainscaper panel visibility state
+static RAINSCAPER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 // Fade-in coordination: both windows must be ready before synchronized fade
 static OVERLAY_READY: AtomicBool = AtomicBool::new(false);
@@ -462,6 +468,53 @@ fn is_dark_theme() -> bool {
     true // Default to dark theme on other platforms
 }
 
+/// Get Windows accent color from registry
+#[cfg(target_os = "windows")]
+fn get_accent_color_from_registry() -> Option<String> {
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+    };
+    use windows::core::PCWSTR;
+
+    unsafe {
+        let mut hkey = std::mem::zeroed();
+        let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows\\DWM\0"
+            .encode_utf16().collect();
+
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut hkey).is_ok() {
+            let value_name: Vec<u16> = "AccentColor\0".encode_utf16().collect();
+            let mut data: u32 = 0;
+            let mut data_size = std::mem::size_of::<u32>() as u32;
+            let mut data_type = REG_DWORD;
+
+            let result = RegQueryValueExW(
+                hkey,
+                PCWSTR(value_name.as_ptr()),
+                None,
+                Some(&mut data_type),
+                Some(&mut data as *mut u32 as *mut u8),
+                Some(&mut data_size),
+            );
+
+            let _ = RegCloseKey(hkey);
+
+            if result.is_ok() {
+                // AccentColor is in ABGR format, convert to #RRGGBB
+                let r = (data >> 0) & 0xFF;
+                let g = (data >> 8) & 0xFF;
+                let b = (data >> 16) & 0xFF;
+                return Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_accent_color_from_registry() -> Option<String> {
+    None
+}
+
 /// Get the actual work area (excluding taskbar) for a monitor at given position
 #[cfg(target_os = "windows")]
 fn get_monitor_work_area(x: i32, y: i32, width: u32, height: u32) -> Bounds {
@@ -549,6 +602,31 @@ fn get_primary_monitor_index(_monitors: &[tauri::Monitor]) -> usize {
 // App state for configuration
 struct AppState {
     config: Mutex<serde_json::Value>,
+}
+
+/// Panel position and UI config persistence
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PanelConfig {
+    x: Option<i32>,
+    y: Option<i32>,
+    ui_scale: Option<f32>,
+}
+
+fn get_panel_config_path(app: &tauri::AppHandle) -> PathBuf {
+    app.path().app_data_dir().unwrap().join("panel-config.json")
+}
+
+fn load_panel_config(app: &tauri::AppHandle) -> Option<PanelConfig> {
+    let path = get_panel_config_path(app);
+    std::fs::read_to_string(&path).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn save_panel_config(app: &tauri::AppHandle, config: &PanelConfig) {
+    let path = get_panel_config_path(app);
+    if let Ok(json) = serde_json::to_string_pretty(config) {
+        let _ = std::fs::write(&path, json);
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -769,6 +847,20 @@ fn read_rainscape(app: tauri::AppHandle, filename: String) -> Result<serde_json:
 
 #[tauri::command]
 fn update_rainscape_param(path: String, value: serde_json::Value, app: tauri::AppHandle) {
+    // Sync pause state to tray menu when panel toggles pause
+    if path == "system.paused" {
+        if let Some(paused) = value.as_bool() {
+            RAIN_PAUSED.store(paused, Ordering::Relaxed);
+            // Update tray menu text to match
+            if let Ok(guard) = PAUSE_MENU_ITEM.lock() {
+                if let Some(ref item) = *guard {
+                    let _ = item.set_text(if paused { "Resume" } else { "Pause" });
+                }
+            }
+            log::info!("[ParamSync] Pause state synced from panel: {}", paused);
+        }
+    }
+
     // Broadcast to all windows (overlay + background)
     if let Err(e) = app.emit("update-rainscape-param", serde_json::json!({ "path": path, "value": value })) {
         log::error!("[ParamSync] Failed to emit {}: {}", path, e);
@@ -805,6 +897,245 @@ fn background_ready(app: tauri::AppHandle) {
     log::info!("[FadeIn] Background renderer ready");
     BACKGROUND_READY.store(true, Ordering::SeqCst);
     check_both_ready(&app);
+}
+
+/// Show the Rainscaper window at the specified tray position
+#[tauri::command]
+fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<(), String> {
+    log::info!("[Rainscaper] Show requested at tray position ({}, {})", tray_x, tray_y);
+
+    // Try saved position first, fallback to tray-relative calculation
+    let (x, y) = load_panel_config(&app)
+        .and_then(|c| c.x.zip(c.y))
+        .unwrap_or_else(|| calculate_rainscaper_position(&app, tray_x, tray_y));
+
+    // Check if window exists
+    let window_exists = app.get_webview_window("rainscaper").is_some();
+    log::info!("[Rainscaper] Window exists: {}", window_exists);
+
+    if let Some(window) = app.get_webview_window("rainscaper") {
+        // Window exists, just show and position it
+        log::info!("[Rainscaper] Reusing existing window");
+        log::info!("[Rainscaper] Positioning to ({}, {})", x, y);
+        window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)))
+            .map_err(|e| format!("Failed to position window: {}", e))?;
+        // Unminimize first in case hide() minimized it
+        log::info!("[Rainscaper] Calling unminimize()");
+        window.unminimize().ok();
+        // Call show()
+        log::info!("[Rainscaper] Calling window.show()");
+        window.show().map_err(|e| format!("Failed to show window: {}", e))?;
+        // Re-enable mouse events AFTER showing so panel is clickable
+        window.set_ignore_cursor_events(false).ok();
+        // Re-apply always on top
+        window.set_always_on_top(true).ok();
+        window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
+        RAINSCAPER_VISIBLE.store(true, Ordering::SeqCst);
+        log::info!("[Rainscaper] Shown successfully at ({}, {})", x, y);
+    } else {
+        // Create the window at saved/calculated position
+        log::info!("[Rainscaper] Window not found, creating new one at ({}, {})", x, y);
+        create_rainscaper_window_at(&app, x, y)?;
+    }
+
+    Ok(())
+}
+
+/// Hide the Rainscaper window
+#[tauri::command]
+fn hide_rainscaper(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("[Rainscaper] Hide requested");
+    if let Some(window) = app.get_webview_window("rainscaper") {
+        // Save position before hiding
+        if let Ok(pos) = window.outer_position() {
+            let mut config = load_panel_config(&app).unwrap_or_default();
+            config.x = Some(pos.x);
+            config.y = Some(pos.y);
+            save_panel_config(&app, &config);
+            log::info!("[Rainscaper] Saved position ({}, {})", pos.x, pos.y);
+        }
+        // Set click-through BEFORE hiding so rain doesn't puddle on invisible window
+        window.set_ignore_cursor_events(true).ok();
+        log::info!("[Rainscaper] Calling window.hide()");
+        window.hide().map_err(|e| format!("Failed to hide window: {}", e))?;
+        RAINSCAPER_VISIBLE.store(false, Ordering::SeqCst);
+        log::info!("[Rainscaper] Hidden successfully, VISIBLE=false");
+    } else {
+        log::warn!("[Rainscaper] Hide called but window not found");
+    }
+    Ok(())
+}
+
+/// Toggle Rainscaper visibility
+#[tauri::command]
+fn toggle_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<(), String> {
+    let visible = RAINSCAPER_VISIBLE.load(Ordering::SeqCst);
+    if visible {
+        hide_rainscaper(app)
+    } else {
+        show_rainscaper(app, tray_x, tray_y)
+    }
+}
+
+/// Resize the Rainscaper panel window and keep it in work area
+#[tauri::command]
+fn resize_rainscaper(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("rainscaper") {
+        use tauri::{LogicalSize, PhysicalPosition};
+
+        // Temporarily enable resizing (window is created with resizable=false)
+        window.set_resizable(true).ok();
+        window.set_size(LogicalSize::new(width, height))
+            .map_err(|e| format!("Failed to resize: {}", e))?;
+        window.set_resizable(false).ok();
+
+        // Clamp position to keep window in work area
+        if let (Ok(pos), Some(monitor)) = (window.outer_position(), window.current_monitor().ok().flatten()) {
+            let scale = monitor.scale_factor();
+            let mon_size = monitor.size();
+            let mon_pos = monitor.position();
+
+            // Get actual work area from Windows API (excludes taskbar)
+            let work_area = get_monitor_work_area(
+                mon_pos.x,
+                mon_pos.y,
+                mon_size.width,
+                mon_size.height
+            );
+
+            // Convert window size to physical pixels for comparison
+            let phys_width = (width * scale) as i32;
+            let phys_height = (height * scale) as i32;
+
+            let mut new_x = pos.x;
+            let mut new_y = pos.y;
+            let mut moved = false;
+
+            // If window bottom exceeds work area, move it up
+            let work_bottom = work_area.y + work_area.height as i32;
+            if new_y + phys_height > work_bottom {
+                new_y = (work_bottom - phys_height).max(work_area.y);
+                moved = true;
+            }
+
+            // If window right exceeds work area, move it left
+            let work_right = work_area.x + work_area.width as i32;
+            if new_x + phys_width > work_right {
+                new_x = (work_right - phys_width).max(work_area.x);
+                moved = true;
+            }
+
+            if moved {
+                window.set_position(PhysicalPosition::new(new_x, new_y)).ok();
+                log::info!("[Rainscaper] Repositioned to ({}, {}) to stay in work area", new_x, new_y);
+            }
+        }
+
+        log::info!("[Rainscaper] Resized to {}x{}", width, height);
+    }
+    Ok(())
+}
+
+/// Get Windows accent color for adaptive theme
+#[tauri::command]
+fn get_windows_accent_color() -> String {
+    get_accent_color_from_registry().unwrap_or_else(|| "#0078d4".to_string())
+}
+
+/// Calculate position for Rainscaper window above tray icon
+fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i32) -> (i32, i32) {
+    const PANEL_WIDTH: i32 = 400;
+    const PANEL_HEIGHT: i32 = 500;
+    const MARGIN: i32 = 8;
+
+    // Get monitors to find screen bounds
+    let monitors: Vec<tauri::Monitor> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    // Find which monitor contains the tray icon
+    let mut screen_x = 0;
+    let mut screen_y = 0;
+    let mut screen_width = 1920;
+    let mut screen_height = 1080;
+    let mut taskbar_at_top = false;
+
+    for monitor in &monitors {
+        let pos = monitor.position();
+        let size = monitor.size();
+
+        if tray_x >= pos.x && tray_x < pos.x + size.width as i32 &&
+           tray_y >= pos.y && tray_y < pos.y + size.height as i32 {
+            screen_x = pos.x;
+            screen_y = pos.y;
+            screen_width = size.width as i32;
+            screen_height = size.height as i32;
+
+            // Check if taskbar is at top (tray_y near top of screen)
+            taskbar_at_top = tray_y < pos.y + 100;
+            break;
+        }
+    }
+
+    // Position window above tray icon, centered horizontally
+    let mut x = tray_x - (PANEL_WIDTH / 2);
+    let mut y = if taskbar_at_top {
+        tray_y + 40 + MARGIN  // Below taskbar
+    } else {
+        tray_y - PANEL_HEIGHT - MARGIN  // Above taskbar
+    };
+
+    // Clamp to screen bounds
+    x = x.max(screen_x + MARGIN).min(screen_x + screen_width - PANEL_WIDTH - MARGIN);
+    y = y.max(screen_y + MARGIN).min(screen_y + screen_height - PANEL_HEIGHT - MARGIN);
+
+    (x, y)
+}
+
+/// Create the Rainscaper popup window (calculates position from tray coords)
+fn create_rainscaper_window(app: &tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<(), String> {
+    let (x, y) = calculate_rainscaper_position(app, tray_x, tray_y);
+    create_rainscaper_window_at(app, x, y)
+}
+
+/// Create the Rainscaper popup window at specified position
+fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32) -> Result<(), String> {
+    log::info!("[Rainscaper] Creating window at ({}, {})", x, y);
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        "rainscaper",
+        WebviewUrl::App("rainscaper.html".into())
+    )
+        .title("RainyDesk Rainscaper")
+        .position(x as f64, y as f64)
+        .inner_size(400.0, 500.0)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(true)
+        .shadow(false)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("Failed to create window: {}", e))?;
+
+    // Enable mouse events so panel is clickable (not click-through)
+    window.set_ignore_cursor_events(false).ok();
+
+    // Open DevTools in dev mode
+    #[cfg(debug_assertions)]
+    {
+        window.open_devtools();
+    }
+
+    RAINSCAPER_VISIBLE.store(true, Ordering::SeqCst);
+    log::info!("[Rainscaper] Window created successfully");
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1110,7 +1441,12 @@ pub fn run() {
             update_rainscape_param,
             trigger_audio_start,
             renderer_ready,
-            background_ready
+            background_ready,
+            show_rainscaper,
+            hide_rainscaper,
+            toggle_rainscaper,
+            resize_rainscaper,
+            get_windows_accent_color
         ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("overlay") {
@@ -1187,10 +1523,30 @@ pub fn run() {
 
             log::info!("Window detection polling started");
 
+            // Listen for hide-rainscaper-request from frontend (X button)
+            let app_handle_for_hide = app.handle().clone();
+            app.listen("hide-rainscaper-request", move |_event| {
+                log::info!("[Rainscaper] Hide requested via event (X button)");
+                if let Some(window) = app_handle_for_hide.get_webview_window("rainscaper") {
+                    window.set_ignore_cursor_events(true).ok();
+                    if let Err(e) = window.hide() {
+                        log::error!("[Rainscaper] Failed to hide: {}", e);
+                    } else {
+                        RAINSCAPER_VISIBLE.store(false, Ordering::SeqCst);
+                        log::info!("[Rainscaper] Hidden via event, VISIBLE=false");
+                    }
+                }
+            });
+
             // Set up system tray
             let quit_item = MenuItem::with_id(app, "quit", "Quit RainyDesk", true, None::<&str>)?;
             let pause_item = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
             let rainscaper_item = MenuItem::with_id(app, "rainscaper", "Open Rainscaper", true, None::<&str>)?;
+
+            // Store pause item globally for sync between panel and tray
+            if let Ok(mut guard) = PAUSE_MENU_ITEM.lock() {
+                *guard = Some(pause_item.clone());
+            }
 
             // Volume presets submenu
             let volume_submenu = Submenu::with_id_and_items(app, "volume", "Volume", true, &[
@@ -1286,12 +1642,21 @@ pub fn run() {
                             let paused = !RAIN_PAUSED.load(Ordering::Relaxed);
                             RAIN_PAUSED.store(paused, Ordering::Relaxed);
                             let _ = pause_item_clone.set_text(if paused { "Resume" } else { "Pause" });
-                            let _ = app.emit("toggle-rain", !paused);
-                            log::info!("Rain {}", if paused { "paused" } else { "resumed" });
+                            // Emit same IPC as panel's pause toggle for unified control
+                            // Must use JSON object format: { path, value } to match tauri-api.js listener
+                            let _ = app.emit("update-rainscape-param", serde_json::json!({ "path": "system.paused", "value": paused }));
+                            log::info!("Rain {} via tray menu", if paused { "paused" } else { "resumed" });
                         }
                         "rainscaper" => {
-                            let _ = app.emit("toggle-rainscaper", ());
-                            log::info!("Open Rainscaper requested");
+                            // Menu doesn't give position, use default (bottom-right of primary)
+                            let visible = RAINSCAPER_VISIBLE.load(Ordering::SeqCst);
+                            if visible {
+                                let _ = hide_rainscaper(app.clone());
+                            } else {
+                                // Default to bottom-right area (typical tray location)
+                                let _ = show_rainscaper(app.clone(), 1800, 1040);
+                            }
+                            log::info!("Rainscaper toggled via menu");
                         }
                         _ => {
                             // Volume presets (vol_<number>)
@@ -1312,9 +1677,23 @@ pub fn run() {
                     }
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, position, .. } = event {
                         let app = tray.app_handle();
-                        let _ = app.emit("toggle-rainscaper", ());
+                        let tray_x = position.x as i32;
+                        let tray_y = position.y as i32;
+
+                        // Toggle Rainscaper window directly (no longer through overlay)
+                        let visible = RAINSCAPER_VISIBLE.load(Ordering::SeqCst);
+                        log::info!("[Tray] Left-click, RAINSCAPER_VISIBLE={}", visible);
+                        if visible {
+                            if let Err(e) = hide_rainscaper(app.clone()) {
+                                log::error!("[Tray] Failed to hide Rainscaper: {}", e);
+                            }
+                        } else {
+                            if let Err(e) = show_rainscaper(app.clone(), tray_x, tray_y) {
+                                log::error!("[Tray] Failed to show Rainscaper: {}", e);
+                            }
+                        }
                     }
                 })
                 .build(app)?;

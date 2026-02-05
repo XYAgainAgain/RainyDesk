@@ -39,6 +39,11 @@ export class RainPixiRenderer {
     private readonly config: RendererConfig;
     private readonly logicScale = 0.25; // Logic space is 25% of screen space
 
+    // Color and Gay Mode
+    private rainColor: number = 0xa0c4e8; // Default blue
+    private gayMode: boolean = false;
+    private gayModeHue: number = 0;  // 0-360 degrees
+
     // Containers
     private puddleContainer: Container | null = null;
     private rainContainer: Container | null = null;
@@ -177,6 +182,67 @@ export class RainPixiRenderer {
         this.initialized = false;
     }
 
+    /**
+     * Set the rain color (hex string like "#4a9eff").
+     */
+    setRainColor(hex: string): void {
+        // Parse hex color to number
+        const cleanHex = hex.replace('#', '');
+        this.rainColor = parseInt(cleanHex, 16);
+    }
+
+    /**
+     * Enable or disable Gay Mode (rainbow cycling).
+     * Cycle time: 60 seconds for a full rainbow.
+     */
+    setGayMode(enabled: boolean): void {
+        this.gayMode = enabled;
+    }
+
+    /**
+     * Get the current tint color (either static rainColor or animated gayMode hue).
+     * Call this during render to get the appropriate color.
+     */
+    private getCurrentTintColor(): number {
+        if (!this.gayMode) {
+            return this.rainColor;
+        }
+
+        // Use absolute time for sync with background shader (60-second cycle)
+        // Matches shader formula: mod(u_time * 0.0167, 1.0) where u_time ≈ performance.now()/1000
+        const now = performance.now();
+        this.gayModeHue = ((now / 60000) % 1.0) * 360; // 60000ms = 60 sec cycle
+
+        // Convert HSL to RGB (saturation=70%, lightness=70% to match shader's HSV(h, 0.7, 0.95))
+        return this.hslToHex(this.gayModeHue, 70, 70);
+    }
+
+    /**
+     * Convert HSL to hex color number.
+     */
+    private hslToHex(h: number, s: number, l: number): number {
+        s /= 100;
+        l /= 100;
+
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+        const m = l - c / 2;
+
+        let r = 0, g = 0, b = 0;
+        if (h < 60) { r = c; g = x; b = 0; }
+        else if (h < 120) { r = x; g = c; b = 0; }
+        else if (h < 180) { r = 0; g = c; b = x; }
+        else if (h < 240) { r = 0; g = x; b = c; }
+        else if (h < 300) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+
+        const rInt = Math.round((r + m) * 255);
+        const gInt = Math.round((g + m) * 255);
+        const bInt = Math.round((b + m) * 255);
+
+        return (rInt << 16) | (gInt << 8) | bInt;
+    }
+
     // === Private methods ===
 
     private createTextures(): void {
@@ -270,6 +336,9 @@ export class RainPixiRenderer {
         const offsetX = this.config.localOffsetX * this.logicScale;
         const offsetY = this.config.localOffsetY * this.logicScale;
 
+        // Get current tint color (static or gay mode animated)
+        const tintColor = this.getCurrentTintColor();
+
         // Ensure we have enough sprites
         while (this.rainSprites.length < drops.count) {
             const sprite = new Sprite(this.dropTexture);
@@ -290,6 +359,9 @@ export class RainPixiRenderer {
             sprite.x = x - offsetX;
             sprite.y = y - offsetY;
             sprite.alpha = drops.opacity[i]!;
+
+            // Apply tint color
+            sprite.tint = tintColor;
 
             // Calculate velocity for rotation and stretch
             const dx = drops.x[i]! - drops.prevX[i]!;
@@ -335,6 +407,9 @@ export class RainPixiRenderer {
             this.splashSprites.push(sprite);
         }
 
+        // Get current tint color for splashes (same as rain)
+        const tintColor = this.getCurrentTintColor();
+
         // Update visible sprites
         for (let i = 0; i < splashes.count; i++) {
             const sprite = this.splashSprites[i]!;
@@ -342,6 +417,7 @@ export class RainPixiRenderer {
             sprite.x = splashes.x[i]! - offsetX;
             sprite.y = splashes.y[i]! - offsetY;
             sprite.alpha = splashes.life[i]!;
+            sprite.tint = tintColor;
         }
 
         // Hide unused sprites
@@ -429,13 +505,15 @@ export class RainPixiRenderer {
 
         const buffer = this.puddlePixelBuffer;
 
-        // Color components (RGB: 99, aa, bb in AABBGGRR format)
+        // Get current tint color for puddles (tintColor is 0xRRGGBB format)
+        const tintColor = this.getCurrentTintColor();
+        const waterR = (tintColor >> 16) & 0xFF;
+        const waterG = (tintColor >> 8) & 0xFF;
+        const waterB = tintColor & 0xFF;
+
         const COLOR_AIR = 0x00000000;
-        const waterR = 0x99;
-        const waterG = 0xaa;
-        const waterB = 0xbb;
-        const minDepthAlpha = 0x60; // ~38% opacity at depth 1
-        const maxDepthAlpha = 0xE0; // ~88% opacity at max depth (10)
+        const minDepthAlpha = 0x90; // ~56% opacity at depth 1 (was 38%)
+        const maxDepthAlpha = 0xF0; // ~94% opacity at max depth (was 88%)
 
         // Bottom fade based on distance to floor/void
         const minAlpha = 0x33; // ~20% opacity
@@ -449,8 +527,8 @@ export class RainPixiRenderer {
                 const y = Math.floor(i / width);
 
                 // Base alpha from depth (higher depth = more opaque)
-                const cellDepth = depth ? Math.min(10, depth[i] || 1) : 1;
-                const depthFactor = (cellDepth - 1) / 9; // 0 at depth 1, 1 at depth 10
+                const cellDepth = depth ? Math.min(15, depth[i] || 1) : 1;
+                const depthFactor = (cellDepth - 1) / 14; // 0 at depth 1, 1 at depth 15
                 let alpha = Math.floor(minDepthAlpha + (maxDepthAlpha - minDepthAlpha) * depthFactor);
 
                 // Apply bottom-fade based on distance to floor

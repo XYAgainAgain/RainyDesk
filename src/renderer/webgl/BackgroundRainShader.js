@@ -26,14 +26,24 @@ const BACKGROUND_RAIN_FRAG = `#version 300 es
 precision highp float;
 
 uniform float u_time;
+uniform float u_absoluteTime; // performance.now()/1000 for rainbow sync
 uniform float u_intensity;    // 0.0 - 1.0
 uniform float u_wind;         // -1.0 to 1.0 (normalized from -100 to 100)
 uniform vec2 u_resolution;
 uniform float u_layerCount;   // 1.0 - 5.0
 uniform float u_speed;        // Speed multiplier
+uniform vec3 u_colorTint;     // Rain color tint (RGB 0-1)
+uniform float u_rainbowMode;  // 1.0 = rainbow cycling, 0.0 = use tint
 
 in vec2 v_uv;
 out vec4 fragColor;
+
+// HSV to RGB conversion for rainbow mode
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
 
 // Simple hash function for pseudo-random values
 float hash(vec2 p) {
@@ -127,8 +137,15 @@ void main() {
     // Clamp and apply intensity
     totalRain = min(totalRain, 1.0) * u_intensity;
 
-    // Rain color - subtle blue-white, semi-transparent
-    vec3 rainColor = vec3(0.6, 0.75, 0.9);
+    // Rain color - use tint or rainbow mode
+    vec3 rainColor;
+    if (u_rainbowMode > 0.5) {
+        // Rainbow: cycle hue over 60 seconds (uses absoluteTime for sync with physics)
+        float hue = mod(u_absoluteTime / 60.0, 1.0);
+        rainColor = hsv2rgb(vec3(hue, 0.7, 0.95));
+    } else {
+        rainColor = u_colorTint;
+    }
 
     // Final opacity based on rain amount (capped for subtlety)
     float alpha = totalRain * 0.25;
@@ -158,11 +175,14 @@ class BackgroundRainShader {
         // Uniform locations
         this.uniforms = {
             time: null,
+            absoluteTime: null,
             intensity: null,
             wind: null,
             resolution: null,
             layerCount: null,
-            speed: null
+            speed: null,
+            colorTint: null,
+            rainbowMode: null
         };
 
         // Configurable parameters
@@ -171,7 +191,9 @@ class BackgroundRainShader {
             wind: 0.0,          // -1.0 to 1.0
             layerCount: 3,      // 1 - 5
             speed: 1.0,         // Speed multiplier
-            enabled: true
+            enabled: true,
+            colorTint: [0.54, 0.66, 0.75],  // #8aa8c0 default
+            rainbowMode: false
         };
 
         // Animation time (independent of physics)
@@ -205,11 +227,14 @@ class BackgroundRainShader {
 
         // Get uniform locations
         this.uniforms.time = gl.getUniformLocation(this.program, 'u_time');
+        this.uniforms.absoluteTime = gl.getUniformLocation(this.program, 'u_absoluteTime');
         this.uniforms.intensity = gl.getUniformLocation(this.program, 'u_intensity');
         this.uniforms.wind = gl.getUniformLocation(this.program, 'u_wind');
         this.uniforms.resolution = gl.getUniformLocation(this.program, 'u_resolution');
         this.uniforms.layerCount = gl.getUniformLocation(this.program, 'u_layerCount');
         this.uniforms.speed = gl.getUniformLocation(this.program, 'u_speed');
+        this.uniforms.colorTint = gl.getUniformLocation(this.program, 'u_colorTint');
+        this.uniforms.rainbowMode = gl.getUniformLocation(this.program, 'u_rainbowMode');
 
         // Create VAO and fullscreen quad
         this._initQuadBuffer();
@@ -282,11 +307,14 @@ class BackgroundRainShader {
 
         // Set uniforms
         gl.uniform1f(this.uniforms.time, this.time);
+        gl.uniform1f(this.uniforms.absoluteTime, performance.now() / 1000);
         gl.uniform1f(this.uniforms.intensity, this.config.intensity);
         gl.uniform1f(this.uniforms.wind, this.config.wind);
         gl.uniform2f(this.uniforms.resolution, width, height);
         gl.uniform1f(this.uniforms.layerCount, this.config.layerCount);
         gl.uniform1f(this.uniforms.speed, this.config.speed);
+        gl.uniform3fv(this.uniforms.colorTint, this.config.colorTint);
+        gl.uniform1f(this.uniforms.rainbowMode, this.config.rainbowMode ? 1.0 : 0.0);
 
         // Draw fullscreen quad
         gl.bindVertexArray(this.vao);
@@ -312,6 +340,12 @@ class BackgroundRainShader {
         }
         if (config.enabled !== undefined) {
             this.config.enabled = Boolean(config.enabled);
+        }
+        if (config.colorTint !== undefined) {
+            this.config.colorTint = config.colorTint;
+        }
+        if (config.rainbowMode !== undefined) {
+            this.config.rainbowMode = Boolean(config.rainbowMode);
         }
         // Debug: log config updates
         if (typeof window !== 'undefined' && window.rainydesk?.log) {

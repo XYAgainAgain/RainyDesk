@@ -93,10 +93,16 @@ export interface SimulationConfig {
     radiusMin: number;
     /** Maximum drop radius in logic pixels */
     radiusMax: number;
-    /** Horizontal velocity threshold for pass-through (0–1) */
+    /** Horizontal velocity threshold for pass-through (0-1) */
     slipThreshold: number;
-    /** Probability water sticks to walls (dribble effect, 0–1) */
+    /** Probability water sticks to walls (dribble effect, 0-1) */
     wallAdhesion: number;
+    /** Splash scale multiplier (affects count AND size) */
+    splashScale: number;
+    /** Evaporation rate multiplier (0 = none, 1 = normal, 2 = fast) */
+    evaporationRate: number;
+    /** Reverse gravity mode (rain falls up) */
+    reverseGravity: boolean;
 }
 
 /** Default simulation configuration */
@@ -111,6 +117,9 @@ export const DEFAULT_CONFIG: SimulationConfig = {
     radiusMax: 2.0,      // Larger max for variety
     slipThreshold: 0.85,
     wallAdhesion: 0.05,  // 5% chance to stick (faster dribble)
+    splashScale: 1.0,    // Default splash scale
+    evaporationRate: 1.0, // Default evaporation rate
+    reverseGravity: false, // Normal gravity by default
 };
 
 /** Grid cell values */

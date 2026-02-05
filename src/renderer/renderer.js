@@ -72,6 +72,7 @@ let pendingAutosave = null;
 let lastTime = performance.now();
 let fpsCounter = 0;
 let fpsTime = performance.now();
+let debugStatsTime = performance.now();
 
 // Audio initialization flag
 let audioInitialized = false;
@@ -84,6 +85,9 @@ let windowZoneCount = 0;
 let isFullscreenActive = false;
 let fullscreenDebounceTimer = null;
 let pendingFullscreenState = false;
+
+// Pause state (from Rainscaper panel)
+let isPaused = false;
 
 // Window update state
 let windowUpdateDebounceTimer = null;
@@ -356,8 +360,19 @@ function gameLoop(currentTime) {
   const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
   lastTime = currentTime;
 
-  // Skip physics/rendering when fullscreen window detected
-  if (!isFullscreenActive) {
+  // Skip everything when fullscreen (app hidden behind fullscreen window)
+  if (isFullscreenActive) {
+    if (audioSystem) {
+      audioSystem.setParticleCount(0);
+    }
+  } else if (isPaused) {
+    // Paused: freeze physics but keep rendering (Quicksilver mode)
+    render();
+    if (audioSystem) {
+      audioSystem.setParticleCount(0);
+    }
+  } else {
+    // Normal operation: update physics and render
     update(dt);
     render();
 
@@ -366,11 +381,6 @@ function gameLoop(currentTime) {
       const particleCount = gridSimulation.getActiveDropCount();
       audioSystem.setParticleCount(particleCount);
     }
-  } else {
-    // When fullscreen, feed zero particles to quiet the sheet layer
-    if (audioSystem) {
-      audioSystem.setParticleCount(0);
-    }
   }
 
   // FPS monitoring (every 5 seconds)
@@ -378,9 +388,36 @@ function gameLoop(currentTime) {
   if (currentTime - fpsTime > 5000) {
     const fps = Math.round(fpsCounter / 5);
     const particles = gridSimulation ? gridSimulation.getActiveDropCount() : 0;
-    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}${isFullscreenActive ? ', FULLSCREEN' : ''}`);
+    const statusFlags = [
+      isFullscreenActive ? 'FULLSCREEN' : null,
+      isPaused ? 'PAUSED' : null
+    ].filter(Boolean).join(', ');
+    window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}${statusFlags ? ', ' + statusFlags : ''}`);
     fpsCounter = 0;
     fpsTime = currentTime;
+  }
+
+  // Update debug stats more frequently (every 500ms) for responsive UI
+  if (currentTime - debugStatsTime > 500) {
+    if (gridSimulation) {
+      const stats = gridSimulation.getStats();
+      const fps = fpsCounter > 0 ? Math.round(fpsCounter / ((currentTime - fpsTime) / 1000)) : 0;
+      const statsPayload = {
+        fps,
+        waterCount: stats.waterCount,
+        activeDrops: stats.activeDrops,
+        puddleCells: stats.puddleCells,
+      };
+      // Update local (for any in-window debug display)
+      if (window._updateDebugStats) {
+        window._updateDebugStats(statsPayload);
+      }
+      // Broadcast to other windows (Rainscaper panel)
+      if (window.rainydesk?.emitStats) {
+        window.rainydesk.emitStats(statsPayload);
+      }
+    }
+    debugStatsTime = currentTime;
   }
 
   requestAnimationFrame(gameLoop);
@@ -597,22 +634,55 @@ function registerEventListeners() {
           gridSimulation.setIntensity(value / 100);
         }
       }
-      if (param === 'renderScale') {
-        renderScale = Math.max(0.125, Math.min(1.0, value));
-        resizeCanvas();
-        window.rainydesk.log(`Render scale set to ${renderScale * 100}%`);
+      // New physics params
+      if (param === 'splashScale' && gridSimulation) {
+        gridSimulation.setSplashScale(value);
       }
-    } else if (path === 'system.fpsLimit') {
-      const numValue = typeof value === 'string' ? parseInt(value, 10) : value;
-      config.fpsLimit = Math.max(0, Math.min(240, numValue || 0));
-      window.rainydesk.log(`FPS limit set to ${config.fpsLimit === 0 ? 'uncapped' : config.fpsLimit}`);
+      if (param === 'turbulence' && gridSimulation) {
+        gridSimulation.setTurbulence(value);
+      }
+      if (param === 'puddleDrain' && gridSimulation) {
+        gridSimulation.setEvaporationRate(value);
+      }
+      if (param === 'dropMaxSize' && gridSimulation) {
+        gridSimulation.setDropMaxRadius(value);
+      }
+      if (param === 'reverseGravity' && gridSimulation) {
+        gridSimulation.setReverseGravity(Boolean(value));
+      }
+    } else if (path === 'audio.muted') {
+      if (audioSystem) {
+        audioSystem.setMuted(Boolean(value));
+        window.rainydesk.log(`Audio muted: ${value}`);
+      }
+    } else if (path === 'audio.rainMix' || path === 'audio.rainIntensity') {
+      if (audioSystem) {
+        audioSystem.setRainMix(value);
+      }
+    } else if (path === 'visual.rainColor' && pixiRenderer) {
+      pixiRenderer.setRainColor(value);
+    } else if ((path === 'visual.rainbowMode' || path === 'visual.gayMode') && pixiRenderer) {
+      pixiRenderer.setGayMode(Boolean(value));
+    } else if (path === 'system.paused') {
+      isPaused = Boolean(value);
+      window.rainydesk.log(`[Pause] ${isPaused ? 'PAUSED' : 'RESUMED'} via Rainscaper panel`);
+      if (audioSystem) {
+        if (isPaused) {
+          audioSystem.stop();
+        } else {
+          audioSystem.start();
+        }
+      }
     } else if (audioSystem) {
       audioSystem.updateParam(path, value);
     }
   });
 
+  // Rainscaper window is now separate - toggle handled by Rust backend
+  // Keeping listener for backwards compatibility during transition
   window.rainydesk.onToggleRainscaper(() => {
-    if (rainscaper) rainscaper.toggle();
+    // No-op: Rainscaper is now a separate window managed by Rust
+    window.rainydesk.log('[Overlay] toggle-rainscaper event received (deprecated)');
   });
 
   window.rainydesk.onFullscreenStatus((isFullscreen) => {

@@ -2,7 +2,7 @@
 // Uses Tauri invoke/listen for IPC communication with Rust backend
 
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 
 window.rainydesk = {
   // Receive display info from main process (event-based)
@@ -119,22 +119,77 @@ window.rainydesk = {
   },
 
   // Log messages to main process console
-  log: (message) => invoke('log_message', { message })
+  log: (message) => invoke('log_message', { message }),
+
+  // Rainscaper window control
+  // Use event instead of invoke - Rust handles it the same way as tray click
+  hideRainscaper: () => emit('hide-rainscaper-request'),
+  showRainscaper: (trayX, trayY) => invoke('show_rainscaper', { trayX, trayY }),
+  toggleRainscaper: (trayX, trayY) => invoke('toggle_rainscaper', { trayX, trayY }),
+  resizeRainscaper: (width, height) => invoke('resize_rainscaper', { width, height }),
+
+  // System integration
+  getWindowsAccentColor: () => invoke('get_windows_accent_color'),
+
+  // Stats bridge (overlay → panel)
+  // Emits stats from overlay window so panel can display them
+  emitStats: (stats) => emit('renderer-stats', stats),
+  onStats: (callback) => {
+    listen('renderer-stats', (event) => callback(event.payload));
+  }
+};
+
+// Debug log storage for Rainscaper panel
+window._debugLog = [];
+window._debugLogMaxEntries = 100;
+window._debugStats = {
+  fps: 0,
+  waterCount: 0,
+  activeDrops: 0,
+  puddleCells: 0,
+  lastUpdate: Date.now(),
+};
+
+// Add debug log entry (used by console intercept and direct calls)
+window._addDebugLog = (level, message) => {
+  window._debugLog.push({
+    timestamp: new Date(),
+    level,
+    message,
+  });
+  // Trim to max entries
+  while (window._debugLog.length > window._debugLogMaxEntries) {
+    window._debugLog.shift();
+  }
+};
+
+// Update debug stats (called by main renderer)
+window._updateDebugStats = (stats) => {
+  Object.assign(window._debugStats, stats, { lastUpdate: Date.now() });
 };
 
 // Intercept console.warn and console.error to pipe to Rust log
 const originalWarn = console.warn;
 const originalError = console.error;
+const originalLog = console.log;
+
+console.log = (...args) => {
+  originalLog.apply(console, args);
+  const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  window._addDebugLog('info', message);
+};
 
 console.warn = (...args) => {
   originalWarn.apply(console, args);
   const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  window._addDebugLog('warn', message);
   invoke('log_message', { message: `[ConsoleWarn] ${message}` }).catch(() => {});
 };
 
 console.error = (...args) => {
   originalError.apply(console, args);
   const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  window._addDebugLog('error', message);
   invoke('log_message', { message: `[ConsoleError] ${message}` }).catch(() => {});
 };
 
