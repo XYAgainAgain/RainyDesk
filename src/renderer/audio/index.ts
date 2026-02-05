@@ -34,6 +34,9 @@ export { MaterialManager } from './MaterialManager';
 // Export main orchestrator
 export { AudioSystem, type AudioSystemConfig } from './AudioSystem';
 
+// Export Matrix Mode audio
+export { GlitchSynth } from './GlitchSynth';
+
 // Export Tone.js for audio context initialization
 export * as Tone from 'tone';
 

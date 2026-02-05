@@ -36,6 +36,11 @@ let virtualDesktop = null;
 let isPaused = false;
 let lastTime = performance.now();
 
+// Matrix Mode (background layer)
+let matrixMode = false;
+let matrixRenderer = null;
+let matrixCanvas = null; // Separate canvas for Matrix Mode (avoids WebGL context conflicts)
+
 /**
  * Wait for Tauri API to be available
  */
@@ -76,9 +81,16 @@ function renderLoop() {
   lastTime = now;
 
   // Skip rendering when paused (keep last frame visible)
-  if (renderer && !isPaused) {
-    renderer.clear();
-    renderer.renderBackgroundOnly(dt);
+  if (!isPaused) {
+    if (matrixMode && matrixRenderer) {
+      // Matrix mode: render digital rain (background layer)
+      matrixRenderer.update(dt);
+      matrixRenderer.render();
+    } else if (renderer) {
+      // Normal mode: render rain shader
+      renderer.clear();
+      renderer.renderBackgroundOnly(dt);
+    }
   }
 
   requestAnimationFrame(renderLoop);
@@ -148,6 +160,38 @@ function registerEventListeners() {
     // Gay Mode / Rainbow Mode sync
     if (path === 'visual.gayMode' || path === 'visual.rainbowMode') {
       renderer.setBackgroundRainConfig({ rainbowMode: Boolean(value) });
+      // Sync Gaytrix to background matrix
+      if (matrixRenderer) {
+        matrixRenderer.setGaytrixMode(Boolean(value));
+      }
+    }
+
+    // Matrix Mode
+    if (path === 'visual.matrixMode') {
+      matrixMode = Boolean(value);
+      if (matrixMode) {
+        // Hide rain shader canvas, create separate matrix canvas
+        canvas.style.display = 'none';
+        renderer.setBackgroundRainConfig({ enabled: false });
+
+        // Create separate canvas for Matrix Mode (avoids WebGL context conflicts)
+        matrixCanvas = document.createElement('canvas');
+        matrixCanvas.id = 'matrix-bg-canvas';
+        matrixCanvas.style.cssText = canvas.style.cssText;
+        matrixCanvas.style.display = 'block';
+        matrixCanvas.width = canvas.width;
+        matrixCanvas.height = canvas.height;
+        document.body.appendChild(matrixCanvas);
+
+        // Init background matrix
+        initBackgroundMatrix();
+      } else {
+        // Destroy matrix and its canvas
+        destroyBackgroundMatrix();
+        // Show rain shader canvas
+        canvas.style.display = 'block';
+        renderer.setBackgroundRainConfig({ enabled: true });
+      }
     }
 
     // Rain Color sync
@@ -157,8 +201,52 @@ function registerEventListeners() {
       const g = parseInt(hex.substring(2, 4), 16) / 255;
       const b = parseInt(hex.substring(4, 6), 16) / 255;
       renderer.setBackgroundRainConfig({ colorTint: [r, g, b] });
+      // Sync to background matrix
+      if (matrixRenderer) {
+        matrixRenderer.setRainColor(String(value));
+      }
     }
   });
+}
+
+/**
+ * Initialize background Matrix renderer (dimmed, no collision)
+ */
+async function initBackgroundMatrix() {
+  if (matrixRenderer || !matrixCanvas) return;
+
+  try {
+    const { MatrixPixiRenderer } = await import('./simulation.bundle.js');
+
+    matrixRenderer = new MatrixPixiRenderer({
+      canvas: matrixCanvas, // Use separate canvas to avoid WebGL context conflicts
+      width: virtualDesktop?.width || window.innerWidth,
+      height: virtualDesktop?.height || window.innerHeight,
+      dimmed: true,
+      speedMultiplier: 0.5,
+      alphaMultiplier: 0.4,
+      collisionEnabled: false,
+    });
+    await matrixRenderer.init();
+    window.rainydesk.log('[Background] Matrix renderer initialized (dimmed layer)');
+  } catch (err) {
+    window.rainydesk.log(`[Background] Failed to init matrix: ${err}`);
+  }
+}
+
+/**
+ * Destroy background Matrix renderer
+ */
+function destroyBackgroundMatrix() {
+  if (matrixRenderer) {
+    matrixRenderer.destroy();
+    matrixRenderer = null;
+  }
+  if (matrixCanvas) {
+    matrixCanvas.remove();
+    matrixCanvas = null;
+  }
+  window.rainydesk.log('[Background] Matrix renderer destroyed');
 }
 
 /**

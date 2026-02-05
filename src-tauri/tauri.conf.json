@@ -32,7 +32,8 @@
       }
     ],
     "resources": [
-      "../assets/fonts/*"
+      "../assets/fonts/*",
+      "../assets/sounds/*"
     ],
     "windows": {
       "wix": {

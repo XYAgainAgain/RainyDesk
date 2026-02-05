@@ -518,6 +518,33 @@ html, body {
   margin: 16px 0;
 }
 
+/* Gaytrix hint */
+.gaytrix-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 4px 8px;
+  margin-top: -8px;
+  margin-bottom: 12px;
+  background: linear-gradient(90deg,
+    rgba(255, 0, 0, 0.1),
+    rgba(255, 165, 0, 0.1),
+    rgba(255, 255, 0, 0.1),
+    rgba(0, 128, 0, 0.1),
+    rgba(0, 0, 255, 0.1),
+    rgba(75, 0, 130, 0.1),
+    rgba(238, 130, 238, 0.1)
+  );
+  border-radius: 4px;
+  animation: gaytrix-pulse 2s ease-in-out infinite;
+}
+
+@keyframes gaytrix-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 /* Section */
 .section {
   margin-bottom: 20px;
@@ -725,6 +752,20 @@ html, body {
   font-size: 11px;
   color: var(--text-muted);
   font-style: italic;
+}
+
+.toggle-label-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.control-sublabel {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.2;
 }
 
 /* Theme Selector - 4x3 grid of circles */

@@ -9,6 +9,7 @@ dist/
 .webpack/
 *.bundle.js
 *.bundle.js.map
+src/renderer/sounds/
 
 # Cache
 .cache/

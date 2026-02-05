@@ -76,6 +76,12 @@ let gridSimulation = null;
 let pixiRenderer = null;
 let globalGridBounds = null;
 
+// Matrix Mode
+let matrixMode = false;
+let matrixRenderer = null;
+let glitchSynth = null;
+let matrixCanvas = null; // Separate canvas for Matrix Mode (avoids WebGL context conflicts)
+
 // Autosave data (loaded during init, applied after audio starts)
 let pendingAutosave = null;
 
@@ -385,7 +391,7 @@ function gatherPresetData() {
       gridScale: GRID_SCALE,
     },
     audio: {
-      muted: audioSystem?.isMuted?.() ?? false,
+      muted: audioSystem?.isMuted ?? false,
       masterVolume: audioSystem?.getMasterVolume?.() ?? -12,
     },
     visual: {
@@ -555,7 +561,11 @@ function resizeCanvas() {
  * Update simulation
  */
 function update(dt) {
-  if (gridSimulation) {
+  if (matrixMode && matrixRenderer) {
+    // Matrix mode: update digital rain
+    matrixRenderer.update(dt);
+  } else if (gridSimulation) {
+    // Normal mode: update rain physics
     gridSimulation.step(dt);
   }
 }
@@ -564,7 +574,11 @@ function update(dt) {
  * Render simulation
  */
 function render() {
-  if (pixiRenderer && gridSimulation) {
+  if (matrixMode && matrixRenderer) {
+    // Matrix mode: render digital rain
+    matrixRenderer.render();
+  } else if (!reinitInProgress && pixiRenderer && gridSimulation) {
+    // Normal mode: render rain physics
     pixiRenderer.render(gridSimulation);
   }
 }
@@ -850,6 +864,21 @@ function registerEventListeners() {
       if (gridSimulation) {
         gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
       }
+
+      // Update Matrix renderer window zones (adjust for VD origin)
+      // Include ALL windows (normal + void + spawnBlock) for collision detection
+      if (matrixRenderer && virtualDesktop) {
+        const originX = virtualDesktop.originX || 0;
+        const originY = virtualDesktop.originY || 0;
+        // Combine all window types - Matrix streams should collide with everything
+        const allWindows = [...normalWindows, ...voidWindows];
+        matrixRenderer.updateWindowZones(allWindows.map(w => ({
+          left: w.x - originX,
+          top: w.y - originY,
+          right: w.x + w.width - originX,
+          bottom: w.y + w.height - originY,
+        })));
+      }
     }, 32);
   });
 
@@ -902,10 +931,50 @@ function registerEventListeners() {
       if (audioSystem) {
         audioSystem.setRainMix(value);
       }
-    } else if (path === 'visual.rainColor' && pixiRenderer) {
-      pixiRenderer.setRainColor(value);
-    } else if ((path === 'visual.rainbowMode' || path === 'visual.gayMode') && pixiRenderer) {
-      pixiRenderer.setGayMode(Boolean(value));
+    } else if (path === 'visual.rainColor') {
+      if (pixiRenderer) {
+        pixiRenderer.setRainColor(value);
+      }
+      if (matrixRenderer) {
+        matrixRenderer.setRainColor(String(value));
+      }
+    } else if (path === 'visual.rainbowMode' || path === 'visual.gayMode') {
+      if (pixiRenderer) {
+        pixiRenderer.setGayMode(Boolean(value));
+      }
+      if (matrixRenderer) {
+        matrixRenderer.setGaytrixMode(Boolean(value));
+      }
+    } else if (path === 'visual.matrixMode') {
+      const newMatrixMode = Boolean(value);
+      if (newMatrixMode === matrixMode) return; // No change
+
+      matrixMode = newMatrixMode;
+      if (matrixMode) {
+        // Switching TO Matrix Mode: pause rain, create separate canvas for matrix
+        window.rainydesk.log('[Matrix] Switching to Matrix Mode...');
+
+        // Hide rain canvas (keep rain system intact, just hidden)
+        canvas.style.display = 'none';
+
+        // Create a separate canvas for Matrix Mode (avoids WebGL context conflicts)
+        matrixCanvas = document.createElement('canvas');
+        matrixCanvas.id = 'matrix-canvas';
+        matrixCanvas.style.cssText = canvas.style.cssText; // Copy all styles
+        matrixCanvas.style.display = 'block';
+        matrixCanvas.width = canvas.width;
+        matrixCanvas.height = canvas.height;
+        document.body.appendChild(matrixCanvas);
+
+        initMatrixRenderer();
+      } else {
+        // Switching FROM Matrix Mode: destroy matrix, show rain again
+        window.rainydesk.log('[Matrix] Switching back to Rain Mode...');
+        destroyMatrixRenderer();
+
+        // Show rain canvas again
+        canvas.style.display = 'block';
+      }
     } else if (path === 'system.paused') {
       isPaused = Boolean(value);
       window.rainydesk.log(`[Pause] ${isPaused ? 'PAUSED' : 'RESUMED'} via Rainscaper panel`);
@@ -1010,6 +1079,126 @@ async function initPixiPhysics() {
   await pixiRenderer.init();
   window.rainydesk.log('[Pixi] Renderer initialized');
   window.rainydesk.log('[Pixi] Hybrid physics ready!');
+}
+
+/**
+ * Initialize Matrix Mode renderer
+ */
+async function initMatrixRenderer() {
+  if (matrixRenderer || !matrixCanvas) return;
+
+  const { MatrixPixiRenderer } = await import('./simulation.bundle.js');
+  const { GlitchSynth } = await import('./audio.bundle.js');
+
+  matrixRenderer = new MatrixPixiRenderer({
+    canvas: matrixCanvas, // Use separate canvas to avoid WebGL context conflicts
+    width: virtualDesktop?.width || window.innerWidth,
+    height: virtualDesktop?.height || window.innerHeight,
+    collisionEnabled: true,
+  });
+  await matrixRenderer.init();
+
+  // Coordinate adjustment: window bounds are absolute, canvas is relative to VD origin
+  const originX = virtualDesktop?.originX || 0;
+  const originY = virtualDesktop?.originY || 0;
+
+  // Set up window zones from saved classified data (includes all window types)
+  // lastWindowZonesForReinit has normal/void/spawn arrays from classification
+  if (lastWindowZonesForReinit) {
+    const allWindows = [
+      ...(lastWindowZonesForReinit.normal || []),
+      ...(lastWindowZonesForReinit.void || []),
+    ];
+    const zones = allWindows.map(w => ({
+      left: w.x - originX,
+      top: w.y - originY,
+      right: w.x + w.width - originX,
+      bottom: w.y + w.height - originY,
+    }));
+    matrixRenderer.updateWindowZones(zones);
+    window.rainydesk.log(`[Matrix] Loaded ${zones.length} window zones (origin offset: ${originX}, ${originY})`);
+  } else if (lastWindowData?.length) {
+    // Fallback to raw window data if classification hasn't run yet
+    const zones = lastWindowData.map(w => ({
+      left: w.x - originX,
+      top: w.y - originY,
+      right: w.x + w.width - originX,
+      bottom: w.y + w.height - originY,
+    }));
+    matrixRenderer.updateWindowZones(zones);
+    window.rainydesk.log(`[Matrix] Loaded ${zones.length} window zones from raw data (origin offset: ${originX}, ${originY})`);
+  } else {
+    window.rainydesk.log('[Matrix] WARNING: No window data available for collision detection');
+  }
+
+  // Set floor to bottom of work area (where taskbar is)
+  // Use the minimum work area bottom from all monitors
+  if (virtualDesktop?.monitors?.length) {
+    let minWorkBottom = Infinity;
+    for (const mon of virtualDesktop.monitors) {
+      const workBottom = mon.workY + mon.workHeight;
+      if (workBottom < minWorkBottom) {
+        minWorkBottom = workBottom;
+      }
+    }
+    if (minWorkBottom < Infinity) {
+      matrixRenderer.setFloorY(minWorkBottom - originY);
+      window.rainydesk.log(`[Matrix] Floor set to Y=${minWorkBottom - originY} (work area bottom)`);
+    }
+  }
+
+  // Audio: create glitch synth (beat-quantized at 120 BPM)
+  glitchSynth = new GlitchSynth();
+  matrixRenderer.onCollision = (x, y) => {
+    // Trigger returns { onBeat: boolean } for flash intensity
+    const result = glitchSynth?.trigger() || { onBeat: false };
+    // Only log on-beat collisions to avoid spam
+    if (result.onBeat) {
+      window.rainydesk.log(`[Matrix] ON-BEAT collision at (${Math.round(x)}, ${Math.round(y)})`);
+    }
+    return result;
+  };
+
+  // Start background drone (crossfade-looped ambient)
+  // NOTE: Sound file is copied to src/renderer/sounds/ for dev mode (Tauri's frontendDist
+  // is src/renderer/, so assets/ folder isn't served). Production builds use bundle resources.
+  // See tauri.conf.json "resources" and .gitignore for sounds/ exclusion.
+  try {
+    await glitchSynth.startDrone('./sounds/EvolvingSawsLoop.ogg', 5);
+    window.rainydesk.log('[Matrix] Drone audio started');
+  } catch (err) {
+    window.rainydesk.log(`[Matrix] Drone audio failed: ${err}`);
+  }
+
+  // Sync Gaytrix state from current gayMode
+  const isGaytrix = pixiRenderer?.isGayMode?.() ?? false;
+  matrixRenderer.setGaytrixMode(isGaytrix);
+
+  // DON'T sync rain color - Matrix Mode should default to green unless explicitly set
+  // Only apply custom color if Gaytrix is off and user has explicitly set a non-default color
+  // (Leave this for later - for now, just use default green)
+
+  window.rainydesk.log('[Matrix] Renderer initialized');
+}
+
+/**
+ * Destroy Matrix Mode renderer
+ */
+function destroyMatrixRenderer() {
+  if (matrixRenderer) {
+    matrixRenderer.destroy();
+    matrixRenderer = null;
+  }
+  if (glitchSynth) {
+    glitchSynth.dispose();
+    glitchSynth = null;
+  }
+  // Remove matrix canvas from DOM
+  if (matrixCanvas) {
+    matrixCanvas.remove();
+    matrixCanvas = null;
+  }
+  window.rainydesk.log('[Matrix] Renderer destroyed');
 }
 
 /**

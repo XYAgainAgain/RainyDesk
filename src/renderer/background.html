@@ -5,8 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RainyDesk Background</title>
   <link rel="stylesheet" href="styles.css">
+  <!-- Matrix Code font preload -->
+  <style>
+    @font-face {
+      font-family: 'Matrix Code NFI';
+      src: url('../../assets/fonts/Matrix-Code-NFI.woff2') format('woff2');
+      font-display: swap;
+    }
+    .matrix-font-preload {
+      font-family: 'Matrix Code NFI';
+      position: absolute;
+      visibility: hidden;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
+  <!-- Font preload for Matrix Mode -->
+  <span class="matrix-font-preload">A</span>
   <canvas id="rain-canvas"></canvas>
   <!-- Tauri API (required for IPC) -->
   <script type="module" src="tauri-api.bundle.js"></script>

@@ -1,6 +1,6 @@
 {
   "name": "rainydesk",
-  "version": "0.6.0-alpha",
+  "version": "0.7.0-alpha",
   "private": true,
   "scripts": {
     "build": "npm run build:types && npm run build:tauri-api && npm run build:audio && npm run build:simulation && npm run build:rainydesk-panel",

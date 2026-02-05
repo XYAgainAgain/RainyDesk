@@ -81,6 +81,7 @@ export function Slider(config: SliderConfig): HTMLElement {
 
 export interface ToggleConfig {
   label: string;
+  sublabel?: string;
   checked: boolean;
   disabled?: boolean;
   disabledNote?: string;
@@ -88,13 +89,16 @@ export interface ToggleConfig {
 }
 
 export function Toggle(config: ToggleConfig): HTMLElement {
-  const { label, checked, disabled = false, disabledNote, onChange } = config;
+  const { label, sublabel, checked, disabled = false, disabledNote, onChange } = config;
 
   const row = document.createElement('div');
   row.className = 'control-row';
   if (disabled) {
     row.classList.add('disabled');
   }
+
+  const labelContainer = document.createElement('div');
+  labelContainer.className = 'toggle-label-container';
 
   const labelEl = document.createElement('span');
   labelEl.className = 'control-label';
@@ -104,6 +108,14 @@ export function Toggle(config: ToggleConfig): HTMLElement {
     note.className = 'control-note';
     note.textContent = ` (${disabledNote})`;
     labelEl.appendChild(note);
+  }
+  labelContainer.appendChild(labelEl);
+
+  if (sublabel) {
+    const sublabelEl = document.createElement('span');
+    sublabelEl.className = 'control-sublabel';
+    sublabelEl.textContent = sublabel;
+    labelContainer.appendChild(sublabelEl);
   }
 
   const toggleContainer = document.createElement('div');
@@ -132,7 +144,7 @@ export function Toggle(config: ToggleConfig): HTMLElement {
   toggle.appendChild(thumb);
   toggleContainer.appendChild(toggle);
 
-  row.appendChild(labelEl);
+  row.appendChild(labelContainer);
   row.appendChild(toggleContainer);
 
   return row;

@@ -89,6 +89,7 @@ interface PanelState {
   backgroundLayers: number;
   rainColor: string;
   gayMode: boolean;
+  matrixMode: boolean;
   uiScale: number;
   // Presets
   presets: string[];
@@ -161,6 +162,7 @@ export class RainyDeskPanel {
       backgroundLayers: 3,
       rainColor: '#8aa8c0',
       gayMode: false,
+      matrixMode: false,
       uiScale: parseFloat(localStorage.getItem('rainscaper-ui-scale') || '1.0'),
       // Presets
       presets: [],
@@ -1039,9 +1041,34 @@ export class RainyDeskPanel {
           } else {
             this.stopGayModeAnimation();
           }
+          // Update Gaytrix hint visibility
+          this.updateGaytrixHint();
         },
       })
     );
+
+    // Matrix Mode toggle (digital rain)
+    container.appendChild(
+      Toggle({
+        label: 'Matrix Mode',
+        sublabel: 'Digital rain with collision effects',
+        checked: this.state.matrixMode,
+        onChange: (v) => {
+          this.state.matrixMode = v;
+          window.rainydesk.updateRainscapeParam('visual.matrixMode', v);
+          // Update Gaytrix hint visibility
+          this.updateGaytrixHint();
+        },
+      })
+    );
+
+    // Gaytrix hint (appears when both Gay Mode + Matrix Mode are enabled)
+    const gaytrixHint = document.createElement('div');
+    gaytrixHint.className = 'gaytrix-hint';
+    gaytrixHint.id = 'gaytrix-hint';
+    gaytrixHint.textContent = 'Gaytrix mode activated!';
+    gaytrixHint.style.display = (this.state.gayMode && this.state.matrixMode) ? 'block' : 'none';
+    container.appendChild(gaytrixHint);
 
     // Separator before UI Scale
     const separator = document.createElement('hr');
@@ -1319,6 +1346,14 @@ export class RainyDeskPanel {
     }
     if (this.titleElement) {
       this.titleElement.style.color = ''; // Reset to CSS default
+    }
+  }
+
+  /** Update Gaytrix hint visibility (shown when both Gay Mode + Matrix Mode are on) */
+  private updateGaytrixHint(): void {
+    const hint = this.root.querySelector('#gaytrix-hint') as HTMLElement;
+    if (hint) {
+      hint.style.display = (this.state.gayMode && this.state.matrixMode) ? 'block' : 'none';
     }
   }
 
