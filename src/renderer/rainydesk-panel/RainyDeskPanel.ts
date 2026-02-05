@@ -116,6 +116,8 @@ export class RainyDeskPanel {
   // private autoHideDelay = 5000;
   private debugUpdateInterval: ReturnType<typeof setInterval> | null = null;
   private debugStatsElement: HTMLElement | null = null;
+  private gayModeInterval: ReturnType<typeof setInterval> | null = null;
+  private titleElement: HTMLElement | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -205,6 +207,11 @@ export class RainyDeskPanel {
     // Apply saved UI scale
     if (this.state.uiScale !== 1.0) {
       this.applyUIScale(this.state.uiScale);
+    }
+
+    // Start Gay Mode title animation if already enabled
+    if (this.state.gayMode) {
+      this.startGayModeAnimation();
     }
 
     // Auto-hide disabled - tray icon toggles panel instead
@@ -370,6 +377,7 @@ export class RainyDeskPanel {
     const title = document.createElement('div');
     title.className = 'panel-title';
     title.innerHTML = '<span class="panel-title-icon">&#9730;</span> RainyDesk Rainscaper';
+    this.titleElement = title; // Store reference for Gay Mode color sync
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'panel-close';
@@ -583,6 +591,7 @@ export class RainyDeskPanel {
         min: -100,
         max: 100,
         unit: '',
+        defaultValue: 0,
         onChange: (v) => {
           this.state.wind = v;
           window.rainydesk.updateRainscapeParam('physics.wind', v);
@@ -720,6 +729,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 200,
         unit: '%',
+        defaultValue: 100,
         onChange: (v) => {
           this.state.splashSize = v / 100;
           window.rainydesk.updateRainscapeParam('physics.splashScale', v / 100);
@@ -735,6 +745,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
+        defaultValue: 50,
         onChange: (v) => {
           this.state.puddleDrain = v / 100;
           window.rainydesk.updateRainscapeParam('physics.puddleDrain', v / 100);
@@ -750,6 +761,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
+        defaultValue: 30,
         onChange: (v) => {
           this.state.turbulence = v / 100;
           window.rainydesk.updateRainscapeParam('physics.turbulence', v / 100);
@@ -765,6 +777,7 @@ export class RainyDeskPanel {
         min: 1,
         max: 10,
         unit: 'px',
+        defaultValue: 4,
         onChange: (v) => {
           this.state.dropSize = v;
           window.rainydesk.updateRainscapeParam('physics.dropMaxSize', v);
@@ -822,6 +835,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
+        defaultValue: 50,
         onChange: (v) => {
           this.state.rainIntensity = v;
           window.rainydesk.updateRainscapeParam('audio.rainIntensity', v);
@@ -837,6 +851,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
+        defaultValue: 30,
         onChange: (v) => {
           this.state.bubbleSound = v;
           window.rainydesk.updateRainscapeParam('audio.bubble.gain', (v / 100 * 24) - 12);
@@ -852,6 +867,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
+        defaultValue: 20,
         onChange: (v) => {
           this.state.windSound = v;
           const db = v <= 0 ? -60 : (v / 100 * 48) - 48;
@@ -900,6 +916,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
+        defaultValue: 50,
         onChange: (v) => {
           this.state.backgroundIntensity = v;
           window.rainydesk.updateRainscapeParam('backgroundRain.intensity', v);
@@ -916,6 +933,7 @@ export class RainyDeskPanel {
         max: 5,
         step: 1,
         unit: '',
+        defaultValue: 3,
         onChange: (v) => {
           this.state.backgroundLayers = v;
           window.rainydesk.updateRainscapeParam('backgroundRain.layers', v);
@@ -944,6 +962,12 @@ export class RainyDeskPanel {
         onChange: (v) => {
           this.state.gayMode = v;
           window.rainydesk.updateRainscapeParam('visual.gayMode', v);
+          // Sync title bar color
+          if (v) {
+            this.startGayModeAnimation();
+          } else {
+            this.stopGayModeAnimation();
+          }
         },
       })
     );
@@ -967,6 +991,13 @@ export class RainyDeskPanel {
     scaleLabel.className = 'control-label';
     scaleLabel.textContent = 'UI Scale';
     labelContainer.appendChild(scaleLabel);
+
+    // Reset button for UI Scale (default 100%)
+    const scaleResetBtn = document.createElement('button');
+    scaleResetBtn.className = 'reset-button';
+    scaleResetBtn.title = 'Reset to 100%';
+    scaleResetBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
+    labelContainer.appendChild(scaleResetBtn);
 
     const scaleValue = document.createElement('span');
     scaleValue.className = 'control-value';
@@ -995,6 +1026,16 @@ export class RainyDeskPanel {
       localStorage.setItem('rainscaper-ui-scale', String(scale));
       this.applyUIScale(scale);
     });
+
+    // Reset button handler
+    scaleResetBtn.onclick = (e) => {
+      e.preventDefault();
+      scaleSlider.value = '2'; // Index 2 = 100%
+      scaleValue.textContent = '100%';
+      this.state.uiScale = 1.0;
+      localStorage.setItem('rainscaper-ui-scale', '1.0');
+      this.applyUIScale(1.0);
+    };
 
     const sliderContainer = document.createElement('div');
     sliderContainer.className = 'slider-container';
@@ -1184,6 +1225,29 @@ export class RainyDeskPanel {
       panel.style.height = `${baseHeight}px`;
       panel.style.transform = `scale(${scale})`;
       panel.style.transformOrigin = 'top left';
+    }
+  }
+
+  /** Start rainbow color cycling on the title bar (synced with rain Gay Mode) */
+  private startGayModeAnimation(): void {
+    if (this.gayModeInterval) return; // Already running
+
+    this.gayModeInterval = setInterval(() => {
+      if (!this.titleElement) return;
+      // Use performance.now() for sync with rain (60-second cycle)
+      const hue = ((performance.now() / 60000) % 1.0) * 360;
+      this.titleElement.style.color = `hsl(${hue}, 80%, 70%)`;
+    }, 50); // Update every 50ms for smooth animation
+  }
+
+  /** Stop rainbow color cycling and reset title color */
+  private stopGayModeAnimation(): void {
+    if (this.gayModeInterval) {
+      clearInterval(this.gayModeInterval);
+      this.gayModeInterval = null;
+    }
+    if (this.titleElement) {
+      this.titleElement.style.color = ''; // Reset to CSS default
     }
   }
 
