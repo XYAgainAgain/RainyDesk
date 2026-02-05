@@ -113,11 +113,11 @@ export const DEFAULT_CONFIG: SimulationConfig = {
     windBase: 0,
     windTurbulence: 10,
     spawnRate: 100,
-    radiusMin: 0.8,      // Visible drops
-    radiusMax: 2.0,      // Larger max for variety
+    radiusMin: 0.8,      // Visible drops (~3px at 1:4 scale)
+    radiusMax: 2.0,      // Larger max for variety (~8px at 1:4 scale)
     slipThreshold: 0.85,
     wallAdhesion: 0.05,  // 5% chance to stick (faster dribble)
-    splashScale: 1.0,    // Default splash scale
+    splashScale: 1.0,    // Normal splash scale
     evaporationRate: 1.0, // Default evaporation rate
     reverseGravity: false, // Normal gravity by default
 };

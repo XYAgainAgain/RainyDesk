@@ -1054,3 +1054,34 @@ html, body {
   border-radius: 2px;
   margin-right: 6px;
 }
+
+/* Grid Scale + Reset Rain Button */
+.slider-with-button {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.reset-rain-button {
+  background: #c0392b;
+  color: #fff;
+  border: none;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s;
+  align-self: center;
+}
+
+.reset-rain-button:hover {
+  background: #a93226;
+}
+
+.reset-rain-button:active {
+  background: #922b21;
+}

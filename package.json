@@ -3,16 +3,14 @@
   "version": "0.6.0-alpha",
   "private": true,
   "scripts": {
-    "build": "npm run build:types && npm run build:tauri-api && npm run build:audio && npm run build:rainscaper && npm run build:simulation && npm run build:rainydesk-panel",
+    "build": "npm run build:types && npm run build:tauri-api && npm run build:audio && npm run build:simulation && npm run build:rainydesk-panel",
     "build:types": "tsc --noEmit",
     "build:tauri-api": "esbuild src/renderer/tauri-api.js --bundle --format=esm --outfile=src/renderer/tauri-api.bundle.js --sourcemap",
     "build:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap",
     "build:audio-standalone": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=dist/audio.standalone.bundle.js --sourcemap",
-    "build:rainscaper": "esbuild src/renderer/rainscaper/index.ts --bundle --format=esm --outfile=src/renderer/rainscaper.bundle.js --sourcemap",
     "build:simulation": "esbuild src/renderer/simulation/index.ts --bundle --format=esm --outfile=src/renderer/simulation.bundle.js --external:pixi.js --sourcemap",
     "build:rainydesk-panel": "esbuild src/renderer/rainydesk-panel/index.ts --bundle --format=esm --outfile=src/renderer/rainydesk-panel.bundle.js --sourcemap",
     "watch:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap --watch",
-    "watch:rainscaper": "esbuild src/renderer/rainscaper/index.ts --bundle --format=esm --outfile=src/renderer/rainscaper.bundle.js --sourcemap --watch",
     "watch:simulation": "esbuild src/renderer/simulation/index.ts --bundle --format=esm --outfile=src/renderer/simulation.bundle.js --external:pixi.js --sourcemap --watch",
     "dev": "npm run build && tauri dev",
     "start": "npm run dev",
@@ -36,7 +34,6 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.1",
-    "matter-js": "^0.20.0",
     "pixi.js": "^8.15.0",
     "tone": "^15.1.22"
   }

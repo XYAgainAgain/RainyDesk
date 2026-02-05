@@ -29,6 +29,8 @@ export interface RendererConfig {
     backgroundColor: number;
     /** Whether to use WebGPU if available */
     preferWebGPU: boolean;
+    /** Grid scale factor (0.125 = 1:8, 0.25 = 1:4). Default 0.125. */
+    gridScale: number;
 }
 
 export class RainPixiRenderer {
@@ -37,7 +39,7 @@ export class RainPixiRenderer {
 
     // Configuration
     private readonly config: RendererConfig;
-    private readonly logicScale = 0.25; // Logic space is 25% of screen space
+    private readonly logicScale: number; // Logic space scale (0.125 = 1:8)
 
     // Color and Gay Mode
     private rainColor: number = 0xa0c4e8; // Default blue
@@ -74,7 +76,9 @@ export class RainPixiRenderer {
             localOffsetY: config.localOffsetY ?? 0,
             backgroundColor: config.backgroundColor ?? 0x000000,
             preferWebGPU: config.preferWebGPU ?? true,
+            gridScale: config.gridScale ?? 0.25,
         };
+        this.logicScale = this.config.gridScale;
     }
 
     /**
@@ -174,9 +178,9 @@ export class RainPixiRenderer {
         this.puddlePixelBuffer = null;
         this.puddleSprite = null;
 
-        // Clean up Pixi app
+        // Clean up Pixi app (keep canvas - we reuse it on reinit)
         if (this.app) {
-            this.app.destroy(true, { children: true, texture: true });
+            this.app.destroy(false, { children: true, texture: true });
             this.app = null;
         }
         this.initialized = false;
@@ -197,6 +201,20 @@ export class RainPixiRenderer {
      */
     setGayMode(enabled: boolean): void {
         this.gayMode = enabled;
+    }
+
+    /**
+     * Get current rain color as hex string.
+     */
+    getRainColor(): string {
+        return '#' + this.rainColor.toString(16).padStart(6, '0');
+    }
+
+    /**
+     * Check if Gay Mode is enabled.
+     */
+    isGayMode(): boolean {
+        return this.gayMode;
     }
 
     /**
@@ -410,6 +428,10 @@ export class RainPixiRenderer {
         // Get current tint color for splashes (same as rain)
         const tintColor = this.getCurrentTintColor();
 
+        // Normalize splash sprite scale for consistent screen size across grid scales
+        // Stage is scaled by 1/logicScale, so we compensate with logicScale/0.25
+        const splashScale = this.logicScale / 0.25;
+
         // Update visible sprites
         for (let i = 0; i < splashes.count; i++) {
             const sprite = this.splashSprites[i]!;
@@ -418,6 +440,7 @@ export class RainPixiRenderer {
             sprite.y = splashes.y[i]! - offsetY;
             sprite.alpha = splashes.life[i]!;
             sprite.tint = tintColor;
+            sprite.scale.set(splashScale);
         }
 
         // Hide unused sprites

@@ -95,6 +95,10 @@ interface PanelState {
   currentPreset: string;
   // Physics (Phase 2)
   reverseGravity: boolean;
+  gridScale: number;
+  gridScalePending: number;
+  // App status
+  appStatus: 'raining' | 'paused' | 'stopped' | 'initializing';
   // Debug
   debugStats: {
     fps: number;
@@ -118,6 +122,7 @@ export class RainyDeskPanel {
   private debugStatsElement: HTMLElement | null = null;
   private gayModeInterval: ReturnType<typeof setInterval> | null = null;
   private titleElement: HTMLElement | null = null;
+  private resetRainButton: HTMLButtonElement | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -162,6 +167,10 @@ export class RainyDeskPanel {
       currentPreset: '',
       // Physics (Phase 2)
       reverseGravity: false,
+      gridScale: 0.25,
+      gridScalePending: 0.25,
+      // App status
+      appStatus: 'raining',
       // Debug
       debugStats: {
         fps: 0,
@@ -244,6 +253,12 @@ export class RainyDeskPanel {
         ...stats,
         lastUpdate: Date.now(),
       };
+    });
+
+    // Listen for reinit status from the overlay window
+    window.rainydesk.onReinitStatus?.((status: 'stopped' | 'initializing' | 'raining') => {
+      this.state.appStatus = status;
+      this.updateFooterStatus();
     });
   }
 
@@ -769,10 +784,10 @@ export class RainyDeskPanel {
       })
     );
 
-    // Drop size
+    // Drop mass (max)
     container.appendChild(
       Slider({
-        label: 'Drop Size',
+        label: 'Max. Drop Mass',
         value: this.state.dropSize,
         min: 1,
         max: 10,
@@ -797,7 +812,63 @@ export class RainyDeskPanel {
       })
     );
 
+    // Grid Scale section
+    const gridScaleSection = document.createElement('div');
+    gridScaleSection.className = 'slider-with-button';
+
+    // Grid Scale slider (3 discrete steps: Chunky/Normal/Detailed)
+    const gridScaleSteps = [0.125, 0.25, 0.375]; // Chunky, Normal, Detailed
+    const gridScaleLabels = ['Chunky', 'Normal', 'Detailed'];
+    const currentIndex = gridScaleSteps.findIndex(s => Math.abs(s - this.state.gridScalePending) < 0.01);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 1; // Default to Normal
+
+    gridScaleSection.appendChild(
+      Slider({
+        label: 'Grid Scale',
+        value: safeIndex,
+        min: 0,
+        max: 2,
+        step: 1,
+        unit: '',
+        formatValue: (v: number) => gridScaleLabels[Math.round(v)] || 'Normal',
+        onChange: (v) => {
+          const idx = Math.round(v);
+          this.state.gridScalePending = gridScaleSteps[idx] ?? 0.25;
+          this.updateResetButtonVisibility();
+        },
+      })
+    );
+
+    // Apply Changes button (only visible when scale changed)
+    this.resetRainButton = document.createElement('button');
+    this.resetRainButton.className = 'reset-rain-button';
+    this.resetRainButton.textContent = 'Apply Changes';
+    this.resetRainButton.style.display = 'none';
+    this.resetRainButton.addEventListener('click', () => this.handleResetRain());
+    gridScaleSection.appendChild(this.resetRainButton);
+
+    container.appendChild(gridScaleSection);
+
+    // Update button visibility based on current state
+    this.updateResetButtonVisibility();
+
     return container;
+  }
+
+  private updateResetButtonVisibility(): void {
+    if (!this.resetRainButton) return;
+    const changed = Math.abs(this.state.gridScalePending - this.state.gridScale) > 0.01;
+    this.resetRainButton.style.display = changed ? 'block' : 'none';
+  }
+
+  private handleResetRain(): void {
+    if (this.resetRainButton) {
+      this.resetRainButton.style.display = 'none';
+    }
+    this.state.appStatus = 'stopped';
+    this.updateFooterStatus();
+    window.rainydesk.updateRainscapeParam('physics.resetSimulation', this.state.gridScalePending);
+    this.state.gridScale = this.state.gridScalePending;
   }
 
   private createAudioTab(): HTMLElement {
@@ -1252,10 +1323,15 @@ export class RainyDeskPanel {
   }
 
   private getAppStatus(): { dot: string; text: string } {
-    if (this.state.paused) {
+    if (this.state.appStatus === 'stopped') {
+      return { dot: 'stopped', text: 'Stopped' };
+    }
+    if (this.state.appStatus === 'initializing') {
+      return { dot: 'initializing', text: 'Initializing' };
+    }
+    if (this.state.paused || this.state.appStatus === 'paused') {
       return { dot: 'paused', text: 'Paused' };
     }
-    // Could add more states later: initializing, stopped, etc.
     return { dot: 'raining', text: 'Raining' };
   }
 

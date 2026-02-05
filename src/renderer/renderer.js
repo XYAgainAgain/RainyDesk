@@ -32,11 +32,22 @@ if (!isRecentInit) {
 // Audio system (TypeScript, voice-pooled)
 let audioSystem = null;
 
-// Rainscaper UI panel
-let rainscaper = null;
+// Reinitialization state
+let reinitInProgress = false;
 
 // Render scale for pixelated 8-bit aesthetic (0.25 = 25% resolution)
 let renderScale = 0.25;
+
+// Grid scale presets for physics simulation
+// Detailed (1:2) = 0.5  - More cells, smoother physics, higher CPU
+// Normal (1:4)   = 0.25 - Balanced (default)
+// Chunky (1:8)   = 0.125 - Fewer cells, blockier, faster physics
+const GRID_SCALE_PRESETS = {
+  detailed: 0.5,
+  normal: 0.25,
+  chunky: 0.125
+};
+let GRID_SCALE = GRID_SCALE_PRESETS.normal; // Default to Normal (1:4)
 
 // Virtual desktop info (mega-window architecture)
 let virtualDesktop = null;
@@ -92,6 +103,7 @@ let isPaused = false;
 // Window update state
 let windowUpdateDebounceTimer = null;
 let lastWindowData = null;
+let lastWindowZonesForReinit = null;
 
 /**
  * Wait for Tauri API to be available
@@ -185,6 +197,44 @@ function buildVoidMask(desktop, scale) {
   const voidCount = voidMask.reduce((sum, v) => sum + v, 0);
   window.rainydesk.log(`[VoidMask] Grid ${gridWidth}x${gridHeight}, void=${voidCount}, usable=${voidMask.length - voidCount}`);
 
+  // Debug: Log each monitor's grid bounds
+  for (const monitor of desktop.monitors) {
+    const mx = Math.floor(monitor.x * scale);
+    const my = Math.floor(monitor.y * scale);
+    const mw = Math.ceil(monitor.width * scale);
+    const mh = Math.ceil(monitor.height * scale);
+    window.rainydesk.log(`[VoidMask] Monitor "${monitor.name}": grid x=${mx}-${mx+mw-1}, y=${my}-${my+mh-1}`);
+  }
+
+  // Debug: Check for void columns (entire column is void = gap between monitors)
+  let voidColumnRanges = [];
+  let inVoidRange = false;
+  let rangeStart = 0;
+  for (let x = 0; x < gridWidth; x++) {
+    let columnIsVoid = true;
+    for (let y = 0; y < gridHeight; y++) {
+      if (voidMask[y * gridWidth + x] === 0) {
+        columnIsVoid = false;
+        break;
+      }
+    }
+    if (columnIsVoid && !inVoidRange) {
+      inVoidRange = true;
+      rangeStart = x;
+    } else if (!columnIsVoid && inVoidRange) {
+      inVoidRange = false;
+      voidColumnRanges.push(`${rangeStart}-${x-1}`);
+    }
+  }
+  if (inVoidRange) {
+    voidColumnRanges.push(`${rangeStart}-${gridWidth-1}`);
+  }
+  if (voidColumnRanges.length > 0) {
+    window.rainydesk.log(`[VoidMask] WARNING: Void column ranges (gaps): ${voidColumnRanges.join(', ')}`);
+  } else {
+    window.rainydesk.log(`[VoidMask] No void columns - monitors are edge-to-edge horizontally`);
+  }
+
   return voidMask;
 }
 
@@ -244,6 +294,24 @@ function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
     }
   }
 
+  // Debug: Log floor heights at monitor boundaries to show "ledges"
+  const boundaries = [];
+  for (const monitor of desktop.monitors) {
+    const mx = Math.floor(monitor.x * scale);
+    const mw = Math.ceil(monitor.width * scale);
+    boundaries.push({ x: mx, label: `${monitor.name} left` });
+    boundaries.push({ x: mx + mw - 1, label: `${monitor.name} right` });
+  }
+  boundaries.sort((a, b) => a.x - b.x);
+
+  let floorDebug = '[DisplayFloor] Floor heights at boundaries: ';
+  for (const b of boundaries) {
+    if (b.x >= 0 && b.x < gridWidth) {
+      floorDebug += `x=${b.x}(${b.label}):y=${displayFloorMap[b.x]}, `;
+    }
+  }
+  window.rainydesk.log(floorDebug);
+
   return displayFloorMap;
 }
 
@@ -295,17 +363,175 @@ async function initAudio() {
       window.rainydesk.log('[Audio] Connected to Pixi physics system');
     }
 
-    // Connect to Rainscaper
-    if (rainscaper && rainscaper.setAudioSystem) {
-      rainscaper.setAudioSystem(audioSystem);
-      window.rainydesk.log('[Audio] Connected to Rainscaper');
-    }
-
     audioInitialized = true;
-    if (rainscaper) rainscaper.refresh();
   } catch (error) {
     window.rainydesk.log(`Audio init error: ${error.message}`);
     console.error('[Audio] Error:', error);
+  }
+}
+
+/**
+ * Gather current settings into a preset object (for autosave)
+ */
+function gatherPresetData() {
+  return {
+    name: 'Autosave',
+    rain: {
+      intensity: config.intensity,
+      wind: config.wind,
+    },
+    physics: {
+      gravity: gridSimulation?.getGravity?.() ?? 980,
+      gridScale: GRID_SCALE,
+    },
+    audio: {
+      muted: audioSystem?.isMuted?.() ?? false,
+      masterVolume: audioSystem?.getMasterVolume?.() ?? -12,
+    },
+    visual: {
+      gayMode: pixiRenderer?.isGayMode?.() ?? false,
+      rainColor: pixiRenderer?.getRainColor?.() ?? '#4a9eff',
+    },
+  };
+}
+
+/**
+ * Apply rainscape settings from autosave data
+ */
+function applyRainscapeData(data) {
+  if (!data) return;
+  window.rainydesk.log(`[Autosave] Applying settings...`);
+
+  // Rain settings
+  if (data.rain) {
+    if (data.rain.intensity !== undefined) {
+      config.intensity = data.rain.intensity;
+      gridSimulation?.setIntensity(data.rain.intensity / 100);
+      window.rainydesk.updateRainscapeParam('physics.intensity', data.rain.intensity);
+    }
+    if (data.rain.wind !== undefined) {
+      config.wind = data.rain.wind;
+      gridSimulation?.setWind(data.rain.wind);
+      window.rainydesk.updateRainscapeParam('physics.wind', data.rain.wind);
+    }
+  }
+
+  // Physics settings
+  if (data.physics) {
+    if (data.physics.gravity !== undefined) {
+      gridSimulation?.setGravity?.(data.physics.gravity);
+      window.rainydesk.updateRainscapeParam('physics.gravity', data.physics.gravity);
+    }
+    // Grid scale requires full reinit, skip on startup
+  }
+
+  // Audio settings
+  if (data.audio) {
+    if (data.audio.muted !== undefined) {
+      audioSystem?.setMuted?.(data.audio.muted);
+      window.rainydesk.updateRainscapeParam('audio.muted', data.audio.muted);
+    }
+  }
+
+  // Visual settings
+  if (data.visual) {
+    if (data.visual.gayMode !== undefined) {
+      pixiRenderer?.setGayMode?.(data.visual.gayMode);
+      window.rainydesk.updateRainscapeParam('visual.gayMode', data.visual.gayMode);
+    }
+    if (data.visual.rainColor !== undefined) {
+      pixiRenderer?.setRainColor?.(data.visual.rainColor);
+      window.rainydesk.updateRainscapeParam('visual.rainColor', data.visual.rainColor);
+    }
+  }
+}
+
+/**
+ * Reinitialize physics system with new grid scale
+ */
+async function reinitializePhysics(newGridScale) {
+  if (reinitInProgress) {
+    window.rainydesk.log('[Physics] Reinit already in progress');
+    return;
+  }
+
+  reinitInProgress = true;
+  window.rainydesk.emitReinitStatus?.('stopped');
+  window.rainydesk.log(`[Physics] Reinitializing: ${GRID_SCALE} -> ${newGridScale}`);
+
+  // Preserve simulation settings before destroying
+  let preservedSettings = null;
+  if (gridSimulation) {
+    preservedSettings = {
+      gravity: gridSimulation.getGravity?.() ?? 980,
+      radiusMax: gridSimulation.getDropMaxRadius?.() ?? 2.0,
+    };
+  }
+  // Preserve renderer settings (color, gay mode)
+  let preservedVisual = null;
+  if (pixiRenderer) {
+    preservedVisual = {
+      rainColor: pixiRenderer.getRainColor?.() ?? '#8aa8c0',
+      gayMode: pixiRenderer.isGayMode?.() ?? false,
+    };
+  }
+  window.rainydesk.log(`[Physics] Preserving: gravity=${preservedSettings?.gravity}, radiusMax=${preservedSettings?.radiusMax}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}`);
+
+  try {
+    // Clear timers
+    if (windowUpdateDebounceTimer) {
+      clearTimeout(windowUpdateDebounceTimer);
+      windowUpdateDebounceTimer = null;
+    }
+
+    // Disconnect callbacks
+    if (gridSimulation) {
+      gridSimulation.onCollision = null;
+      gridSimulation.onDebugLog = null;
+      gridSimulation.dispose();
+      gridSimulation = null;
+    }
+
+    if (pixiRenderer) {
+      pixiRenderer.destroy();
+      pixiRenderer = null;
+    }
+    globalGridBounds = null;
+
+    window.rainydesk.emitReinitStatus?.('initializing');
+
+    GRID_SCALE = newGridScale;
+    await initPixiPhysics();
+
+    // Reconnect audio collision handler
+    if (audioSystem && gridSimulation) {
+      gridSimulation.onCollision = (event) => audioSystem.handleCollision(event);
+    }
+
+    // Reapply window zones
+    if (lastWindowZonesForReinit && gridSimulation) {
+      gridSimulation.updateWindowZones(lastWindowZonesForReinit.normal, lastWindowZonesForReinit.void, lastWindowZonesForReinit.spawn);
+    }
+
+    // Restore preserved settings
+    if (preservedSettings && gridSimulation) {
+      gridSimulation.setGravity?.(preservedSettings.gravity);
+      gridSimulation.setDropMaxRadius?.(preservedSettings.radiusMax);
+    }
+    // Restore visual settings (color, gay mode)
+    if (preservedVisual && pixiRenderer) {
+      pixiRenderer.setRainColor?.(preservedVisual.rainColor);
+      pixiRenderer.setGayMode?.(preservedVisual.gayMode);
+    }
+    window.rainydesk.log(`[Physics] Restored: gravity=${preservedSettings?.gravity}, radiusMax=${preservedSettings?.radiusMax}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}`);
+
+    window.rainydesk.emitReinitStatus?.('raining');
+    window.rainydesk.log('[Physics] Reinit complete!');
+  } catch (error) {
+    window.rainydesk.log(`[Physics] Reinit FAILED: ${error.message}`);
+    window.rainydesk.emitReinitStatus?.('raining');
+  } finally {
+    reinitInProgress = false;
   }
 }
 
@@ -359,6 +585,12 @@ function gameLoop(currentTime) {
 
   const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
   lastTime = currentTime;
+
+  // Skip everything during reinit
+  if (reinitInProgress) {
+    requestAnimationFrame(gameLoop);
+    return;
+  }
 
   // Skip everything when fullscreen (app hidden behind fullscreen window)
   if (isFullscreenActive) {
@@ -607,6 +839,13 @@ function registerEventListeners() {
         audioSystem.setMuffleAmount(0);
       }
 
+      // Store window zones for reinit
+      lastWindowZonesForReinit = {
+        normal: normalWindows,
+        void: voidWindows,
+        spawn: spawnBlockWindows
+      };
+
       // Update physics with classified windows
       if (gridSimulation) {
         gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
@@ -649,6 +888,10 @@ function registerEventListeners() {
       }
       if (param === 'reverseGravity' && gridSimulation) {
         gridSimulation.setReverseGravity(Boolean(value));
+      }
+      if (param === 'resetSimulation') {
+        const newScale = Math.max(0.125, Math.min(0.5, value));
+        reinitializePhysics(newScale);
       }
     } else if (path === 'audio.muted') {
       if (audioSystem) {
@@ -712,7 +955,7 @@ async function initPixiPhysics() {
 
   const { GridSimulation, RainPixiRenderer } = await import('./simulation.bundle.js');
 
-  const scale = 0.25;
+  const scale = GRID_SCALE;
   const logicWidth = Math.ceil(virtualDesktop.width * scale);
   const logicHeight = Math.ceil(virtualDesktop.height * scale);
 
@@ -744,7 +987,8 @@ async function initPixiPhysics() {
     voidMask,
     spawnMap,
     floorMap,
-    displayFloorMap
+    displayFloorMap,
+    scale // Pass grid scale for coordinate conversion
   );
 
   gridSimulation.onDebugLog = (msg) => window.rainydesk.log(msg);
@@ -759,7 +1003,8 @@ async function initPixiPhysics() {
     localOffsetX: 0,
     localOffsetY: 0,
     backgroundColor: 0x000000,
-    preferWebGPU: true
+    preferWebGPU: true,
+    gridScale: scale
   });
 
   await pixiRenderer.init();
@@ -768,14 +1013,13 @@ async function initPixiPhysics() {
 }
 
 /**
- * Periodically save state to autosave.json
+ * Periodically save state to Autosave.rain
  */
 function startAutosave() {
   setInterval(async () => {
-    if (audioInitialized && rainscaper) {
-      const data = rainscaper.gatherPresetData();
-      data.name = "Autosave";
-      await window.rainydesk.saveRainscape('autosave.json', data);
+    if (audioInitialized) {
+      const data = gatherPresetData();
+      await window.rainydesk.autosaveRainscape(data);
     }
   }, 30000);
 }
@@ -795,50 +1039,27 @@ async function init() {
   // PHASE 4: Init simulation (Pixi only)
   await initPixiPhysics();
 
-  // Position Rainscaper on primary monitor
-  const positionRainscaper = () => {
-    if (virtualDesktop && rainscaper) {
-      const primary = virtualDesktop.monitors[virtualDesktop.primaryIndex];
-      const panel = document.getElementById('rainscaper');
-      if (panel && primary) {
-        panel.style.right = `${canvasWidth - (primary.x + primary.width) + 20}px`;
-        panel.style.bottom = `${canvasHeight - (primary.workY + primary.workHeight) + 20}px`;
-        window.rainydesk.log(`[Rainscaper] Positioned at right=${panel.style.right}, bottom=${panel.style.bottom}`);
-      }
-    }
-  };
-
   // PHASE 5: Register event listeners
   registerEventListeners();
 
-  // PHASE 6: Init UI
+  // Broadcast initial physics values to background windows
+  window.rainydesk.updateRainscapeParam('physics.intensity', config.intensity);
+  window.rainydesk.updateRainscapeParam('physics.wind', config.wind || 0);
+  window.rainydesk.updateRainscapeParam('physics.renderScale', renderScale);
+  window.rainydesk.updateRainscapeParam('backgroundRain.enabled', true);
+  window.rainydesk.log(`[Init] Broadcast initial values: intensity=${config.intensity}, wind=${config.wind}, renderScale=${renderScale}`);
+
+  // Load autosave config (new format: Autosave.rain with rain.* keys)
   try {
-    const { rainscaper: rsModule } = await import('./rainscaper.bundle.js');
-    rainscaper = rsModule;
-    await rainscaper.init(null, config);  // No physicsSystem (Matter.js removed)
-    window.rainydesk.log('[Rainscaper] Initialized');
-
-    positionRainscaper();
-
-    // Broadcast initial physics values to background windows
-    window.rainydesk.updateRainscapeParam('physics.intensity', config.intensity);
-    window.rainydesk.updateRainscapeParam('physics.wind', config.wind || 0);
-    window.rainydesk.updateRainscapeParam('physics.renderScale', renderScale);
-    window.rainydesk.updateRainscapeParam('backgroundRain.enabled', true);
-    window.rainydesk.log(`[Init] Broadcast initial values: intensity=${config.intensity}, wind=${config.wind}, renderScale=${renderScale}`);
-  } catch (err) {
-    window.rainydesk.log(`Rainscaper init failed: ${err.message}`);
-    console.error('[Rainscaper] Error:', err);
-  }
-
-  // Load autosave config
-  try {
-    pendingAutosave = await window.rainydesk.readRainscape('autosave.json');
+    pendingAutosave = await window.rainydesk.readRainscape('Autosave.rain');
     if (pendingAutosave) {
       window.rainydesk.log('Loading autosaved rainscape settings');
-      if (pendingAutosave.physics) {
-        if (pendingAutosave.physics.intensity !== undefined) config.intensity = pendingAutosave.physics.intensity;
-        if (pendingAutosave.physics.wind !== undefined) config.wind = pendingAutosave.physics.wind;
+      // Extract values for immediate use
+      if (pendingAutosave.rain?.intensity !== undefined) {
+        config.intensity = pendingAutosave.rain.intensity;
+      }
+      if (pendingAutosave.rain?.wind !== undefined) {
+        config.wind = pendingAutosave.rain.wind;
       }
     }
   } catch (err) {
@@ -893,9 +1114,9 @@ async function init() {
   }, 300);
 
   // Apply pending autosave after fade-in is scheduled
-  if (pendingAutosave && rainscaper) {
+  if (pendingAutosave) {
     try {
-      rainscaper.applyRainscape(pendingAutosave);
+      applyRainscapeData(pendingAutosave);
       window.rainydesk.log('[Init] Applied autosave settings');
     } catch (err) {
       window.rainydesk.log(`[Init] Failed to apply autosave: ${err.message}`);

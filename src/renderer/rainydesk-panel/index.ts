@@ -5,6 +5,7 @@
  * Separate from the overlay, communicates via Tauri IPC.
  */
 
+import './types'; // Global type declarations for window.rainydesk
 import { RainyDeskPanel } from './RainyDeskPanel';
 
 // Wait for DOM and Tauri API

@@ -125,14 +125,4 @@ export class PhysicsMapper {
   static minnaertFrequency(radiusMm: number): number {
     return 3000 / Math.max(0.5, radiusMm);
   }
-
-  /** Convert Matter.js speed (pixels/frame) to m/s. */
-  static matterSpeedToMs(matterSpeed: number, pixelsPerMeter = 100, fps = 60): number {
-    return (matterSpeed * fps) / pixelsPerMeter;
-  }
-
-  /** Convert Matter.js radius (pixels) to millimeters. */
-  static pixelsToMm(radiusPixels: number, pixelsPerMm = 10): number {
-    return radiusPixels / pixelsPerMm;
-  }
 }

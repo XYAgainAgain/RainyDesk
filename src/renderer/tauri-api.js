@@ -136,6 +136,13 @@ window.rainydesk = {
   emitStats: (stats) => emit('renderer-stats', stats),
   onStats: (callback) => {
     listen('renderer-stats', (event) => callback(event.payload));
+  },
+
+  // Reinitialization status events (overlay → panel)
+  // Used when physics system is being reinitialized with a new grid scale
+  emitReinitStatus: (status) => emit('reinit-status', status),
+  onReinitStatus: (callback) => {
+    listen('reinit-status', (event) => callback(event.payload));
   }
 };
 
