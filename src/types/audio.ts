@@ -22,7 +22,9 @@ export interface Voice<T extends SynthType = SynthType> {
   synth: T;
   /** Whether this voice is currently playing */
   busy: boolean;
-  /** Timestamp when this voice will be free (for voice stealing) */
+  /** Timestamp when this voice was acquired (for voice stealing priority) */
+  acquireTime: number;
+  /** Timestamp when this voice was released (for cleanup tracking) */
   releaseTime: number;
 }
 

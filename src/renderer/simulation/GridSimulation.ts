@@ -528,45 +528,31 @@ export class GridSimulation {
 
         // Decide spawn location: top/bottom or side
         if (sideSpawnChance > 0 && Math.random() < sideSpawnChance) {
-            // Side spawn: simulate drops that fell from above and blew in from off-screen
-            // They should look identical to top-spawned drops, just entering from the side
+            // Side spawn: drops enter from OFF-SCREEN on the windward side
+            // They appear to be a natural extension of rain that was falling above/beside the visible area
             const spawnFromLeft = windBase > 0;
 
-            // Spread spawns across a zone at the edge (10% of screen width)
-            // This prevents the "hose" effect of all drops at one column
-            const zoneWidth = Math.max(5, Math.floor(this.gridWidth * 0.1));
+            // Spawn off-screen: 5-20 cells outside the visible grid
+            // Spread across a zone to prevent "hose" effect
+            const offscreenDistance = 5 + Math.floor(Math.random() * 15);
 
             if (spawnFromLeft) {
-                // Find valid columns in left zone
-                let validX = 0;
-                for (let attempt = 0; attempt < 10; attempt++) {
-                    const tryX = Math.floor(Math.random() * zoneWidth);
-                    if (!this.voidMask || this.voidMask[tryX] !== 1) {
-                        validX = tryX;
-                        break;
-                    }
-                }
-                spawnX = validX;
+                // Wind blowing right → drops enter from left (negative X)
+                spawnX = -offscreenDistance;
             } else {
-                // Find valid columns in right zone
-                let validX = this.gridWidth - 1;
-                for (let attempt = 0; attempt < 10; attempt++) {
-                    const tryX = this.gridWidth - 1 - Math.floor(Math.random() * zoneWidth);
-                    if (!this.voidMask || this.voidMask[tryX] !== 1) {
-                        validX = tryX;
-                        break;
-                    }
-                }
-                spawnX = validX;
+                // Wind blowing left → drops enter from right (beyond gridWidth)
+                spawnX = this.gridWidth + offscreenDistance;
             }
 
-            // Spawn position depends on gravity direction
+            // Distribute Y across the visible height
+            // These drops have been "falling" for a while, so they can be anywhere vertically
             if (reverseGravity) {
-                // In reverse mode, side-spawned drops enter from below
-                spawnY = this.gridHeight + 2 + Math.random() * 10;
+                // Reverse: distribute from bottom up (they've been rising)
+                // Cap at 90% to avoid immediate floor collisions
+                spawnY = this.gridHeight * (0.3 + Math.random() * 0.6);
             } else {
-                // Normal mode: start above screen
-                spawnY = -2 - Math.random() * 10;
+                // Normal: distribute from top down (they've been falling)
+                spawnY = this.gridHeight * Math.random() * 0.7;
             }
         } else {
             // Normal spawn (top or bottom depending on gravity)
@@ -686,8 +672,24 @@ export class GridSimulation {
                 }
             }
 
-            if (this.dropsX[i]! < 0 || this.dropsX[i]! >= this.gridWidth) {
-                // Off sides — despawn silently
+            // Side boundary check: only despawn if moving AWAY from screen
+            // Drops entering from off-screen (wind side-spawn) should survive until they drift in
+            const dropX = this.dropsX[i]!;
+            const velX = this.dropsVelX[i]!;
+            if (dropX < 0 && velX < 0) {
+                // Off left side AND moving left — will never enter, despawn
+                this.despawnDrop(i);
+                i--;
+                continue;
+            }
+            if (dropX >= this.gridWidth && velX > 0) {
+                // Off right side AND moving right — will never enter, despawn
+                this.despawnDrop(i);
+                i--;
+                continue;
+            }
+            // Also despawn if WAY off-screen (fell off one side, blew off the other)
+            if (dropX < -50 || dropX >= this.gridWidth + 50) {
                 this.despawnDrop(i);
                 i--;
                 continue;

@@ -1340,16 +1340,8 @@ fn create_mega_background(
         );
     }
 
-    // Emit virtual-desktop info to background renderer
-    let desktop_clone = desktop.clone();
-    let win = window.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        log::info!("Sending virtual-desktop to background");
-        if let Err(e) = win.emit("virtual-desktop", &desktop_clone) {
-            log::error!("Failed to emit virtual-desktop to background: {}", e);
-        }
-    });
+    // Note: Renderer requests virtual-desktop info via get_virtual_desktop command when ready.
+    // No need for push-based emission with timing hacks.
 
     log::info!("Mega-background created successfully");
     Ok(())
@@ -1396,16 +1388,8 @@ fn create_mega_overlay(
         window.open_devtools();
     }
 
-    // Emit virtual-desktop info to renderer after page loads
-    let desktop_clone = desktop.clone();
-    let win = window.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        log::info!("Sending virtual-desktop to overlay");
-        if let Err(e) = win.emit("virtual-desktop", &desktop_clone) {
-            log::error!("Failed to emit virtual-desktop to overlay: {}", e);
-        }
-    });
+    // Note: Renderer requests virtual-desktop info via get_virtual_desktop command when ready.
+    // No need for push-based emission with timing hacks.
 
     log::info!("Mega-overlay created successfully");
     Ok(())

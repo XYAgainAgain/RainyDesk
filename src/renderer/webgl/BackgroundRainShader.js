@@ -34,6 +34,7 @@ uniform float u_layerCount;   // 1.0 - 5.0
 uniform float u_speed;        // Speed multiplier
 uniform vec3 u_colorTint;     // Rain color tint (RGB 0-1)
 uniform float u_rainbowMode;  // 1.0 = rainbow cycling, 0.0 = use tint
+uniform float u_reverseGravity; // 1.0 = rain falls upward, 0.0 = normal
 
 in vec2 v_uv;
 out vec4 fragColor;
@@ -69,7 +70,7 @@ float noise(vec2 p) {
 }
 
 // Layered rain effect
-float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
+float rainLayer(vec2 uv, float layerIndex, float time, float wind, float reverseGravity) {
     // Each layer has different scale and speed for parallax depth
     float depthFactor = 1.0 - layerIndex * 0.15;  // Farther layers are slower
     float scale = 200.0 + layerIndex * 80.0;      // Higher scale = finer rain streaks
@@ -86,9 +87,11 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind) {
     // Stretch UV for rain streaks (taller than wide)
     vec2 rainUV = vec2(uv.x * scale, uv.y * scale * 0.12);
 
-    // Scroll downward (with time), adjusted by depth
+    // Scroll based on gravity direction (with time), adjusted by depth
     // Fast atmospheric rain - should feel distant and quick
-    rainUV.y -= time * 50.0 * depthFactor;
+    // reverseGravity: 0.0 = scroll down (normal), 1.0 = scroll up (reversed)
+    float scrollDir = 1.0 - 2.0 * reverseGravity; // 1.0 normal, -1.0 reversed
+    rainUV.y -= time * 50.0 * depthFactor * scrollDir;
 
     // Add horizontal drift from wind (negated for UV coords)
     rainUV.x -= time * wind * 2.0 * depthFactor;
@@ -127,7 +130,7 @@ void main() {
     for (int i = 0; i < 5; i++) {
         if (i >= layers) break;
 
-        float layerRain = rainLayer(uv, float(i), u_time * u_speed, u_wind);
+        float layerRain = rainLayer(uv, float(i), u_time * u_speed, u_wind, u_reverseGravity);
 
         // Layer blending: closer layers are more opaque
         float layerOpacity = 1.0 - float(i) * 0.18;
@@ -182,7 +185,8 @@ class BackgroundRainShader {
             layerCount: null,
             speed: null,
             colorTint: null,
-            rainbowMode: null
+            rainbowMode: null,
+            reverseGravity: null
         };
 
         // Configurable parameters
@@ -193,7 +197,8 @@ class BackgroundRainShader {
             speed: 1.0,         // Speed multiplier
             enabled: true,
             colorTint: [0.54, 0.66, 0.75],  // #8aa8c0 default
-            rainbowMode: false
+            rainbowMode: false,
+            reverseGravity: false
         };
 
         // Animation time (independent of physics)
@@ -235,6 +240,7 @@ class BackgroundRainShader {
         this.uniforms.speed = gl.getUniformLocation(this.program, 'u_speed');
         this.uniforms.colorTint = gl.getUniformLocation(this.program, 'u_colorTint');
         this.uniforms.rainbowMode = gl.getUniformLocation(this.program, 'u_rainbowMode');
+        this.uniforms.reverseGravity = gl.getUniformLocation(this.program, 'u_reverseGravity');
 
         // Create VAO and fullscreen quad
         this._initQuadBuffer();
@@ -315,6 +321,7 @@ class BackgroundRainShader {
         gl.uniform1f(this.uniforms.speed, this.config.speed);
         gl.uniform3fv(this.uniforms.colorTint, this.config.colorTint);
         gl.uniform1f(this.uniforms.rainbowMode, this.config.rainbowMode ? 1.0 : 0.0);
+        gl.uniform1f(this.uniforms.reverseGravity, this.config.reverseGravity ? 1.0 : 0.0);
 
         // Draw fullscreen quad
         gl.bindVertexArray(this.vao);
@@ -346,6 +353,9 @@ class BackgroundRainShader {
         }
         if (config.rainbowMode !== undefined) {
             this.config.rainbowMode = Boolean(config.rainbowMode);
+        }
+        if (config.reverseGravity !== undefined) {
+            this.config.reverseGravity = Boolean(config.reverseGravity);
         }
         // Debug: log config updates
         if (typeof window !== 'undefined' && window.rainydesk?.log) {

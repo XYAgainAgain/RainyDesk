@@ -562,8 +562,9 @@ function resizeCanvas() {
  */
 function update(dt) {
   if (matrixMode && matrixRenderer) {
-    // Matrix mode: update digital rain
+    // Matrix mode: update digital rain + arpeggio sequencer
     matrixRenderer.update(dt);
+    if (glitchSynth) glitchSynth.update();
   } else if (gridSimulation) {
     // Normal mode: update rain physics
     gridSimulation.step(dt);
@@ -887,36 +888,67 @@ function registerEventListeners() {
     if (path.startsWith('physics.')) {
       const param = path.split('.')[1];
 
-      if (param === 'gravity' && gridSimulation) {
-        gridSimulation.setGravity(value);
+      if (param === 'gravity') {
+        if (gridSimulation) {
+          gridSimulation.setGravity(value);
+        }
+        // Matrix: gravity → fall speed
+        if (matrixRenderer) {
+          matrixRenderer.setFallSpeed(value);
+        }
       }
       if (param === 'wind') {
         config.wind = value;
         if (gridSimulation) {
           gridSimulation.setWind(value);
         }
+        // Note: Matrix Mode ignores wind (straight down only per spec)
       }
       if (param === 'intensity') {
         config.intensity = value;
         if (gridSimulation) {
           gridSimulation.setIntensity(value / 100);
         }
+        // Matrix: intensity → spawn rate/density
+        if (matrixRenderer) {
+          matrixRenderer.setIntensity(value);
+        }
       }
       // New physics params
       if (param === 'splashScale' && gridSimulation) {
         gridSimulation.setSplashScale(value);
+        // Note: Matrix Mode ignores splash (no water physics)
       }
-      if (param === 'turbulence' && gridSimulation) {
-        gridSimulation.setTurbulence(value);
+      if (param === 'turbulence') {
+        if (gridSimulation) {
+          gridSimulation.setTurbulence(value);
+        }
+        // Matrix: turbulence → glitchiness
+        if (matrixRenderer) {
+          matrixRenderer.setGlitchiness(value);
+        }
       }
       if (param === 'puddleDrain' && gridSimulation) {
         gridSimulation.setEvaporationRate(value);
+        // Note: Matrix Mode ignores puddles
       }
-      if (param === 'dropMaxSize' && gridSimulation) {
-        gridSimulation.setDropMaxRadius(value);
+      if (param === 'dropMaxSize') {
+        if (gridSimulation) {
+          gridSimulation.setDropMaxRadius(value);
+        }
+        // Matrix: drop size → string/tail length
+        if (matrixRenderer) {
+          matrixRenderer.setStringLength(value);
+        }
       }
-      if (param === 'reverseGravity' && gridSimulation) {
-        gridSimulation.setReverseGravity(Boolean(value));
+      if (param === 'reverseGravity') {
+        if (gridSimulation) {
+          gridSimulation.setReverseGravity(Boolean(value));
+        }
+        // Matrix: reverse gravity → streams rise from bottom
+        if (matrixRenderer) {
+          matrixRenderer.setReverseGravity(Boolean(value));
+        }
       }
       if (param === 'resetSimulation') {
         const newScale = Math.max(0.125, Math.min(0.5, value));
@@ -930,6 +962,31 @@ function registerEventListeners() {
     } else if (path === 'audio.rainMix' || path === 'audio.rainIntensity') {
       if (audioSystem) {
         audioSystem.setRainMix(value);
+      }
+    } else if (path === 'effects.masterVolume') {
+      // Master volume (dB)
+      if (audioSystem) {
+        audioSystem.setMasterVolume(value);
+      }
+    } else if (path === 'audio.bubble.gain') {
+      // Bubble/plink sound volume (dB)
+      if (audioSystem) {
+        audioSystem.updateParam('bubble.gain', value);
+      }
+    } else if (path === 'audio.wind.masterGain') {
+      // Wind sound volume (dB)
+      if (audioSystem) {
+        audioSystem.updateParam('wind.masterGain', value);
+      }
+    } else if (path === 'audio.thunder.enabled') {
+      // Thunder toggle (future)
+      if (audioSystem) {
+        audioSystem.updateParam('thunder.enabled', value);
+      }
+    } else if (path === 'audio.drone.volume') {
+      // Matrix Mode drone volume (dB)
+      if (glitchSynth) {
+        glitchSynth.setDroneVolume(value);
       }
     } else if (path === 'visual.rainColor') {
       if (pixiRenderer) {
@@ -966,7 +1023,13 @@ function registerEventListeners() {
         matrixCanvas.height = canvas.height;
         document.body.appendChild(matrixCanvas);
 
-        initMatrixRenderer();
+        // Init with error handling - rollback on failure
+        initMatrixRenderer().catch(err => {
+          window.rainydesk.log(`[Matrix] Init failed, rolling back: ${err}`);
+          matrixMode = false;
+          destroyMatrixRenderer();
+          canvas.style.display = 'block';
+        });
       } else {
         // Switching FROM Matrix Mode: destroy matrix, show rain again
         window.rainydesk.log('[Matrix] Switching back to Rain Mode...');
@@ -984,6 +1047,11 @@ function registerEventListeners() {
         } else {
           audioSystem.start();
         }
+      }
+    } else if (path === 'visual.crtIntensity') {
+      // CRT Filter intensity (Matrix Mode only, 0-1)
+      if (matrixRenderer) {
+        matrixRenderer.setCrtIntensity(Number(value));
       }
     } else if (audioSystem) {
       audioSystem.updateParam(path, value);
@@ -1147,7 +1215,7 @@ async function initMatrixRenderer() {
     }
   }
 
-  // Audio: create glitch synth (beat-quantized at 120 BPM)
+  // Audio: create glitch synth (beat-quantized at 102 BPM)
   glitchSynth = new GlitchSynth();
   matrixRenderer.onCollision = (x, y) => {
     // Trigger returns { onBeat: boolean } for flash intensity
@@ -1164,7 +1232,7 @@ async function initMatrixRenderer() {
   // is src/renderer/, so assets/ folder isn't served). Production builds use bundle resources.
   // See tauri.conf.json "resources" and .gitignore for sounds/ exclusion.
   try {
-    await glitchSynth.startDrone('./sounds/EvolvingSawsLoop.ogg', 5);
+    await glitchSynth.startDrone('./sounds/SawLoopG.ogg', 5);
     window.rainydesk.log('[Matrix] Drone audio started');
   } catch (err) {
     window.rainydesk.log(`[Matrix] Drone audio failed: ${err}`);

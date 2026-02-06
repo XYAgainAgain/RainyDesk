@@ -11,6 +11,7 @@
  */
 
 import { Application, Container, BitmapText, BitmapFont } from 'pixi.js';
+import { GlowFilter, CRTFilter } from 'pixi-filters';
 
 // Configuration
 export const MATRIX_CONFIG = {
@@ -86,6 +87,13 @@ export class MatrixPixiRenderer {
 
   // Containers
   private glyphContainer: Container | null = null;
+  private bloomContainer: Container | null = null;
+  private bloomFilter: GlowFilter | null = null;
+  private crtFilter: CRTFilter | null = null;
+  private crtEnabled = false;
+
+  // Head bloom glyphs (one per column for glow effect)
+  private headBloomGlyphs: BitmapText[] = [];
 
   // Column data
   private columns: MatrixColumn[] = [];
@@ -102,6 +110,15 @@ export class MatrixPixiRenderer {
   // Window zones (for collision)
   private windowZones: WindowZone[] = [];
   private floorY = 0;
+
+  // Dynamic parameters (mapped from Rainscaper sliders)
+  private intensity = 50;         // 0-100: spawn rate/density
+  private fallSpeedMin = 12;      // cells/sec (derived from gravity)
+  private fallSpeedMax = 24;
+  private glitchiness = 0.3;      // 0-1: jitter/mutation/fizzle intensity
+  private minTailLength = 8;      // character count (derived from dropSize)
+  private maxTailLength = 24;
+  private reverseGravity = false; // streams rise from bottom
 
   // Callbacks - returns { onBeat: boolean } for flash intensity decision
   public onCollision: ((x: number, y: number) => { onBeat: boolean }) | null = null;
@@ -130,6 +147,32 @@ export class MatrixPixiRenderer {
 
     this.glyphContainer = new Container();
     this.app.stage.addChild(this.glyphContainer);
+
+    // Bloom container for head glow effect (rendered on top)
+    this.bloomContainer = new Container();
+    this.bloomFilter = new GlowFilter({
+      distance: 8,
+      outerStrength: 2.5,
+      innerStrength: 0,
+      color: MATRIX_CONFIG.COLOR_GLOW,
+      quality: 0.3, // Lower quality = better performance
+    });
+    this.bloomContainer.filters = [this.bloomFilter];
+    this.app.stage.addChild(this.bloomContainer);
+
+    // CRT filter for retro scanline effect (applied to whole stage, starts disabled)
+    this.crtFilter = new CRTFilter({
+      curvature: 2,
+      lineWidth: 2,
+      lineContrast: 0.3,
+      noise: 0.1,
+      noiseSize: 1,
+      vignetting: 0.2,
+      vignettingAlpha: 0.7,
+      vignettingBlur: 0.3,
+      time: 0,
+    });
+    // Don't apply filter until enabled (performance)
 
     await this.initBitmapFont();
     // Pool size calculation: columns × max_tail_length × 1.5 safety margin
@@ -184,34 +227,77 @@ export class MatrixPixiRenderer {
   private initColumns(): void {
     const columnCount = Math.floor(this.config.width / MATRIX_CONFIG.COLUMN_SPACING);
     this.columns = [];
+    const gridHeight = Math.ceil(this.config.height / MATRIX_CONFIG.FONT_SIZE);
+
+    // Clean up old bloom glyphs
+    for (const g of this.headBloomGlyphs) {
+      g.destroy();
+    }
+    this.headBloomGlyphs = [];
 
     for (let i = 0; i < columnCount; i++) {
       const baseX = i * MATRIX_CONFIG.COLUMN_SPACING + MATRIX_CONFIG.COLUMN_SPACING / 2;
-      const jitter = (Math.random() - 0.5) * MATRIX_CONFIG.X_JITTER * 2;
 
       this.columns.push({
-        x: baseX + jitter,
-        headY: -Math.random() * 20,
+        x: baseX + this.getXJitter(),
+        headY: this.reverseGravity ? gridHeight + Math.random() * 20 : -Math.random() * 20,
         speed: this.getRandomSpeed(),
         length: this.getRandomLength(),
         active: Math.random() > 0.3,
         glyphs: [],
-        spawnTimer: Math.random() * 0.5,
+        spawnTimer: this.getSpawnDelay(),
         hue: 0,
         glitching: false,
         glitchTimer: 0,
         glitchAlpha: 1,
         flashTimer: 0,
       });
+
+      // Create bloom glyph for this column's head
+      const bloomGlyph = new BitmapText({
+        text: 'A',
+        style: { fontFamily: 'MatrixBitmapFont' },
+      });
+      bloomGlyph.visible = false;
+      bloomGlyph.anchor.set(0.5);
+      bloomGlyph.tint = MATRIX_CONFIG.COLOR_LEAD;
+      this.bloomContainer?.addChild(bloomGlyph);
+      this.headBloomGlyphs.push(bloomGlyph);
     }
   }
 
   private getRandomSpeed(): number {
-    return (MATRIX_CONFIG.MIN_SPEED + Math.random() * (MATRIX_CONFIG.MAX_SPEED - MATRIX_CONFIG.MIN_SPEED)) * this.speedMult;
+    return (this.fallSpeedMin + Math.random() * (this.fallSpeedMax - this.fallSpeedMin)) * this.speedMult;
   }
 
   private getRandomLength(): number {
-    return MATRIX_CONFIG.MIN_TAIL + Math.floor(Math.random() * (MATRIX_CONFIG.MAX_TAIL - MATRIX_CONFIG.MIN_TAIL));
+    return this.minTailLength + Math.floor(Math.random() * (this.maxTailLength - this.minTailLength));
+  }
+
+  /** Get spawn delay based on intensity (0-100). Higher intensity = shorter delays. */
+  private getSpawnDelay(): number {
+    // Intensity 0 → 0.5-1.0s delay, Intensity 100 → 0.02-0.1s delay
+    const maxDelay = 0.5 - (this.intensity / 100) * 0.45; // 0.5 → 0.05
+    const minDelay = 0.05 - (this.intensity / 100) * 0.03; // 0.05 → 0.02
+    return minDelay + Math.random() * (maxDelay - minDelay);
+  }
+
+  /** Get current X jitter based on glitchiness. */
+  private getXJitter(): number {
+    // Glitchiness 0 → no jitter, 1 → full jitter (2px × 2 = 4px)
+    return (Math.random() - 0.5) * MATRIX_CONFIG.X_JITTER * 2 * this.glitchiness;
+  }
+
+  /** Get mutation chance based on glitchiness. */
+  private getMutationChance(): number {
+    // Glitchiness 0 → 0.5% mutation, 1 → 4% mutation
+    return 0.005 + this.glitchiness * 0.035;
+  }
+
+  /** Get fizzle chance based on glitchiness. */
+  private getFizzleChance(): number {
+    // Glitchiness 0 → 0.1% fizzle, 1 → 0.5% fizzle
+    return 0.001 + this.glitchiness * 0.004;
   }
 
   setGaytrixMode(enabled: boolean): void {
@@ -234,6 +320,108 @@ export class MatrixPixiRenderer {
 
   setFloorY(y: number): void {
     this.floorY = y;
+  }
+
+  /**
+   * Set stream density (0-100).
+   * Higher values = more streams spawning, shorter spawn delays.
+   */
+  setIntensity(value: number): void {
+    this.intensity = Math.max(0, Math.min(100, value));
+  }
+
+  /**
+   * Set fall speed from gravity value (100-2000).
+   * Normal gravity 980 → 12-24 cells/sec. Scales proportionally.
+   */
+  setFallSpeed(gravity: number): void {
+    // Map gravity to speed range: 980 → base speed (12-24)
+    // Clamp to minimum 100 to prevent zero-speed streams
+    const clampedGravity = Math.max(100, gravity);
+    const factor = clampedGravity / 980;
+    this.fallSpeedMin = MATRIX_CONFIG.MIN_SPEED * factor;
+    this.fallSpeedMax = MATRIX_CONFIG.MAX_SPEED * factor;
+  }
+
+  /**
+   * Set glitchiness/turbulence (0-1).
+   * Controls X jitter, mutation rate, and fizzle chance.
+   */
+  setGlitchiness(value: number): void {
+    this.glitchiness = Math.max(0, Math.min(1, value));
+  }
+
+  /**
+   * Set string/tail length from drop size (1-10).
+   * Maps to min/max tail character count.
+   */
+  setStringLength(dropSize: number): void {
+    // dropSize 1 → short tails (4-12), dropSize 10 → long tails (16-40)
+    // Clamp to prevent zero-length streams
+    const clampedSize = Math.max(1, Math.min(10, dropSize));
+    const factor = clampedSize / 4; // normalize to base value of 4
+    this.minTailLength = Math.max(4, Math.round(MATRIX_CONFIG.MIN_TAIL * factor));
+    this.maxTailLength = Math.max(8, Math.round(MATRIX_CONFIG.MAX_TAIL * factor));
+  }
+
+  /**
+   * Set reverse gravity mode (streams rise from bottom).
+   */
+  setReverseGravity(enabled: boolean): void {
+    this.reverseGravity = enabled;
+    // Reset all columns to respawn from correct direction
+    for (const col of this.columns) {
+      if (col.active && !col.glitching) {
+        // Release current glyphs
+        for (const g of col.glyphs) {
+          this.releaseGlyph(g);
+        }
+        col.glyphs = [];
+        col.active = false;
+        col.spawnTimer = Math.random() * 0.3;
+      }
+    }
+  }
+
+  /**
+   * Set CRT filter intensity (0 = off, 1 = full effect).
+   * Values > 0 enable the filter, 0 disables it for performance.
+   */
+  setCrtIntensity(intensity: number): void {
+    if (!this.crtFilter || !this.app) return;
+
+    const clamped = Math.max(0, Math.min(1, intensity));
+
+    if (clamped <= 0) {
+      // Disable CRT filter for performance
+      if (this.crtEnabled) {
+        this.app.stage.filters = [];
+        this.crtEnabled = false;
+      }
+      return;
+    }
+
+    // Enable and scale CRT parameters
+    if (!this.crtEnabled) {
+      this.app.stage.filters = [this.crtFilter];
+      this.crtEnabled = true;
+    }
+
+    // Scale CRT parameters with intensity
+    this.crtFilter.curvature = 2 * clamped;
+    this.crtFilter.lineContrast = 0.3 * clamped;
+    this.crtFilter.noise = 0.1 * clamped;
+    this.crtFilter.vignetting = 0.2 * clamped;
+    this.crtFilter.vignettingAlpha = 0.7 * clamped;
+  }
+
+  /**
+   * Update CRT time for animated noise (call each frame if CRT enabled).
+   */
+  updateCrtTime(time: number): void {
+    if (this.crtFilter && this.crtEnabled) {
+      this.crtFilter.time = time;
+    }
   }
 
   private getRandomGlyph(): string {
@@ -344,6 +532,11 @@ export class MatrixPixiRenderer {
 
     try {
       this.updateColumns(dt);
+
+      // Animate CRT noise if enabled
+      if (this.crtEnabled && this.crtFilter) {
+        this.crtFilter.time = performance.now() / 1000;
+      }
     } catch (err) {
       console.error('[Matrix] Update error:', err instanceof Error ? err.message : String(err));
     }
@@ -351,6 +544,7 @@ export class MatrixPixiRenderer {
 
   private updateColumns(dt: number): void {
     const gridHeight = Math.ceil(this.config.height / MATRIX_CONFIG.FONT_SIZE);
+    const direction = this.reverseGravity ? -1 : 1;
 
     for (const column of this.columns) {
       // Handle glitching state (collision happened)
@@ -379,6 +573,13 @@ export class MatrixPixiRenderer {
           }
         }
 
+        // Hide bloom glyph during glitch
+        const glitchColIndex = this.columns.indexOf(column);
+        const glitchBloomGlyph = this.headBloomGlyphs[glitchColIndex];
+        if (glitchBloomGlyph) {
+          glitchBloomGlyph.visible = false;
+        }
+
         // Glitch complete - release all glyphs and reset
         if (column.glitchTimer <= 0) {
           for (const g of column.glyphs) {
@@ -387,17 +588,27 @@ export class MatrixPixiRenderer {
           column.glyphs = [];
           column.glitching = false;
           column.active = false;
-          column.spawnTimer = 0.1 + Math.random() * 0.2;
+          column.spawnTimer = this.getSpawnDelay();
         }
         continue;
       }
 
       // Inactive column - wait for spawn timer
       if (!column.active) {
+        // Hide bloom glyph when inactive
+        const inactiveColIndex = this.columns.indexOf(column);
+        const inactiveBloomGlyph = this.headBloomGlyphs[inactiveColIndex];
+        if (inactiveBloomGlyph) {
+          inactiveBloomGlyph.visible = false;
+        }
+
         column.spawnTimer -= dt;
         if (column.spawnTimer <= 0) {
           column.active = true;
-          column.headY = -Math.random() * 5;
+          // Spawn from top (normal) or bottom (reverse)
+          column.headY = this.reverseGravity
+            ? gridHeight + Math.random() * 5
+            : -Math.random() * 5;
           column.speed = this.getRandomSpeed();
           column.length = this.getRandomLength();
           column.hue = this.globalHueCounter;
@@ -406,8 +617,8 @@ export class MatrixPixiRenderer {
         continue;
       }
 
-      // Move head down
-      column.headY += column.speed * dt;
+      // Move head (down for normal, up for reverse)
+      column.headY += column.speed * dt * direction;
 
       // Check collision at head position
       const screenY = column.headY * MATRIX_CONFIG.FONT_SIZE;
@@ -425,12 +636,13 @@ export class MatrixPixiRenderer {
 
       // Spawn new glyph at head position
       const gridY = Math.floor(column.headY);
-      const shouldSpawn = gridY >= 0 && (
-        column.glyphs.length === 0 ||
-        gridY > Math.floor(column.glyphs[0]!.y / MATRIX_CONFIG.FONT_SIZE)
-      );
+      const validY = this.reverseGravity ? gridY < gridHeight : gridY >= 0;
+      const needsNewGlyph = column.glyphs.length === 0 ||
+        (this.reverseGravity
+          ? gridY < Math.floor(column.glyphs[0]!.y / MATRIX_CONFIG.FONT_SIZE)
+          : gridY > Math.floor(column.glyphs[0]!.y / MATRIX_CONFIG.FONT_SIZE));
 
-      if (shouldSpawn) {
+      if (validY && needsNewGlyph) {
         const glyph = this.acquireGlyph();
         if (glyph) {
           glyph.text = this.getRandomGlyph();
@@ -446,14 +658,36 @@ export class MatrixPixiRenderer {
       for (let i = 0; i < column.glyphs.length; i++) {
         const glyph = column.glyphs[i]!;
 
-        // Random mutation (character change)
-        if (Math.random() < MATRIX_CONFIG.MUTATION_CHANCE) {
+        // Random mutation based on glitchiness
+        if (Math.random() < this.getMutationChance()) {
           glyph.text = this.getRandomGlyph();
         }
 
         const tailProgress = i / column.length;
         glyph.tint = this.getStreamColor(column.hue, i === 0, tailProgress);
         glyph.alpha = Math.max(0, (1 - tailProgress)) * this.alphaMult;
+      }
+
+      // Sync bloom glyph with head (for glow effect)
+      const colIndex = this.columns.indexOf(column);
+      const bloomGlyph = this.headBloomGlyphs[colIndex];
+      const headGlyph = column.glyphs[0];
+      if (bloomGlyph && headGlyph) {
+        bloomGlyph.visible = true;
+        bloomGlyph.x = headGlyph.x;
+        bloomGlyph.y = headGlyph.y;
+        bloomGlyph.text = headGlyph.text;
+        bloomGlyph.alpha = headGlyph.alpha;
+        // Use Gaytrix hue or default glow color
+        if (this.gaytrixMode) {
+          bloomGlyph.tint = this.hslToRgb(column.hue, 80, 70);
+        } else if (this.customColor !== null) {
+          bloomGlyph.tint = this.brightenColor(this.customColor, 50);
+        } else {
+          bloomGlyph.tint = MATRIX_CONFIG.COLOR_LEAD;
+        }
+      } else if (bloomGlyph) {
+        bloomGlyph.visible = false;
       }
 
       // Remove glyphs beyond tail length
@@ -463,26 +697,35 @@ export class MatrixPixiRenderer {
       }
 
       // Fizzle (random early death) after passing 50% screen height
-      const fizzleChance = column.headY > gridHeight * MATRIX_CONFIG.FIZZLE_HEIGHT_RATIO
-        ? MATRIX_CONFIG.FIZZLE_CHANCE
+      const progressRatio = this.reverseGravity
+        ? (gridHeight - column.headY) / gridHeight
+        : column.headY / gridHeight;
+      const fizzleChance = progressRatio > MATRIX_CONFIG.FIZZLE_HEIGHT_RATIO
+        ? this.getFizzleChance()
         : 0;
-      if (Math.random() < fizzleChance || column.headY > gridHeight + column.length) {
+
+      // Check if stream has exited screen
+      const exitedScreen = this.reverseGravity
+        ? column.headY < -column.length
+        : column.headY > gridHeight + column.length;
+
+      if (Math.random() < fizzleChance || exitedScreen) {
         // Stream died - release all glyphs
         for (const g of column.glyphs) {
           this.releaseGlyph(g);
         }
         column.glyphs = [];
         column.active = false;
-        column.spawnTimer = 0.05 + Math.random() * 0.15;
+        column.spawnTimer = this.getSpawnDelay();
       }
     }
   }
 
   render(): void {
-    // Manually render the stage (autoStart is false)
-    if (this.app) {
-      this.app.render();
-    }
+    // Guard: Pixi Application.render() crashes if called before init() resolves
+    // (this.app.renderer is undefined until the async init completes)
+    if (!this.initialized || !this.app) return;
+    this.app.render();
   }
 
   resize(width: number, height: number): void {
@@ -502,6 +745,16 @@ export class MatrixPixiRenderer {
   }
 
   destroy(): void {
+    // Clean up bloom glyphs
+    for (const g of this.headBloomGlyphs) {
+      g.destroy();
+    }
+    this.headBloomGlyphs = [];
+    this.bloomFilter = null;
+    this.bloomContainer = null;
+    this.crtFilter = null;
+    this.crtEnabled = false;
+
     if (this.app) {
       this.app.destroy(false, { children: true, texture: true });
       this.app = null;

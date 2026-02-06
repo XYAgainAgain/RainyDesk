@@ -748,6 +748,19 @@ html, body {
   pointer-events: none;
 }
 
+/* Matrix Mode disabled controls - greyed out with note */
+.control-row.matrix-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.control-row.matrix-disabled .control-label::after {
+  content: ' (N/A in Matrix)';
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
 .control-note {
   font-size: 11px;
   color: var(--text-muted);

@@ -166,6 +166,15 @@ function registerEventListeners() {
       }
     }
 
+    // Reverse Gravity sync (affects both normal rain shader and Matrix mode)
+    if (path === 'physics.reverseGravity') {
+      renderer.setBackgroundRainConfig({ reverseGravity: Boolean(value) });
+      // Sync to background matrix
+      if (matrixRenderer) {
+        matrixRenderer.setReverseGravity(Boolean(value));
+      }
+    }
+
     // Matrix Mode
     if (path === 'visual.matrixMode') {
       matrixMode = Boolean(value);
@@ -206,6 +215,13 @@ function registerEventListeners() {
         matrixRenderer.setRainColor(String(value));
       }
     }
+
+    // CRT Filter intensity (Matrix Mode only, 0-1)
+    if (path === 'visual.crtIntensity') {
+      if (matrixRenderer) {
+        matrixRenderer.setCrtIntensity(Number(value));
+      }
+    }
   });
 }
 
@@ -231,6 +247,11 @@ async function initBackgroundMatrix() {
     window.rainydesk.log('[Background] Matrix renderer initialized (dimmed layer)');
   } catch (err) {
     window.rainydesk.log(`[Background] Failed to init matrix: ${err}`);
+    // Clean up broken instance so render loop doesn't try to use it
+    if (matrixRenderer) {
+      try { matrixRenderer.destroy(); } catch (_) { /* ignore */ }
+      matrixRenderer = null;
+    }
   }
 }
 

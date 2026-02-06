@@ -78,6 +78,7 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
       id: this._nextId++,
       synth,
       busy: false,
+      acquireTime: 0,
       releaseTime: 0,
     };
 

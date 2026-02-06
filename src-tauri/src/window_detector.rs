@@ -9,18 +9,28 @@
 // - Skip tiny windows (<50px) - likely system UI elements
 // - Skip untitled windows - usually system background processes
 // - Skip RainyDesk/DevTools - our own windows
+// - Skip system windows by class name (locale-independent)
 // - Skip phantom UWP apps - Settings, Calculator, etc. suspend rather than close
 // - Skip system overlays - Task Switching, Task View, input panels
+
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(target_os = "windows")]
 use windows::{
     Win32::Foundation::{BOOL, HWND, LPARAM, RECT},
     Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowPlacement, GetWindowRect, GetWindowTextW, IsIconic,
-        IsWindowVisible, IsZoomed, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
+        EnumWindows, GetClassNameW, GetWindowPlacement, GetWindowRect, GetWindowTextW,
+        IsIconic, IsWindowVisible, IsZoomed, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
     },
     Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
 };
+
+// Debug counters using atomic operations (safe across threads)
+#[cfg(target_os = "windows")]
+static POLL_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static WINDOW_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WindowInfo {
@@ -55,12 +65,9 @@ pub fn get_visible_windows() -> Result<WindowData, Box<dyn std::error::Error>> {
     }
 
     // DEBUG: Log window count periodically (every 60 calls = ~3 seconds at 50ms)
-    static mut POLL_COUNT: u32 = 0;
-    unsafe {
-        POLL_COUNT += 1;
-        if POLL_COUNT % 60 == 1 {
-            log::info!("[WindowDetector] Poll #{}: found {} windows (raw)", POLL_COUNT, windows.len());
-        }
+    let poll_num = POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if poll_num % 60 == 0 {
+        log::info!("[WindowDetector] Poll #{}: found {} windows (raw)", poll_num + 1, windows.len());
     }
 
     Ok(WindowData { windows })
@@ -70,19 +77,10 @@ pub fn get_visible_windows() -> Result<WindowData, Box<dyn std::error::Error>> {
 unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let windows = &mut *(lparam.0 as *mut Vec<WindowInfo>);
 
-    // DEBUG: Count all enumerated windows (visible or not)
-    static mut ENUM_COUNT: u32 = 0;
-    static mut VISIBLE_COUNT: u32 = 0;
-    static mut PASSED_COUNT: u32 = 0;
-
-    ENUM_COUNT += 1;
-
     // Only include visible windows
     if !IsWindowVisible(hwnd).as_bool() {
         return BOOL(1); // Continue enumeration
     }
-
-    VISIBLE_COUNT += 1;
 
     // Skip minimized windows using IsIconic
     if IsIconic(hwnd).as_bool() {
@@ -128,7 +126,32 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         return BOOL(1);
     }
 
-    // Get window title early for better logging
+    // Get window class name (locale-independent, structural identity)
+    let mut class_buf = [0u16; 256];
+    let class_len = GetClassNameW(hwnd, &mut class_buf);
+    let class_name = if class_len > 0 {
+        String::from_utf16_lossy(&class_buf[..class_len as usize])
+    } else {
+        String::new()
+    };
+
+    // Skip system windows by class name (works on all localized Windows installs)
+    // These class names are constant regardless of UI language
+    if class_name == "Progman" ||           // Desktop (Program Manager)
+       class_name == "WorkerW" ||           // Desktop worker windows
+       class_name == "Shell_TrayWnd" ||     // Taskbar
+       class_name == "Shell_SecondaryTrayWnd" ||  // Secondary taskbar (multi-monitor)
+       class_name == "NotifyIconOverflowWindow" ||  // System tray overflow
+       class_name == "Windows.UI.Core.CoreWindow" ||  // UWP system overlays
+       class_name == "XamlExplorerHostIslandWindow" ||  // XAML islands (Settings, etc.)
+       class_name == "ApplicationFrameWindow" ||  // UWP app frames (when suspended)
+       class_name == "ForegroundStaging" ||  // Compositor staging
+       class_name == "MultitaskingViewFrame" ||  // Task View (Win+Tab)
+       class_name == "XamlWindow" {         // Various XAML overlays
+        return BOOL(1);
+    }
+
+    // Get window title for additional filtering and logging
     let mut title_buf = [0u16; 512];
     let title_len = GetWindowTextW(hwnd, &mut title_buf);
     let title = if title_len > 0 {
@@ -141,12 +164,6 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
     let is_near_origin = rect.left.abs() < 50 && rect.top.abs() < 50;
     let is_portrait_size = height > width && (width >= 1000 || height >= 1800);
     if is_near_origin && is_portrait_size {
-        static mut PHANTOM_LOG_COUNT: u32 = 0;
-        if PHANTOM_LOG_COUNT < 5 {
-            PHANTOM_LOG_COUNT += 1;
-            log::info!("[WindowDetector] Skipping phantom: \"{}\" at ({},{}) {}x{}",
-                title, rect.left, rect.top, width, height);
-        }
         return BOOL(1);
     }
 
@@ -165,33 +182,20 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         return BOOL(1);
     }
 
-    // Skip common system windows that shouldn't block rain
-    if title == "Program Manager" ||  // Desktop
-       title.is_empty() ||
-       title == "Windows Input Experience" ||
+    // Skip known system overlays by title (fallback for edge cases)
+    // Note: Most system windows now caught by class name above
+    if title == "Windows Input Experience" ||
        title == "Microsoft Text Input Application" ||
-       // UWP apps that suspend rather than close (phantom windows)
-       title == "Settings" ||
-       title == "Calculator" ||
-       title == "Xbox" ||
-       title == "Xbox Game Bar" ||
-       title == "Your Phone" ||
-       title == "Phone Link" ||
-       title == "Feedback Hub" ||
-       title == "Tips" ||
-       title == "Snipping Tool" ||
-       title == "Command Palette" ||  // VS Code command palette overlay
        title == "Task Switching" ||   // Alt-Tab overlay
        title == "Task View" {         // Win+Tab overlay
         return BOOL(1);
     }
 
     // DEBUG: Log first ~20 windows detected (covers first poll cycle)
-    static mut WINDOW_LOG_COUNT: u32 = 0;
-    if WINDOW_LOG_COUNT < 20 {
-        WINDOW_LOG_COUNT += 1;
-        log::info!("[WindowDetector] Found: \"{}\" at ({},{}) {}x{}",
-            title, rect.left, rect.top, width, height);
+    let log_count = WINDOW_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if log_count < 20 {
+        log::info!("[WindowDetector] Found: \"{}\" [{}] at ({},{}) {}x{}",
+            title, class_name, rect.left, rect.top, width, height);
     }
 
     windows.push(WindowInfo {

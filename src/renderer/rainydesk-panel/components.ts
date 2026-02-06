@@ -5,7 +5,11 @@
  */
 
 export interface SliderConfig {
+  /** Unique ID for the slider (used for dynamic updates) */
+  id?: string;
   label: string;
+  /** Alternative label shown when Matrix Mode is active */
+  matrixLabel?: string;
   value: number;
   min: number;
   max: number;
@@ -17,10 +21,18 @@ export interface SliderConfig {
 }
 
 export function Slider(config: SliderConfig): HTMLElement {
-  const { label, value, min, max, step = 1, unit, formatValue, defaultValue, onChange } = config;
+  const { id, label, matrixLabel, value, min, max, step = 1, unit, formatValue, defaultValue, onChange } = config;
 
   const row = document.createElement('div');
   row.className = 'control-row';
+  if (id) {
+    row.dataset.sliderId = id;
+  }
+  // Store both labels for dynamic switching
+  if (matrixLabel) {
+    row.dataset.normalLabel = label;
+    row.dataset.matrixLabel = matrixLabel;
+  }
 
   // Label container to hold label + optional reset button
   const labelContainer = document.createElement('div');
@@ -154,7 +166,8 @@ export interface ColorPickerConfig {
   label: string;
   value: string;
   presets?: string[];
-  defaultValue?: string;
+  /** Default value for reset button. Can be a static string or a function that returns the current default. */
+  defaultValue?: string | (() => string);
   onChange: (color: string) => void;
 }
 
@@ -181,11 +194,13 @@ export function ColorPicker(config: ColorPickerConfig): HTMLElement {
     resetBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
     resetBtn.onclick = (e) => {
       e.preventDefault();
-      colorInput.value = defaultValue;
-      onChange(defaultValue);
+      // Get the current default (may be dynamic based on mode)
+      const currentDefault = typeof defaultValue === 'function' ? defaultValue() : defaultValue;
+      colorInput.value = currentDefault;
+      onChange(currentDefault);
       // Update active state
       swatches.querySelectorAll('.color-swatch').forEach(s => {
-        s.classList.toggle('active', (s as HTMLElement).style.backgroundColor === defaultValue);
+        s.classList.toggle('active', (s as HTMLElement).style.backgroundColor === currentDefault);
       });
     };
     labelContainer.appendChild(resetBtn);

@@ -23,6 +23,10 @@ const TABS: TabDef[] = [
   { id: 'debug', label: 'Stats' },
 ];
 
+// Default colors for different modes
+const DEFAULT_RAIN_COLOR = '#8aa8c0';  // Gray-blue for normal rain
+const DEFAULT_MATRIX_COLOR = '#008F11'; // Matrix green (body color from spec)
+
 // Debug log entry
 interface DebugLogEntry {
   timestamp: Date;
@@ -90,6 +94,7 @@ interface PanelState {
   rainColor: string;
   gayMode: boolean;
   matrixMode: boolean;
+  crtIntensity: number;
   uiScale: number;
   // Presets
   presets: string[];
@@ -163,6 +168,7 @@ export class RainyDeskPanel {
       rainColor: '#8aa8c0',
       gayMode: false,
       matrixMode: false,
+      crtIntensity: 0,
       uiScale: parseFloat(localStorage.getItem('rainscaper-ui-scale') || '1.0'),
       // Presets
       presets: [],
@@ -722,10 +728,12 @@ export class RainyDeskPanel {
   private createPhysicsTab(): HTMLElement {
     const container = document.createElement('div');
 
-    // Gravity
+    // Gravity (Matrix: Fall Speed)
     container.appendChild(
       Slider({
+        id: 'gravity',
         label: 'Gravity',
+        matrixLabel: 'Fall Speed',
         value: this.state.gravity,
         min: 100,
         max: 2000,
@@ -738,25 +746,31 @@ export class RainyDeskPanel {
       })
     );
 
-    // Splash size
+    // Splash size (disabled in Matrix Mode)
+    // Slider 0-100% maps to splashScale 0.5-2.0 (full valid range)
+    // Default 33% ≈ splashScale 1.0
     container.appendChild(
       Slider({
+        id: 'splashSize',
         label: 'Splash Size',
-        value: this.state.splashSize * 100,
+        value: Math.round(((this.state.splashSize - 0.5) / 1.5) * 100),
         min: 0,
-        max: 200,
+        max: 100,
         unit: '%',
-        defaultValue: 100,
+        defaultValue: 33,
         onChange: (v) => {
-          this.state.splashSize = v / 100;
-          window.rainydesk.updateRainscapeParam('physics.splashScale', v / 100);
+          // Map 0-100 slider → 0.5-2.0 splashScale
+          const splashScale = 0.5 + (v / 100) * 1.5;
+          this.state.splashSize = splashScale;
+          window.rainydesk.updateRainscapeParam('physics.splashScale', splashScale);
         },
       })
     );
 
-    // Puddle drain
+    // Puddle drain (disabled in Matrix Mode)
     container.appendChild(
       Slider({
+        id: 'puddleDrain',
         label: 'Puddle Drain',
         value: this.state.puddleDrain * 100,
         min: 0,
@@ -770,10 +784,12 @@ export class RainyDeskPanel {
       })
     );
 
-    // Turbulence
+    // Turbulence (Matrix: Glitchiness)
     container.appendChild(
       Slider({
+        id: 'turbulence',
         label: 'Turbulence',
+        matrixLabel: 'Glitchiness',
         value: this.state.turbulence * 100,
         min: 0,
         max: 100,
@@ -786,10 +802,12 @@ export class RainyDeskPanel {
       })
     );
 
-    // Drop mass (max)
+    // Drop mass (Matrix: String Length)
     container.appendChild(
       Slider({
+        id: 'dropMass',
         label: 'Max. Drop Mass',
+        matrixLabel: 'String Length',
         value: this.state.dropSize,
         min: 1,
         max: 10,
@@ -802,17 +820,19 @@ export class RainyDeskPanel {
       })
     );
 
-    // Reverse gravity toggle
-    container.appendChild(
-      Toggle({
-        label: 'Reverse Gravity',
-        checked: this.state.reverseGravity,
-        onChange: (v) => {
-          this.state.reverseGravity = v;
-          window.rainydesk.updateRainscapeParam('physics.reverseGravity', v);
-        },
-      })
-    );
+    // Reverse gravity toggle (Matrix: Reverse Engineer)
+    const reverseToggle = Toggle({
+      label: 'Reverse Gravity',
+      checked: this.state.reverseGravity,
+      onChange: (v) => {
+        this.state.reverseGravity = v;
+        window.rainydesk.updateRainscapeParam('physics.reverseGravity', v);
+      },
+    });
+    reverseToggle.dataset.toggleId = 'reverseGravity';
+    reverseToggle.dataset.normalLabel = 'Reverse Gravity';
+    reverseToggle.dataset.matrixLabel = 'Reverse Engineer';
+    container.appendChild(reverseToggle);
 
     // Grid Scale section
     const gridScaleSection = document.createElement('div');
@@ -853,6 +873,10 @@ export class RainyDeskPanel {
 
     // Update button visibility based on current state
     this.updateResetButtonVisibility();
+
+    // Apply Matrix Mode state to slider labels and disabled states
+    // (deferred to next frame so DOM is ready)
+    requestAnimationFrame(() => this.updateMatrixModeSliders());
 
     return container;
   }
@@ -932,10 +956,12 @@ export class RainyDeskPanel {
       })
     );
 
-    // Wind sound
+    // Wind sound / Drone volume (Matrix Mode)
     container.appendChild(
       Slider({
+        id: 'windSound',
         label: 'Wind Sound',
+        matrixLabel: 'Drone Volume',
         value: this.state.windSound,
         min: 0,
         max: 100,
@@ -944,7 +970,12 @@ export class RainyDeskPanel {
         onChange: (v) => {
           this.state.windSound = v;
           const db = v <= 0 ? -60 : (v / 100 * 48) - 48;
-          window.rainydesk.updateRainscapeParam('audio.wind.masterGain', db);
+          // In Matrix Mode, control the drone; otherwise control wind
+          if (this.state.matrixMode) {
+            window.rainydesk.updateRainscapeParam('audio.drone.volume', db);
+          } else {
+            window.rainydesk.updateRainscapeParam('audio.wind.masterGain', db);
+          }
         },
       })
     );
@@ -962,6 +993,9 @@ export class RainyDeskPanel {
         },
       })
     );
+
+    // Apply Matrix Mode state to slider labels
+    requestAnimationFrame(() => this.updateMatrixModeSliders());
 
     return container;
   }
@@ -1014,12 +1048,12 @@ export class RainyDeskPanel {
       })
     );
 
-    // Rain Color picker
+    // Rain Color picker (reset uses Matrix green when Matrix Mode is on)
     container.appendChild(
       ColorPicker({
         label: 'Rain Color',
         value: this.state.rainColor,
-        defaultValue: '#8aa8c0',
+        defaultValue: () => this.state.matrixMode ? DEFAULT_MATRIX_COLOR : DEFAULT_RAIN_COLOR,
         onChange: (v) => {
           this.state.rainColor = v;
           window.rainydesk.updateRainscapeParam('visual.rainColor', v);
@@ -1058,6 +1092,10 @@ export class RainyDeskPanel {
           window.rainydesk.updateRainscapeParam('visual.matrixMode', v);
           // Update Gaytrix hint visibility
           this.updateGaytrixHint();
+          // Update Physics tab slider labels and disabled states
+          this.updateMatrixModeSliders();
+          // Show/hide CRT slider
+          this.updateCrtSliderVisibility();
         },
       })
     );
@@ -1069,6 +1107,26 @@ export class RainyDeskPanel {
     gaytrixHint.textContent = 'Gaytrix mode activated!';
     gaytrixHint.style.display = (this.state.gayMode && this.state.matrixMode) ? 'block' : 'none';
     container.appendChild(gaytrixHint);
+
+    // CRT Filter slider (Matrix Mode only)
+    const crtSliderRow = Slider({
+      id: 'crtIntensity',
+      label: 'CRT Filter',
+      value: this.state.crtIntensity,
+      min: 0,
+      max: 100,
+      unit: '%',
+      defaultValue: 0,
+      onChange: (v) => {
+        this.state.crtIntensity = v;
+        // CRT intensity sent as 0-1 to renderer
+        window.rainydesk.updateRainscapeParam('visual.crtIntensity', v / 100);
+      },
+    });
+    crtSliderRow.id = 'crt-slider-row';
+    // Only show when Matrix Mode is enabled
+    crtSliderRow.style.display = this.state.matrixMode ? 'block' : 'none';
+    container.appendChild(crtSliderRow);
 
     // Separator before UI Scale
     const separator = document.createElement('hr');
@@ -1355,6 +1413,61 @@ export class RainyDeskPanel {
     if (hint) {
       hint.style.display = (this.state.gayMode && this.state.matrixMode) ? 'block' : 'none';
     }
+  }
+
+  /** Update CRT slider visibility (only visible when Matrix Mode is on) */
+  private updateCrtSliderVisibility(): void {
+    const crtSlider = this.root.querySelector('#crt-slider-row') as HTMLElement;
+    if (crtSlider) {
+      crtSlider.style.display = this.state.matrixMode ? 'block' : 'none';
+    }
+  }
+
+  /**
+   * Update sliders for Matrix Mode (Physics + Audio tabs).
+   * - Swap labels between normal/matrix versions
+   * - Disable splashSize and puddleDrain (no puddles/splashes in Matrix)
+   * - Update toggle labels (Reverse Gravity → Reverse Engineer)
+   */
+  private updateMatrixModeSliders(): void {
+    const isMatrix = this.state.matrixMode;
+
+    // Update all slider labels that have matrix alternatives
+    const sliders = this.root.querySelectorAll('[data-slider-id]');
+    sliders.forEach((row) => {
+      const el = row as HTMLElement;
+      const normalLabel = el.dataset.normalLabel;
+      const matrixLabel = el.dataset.matrixLabel;
+      if (normalLabel && matrixLabel) {
+        const labelEl = el.querySelector('.control-label') as HTMLElement;
+        if (labelEl) {
+          labelEl.textContent = isMatrix ? matrixLabel : normalLabel;
+        }
+      }
+    });
+
+    // Disable splash/puddle sliders in Matrix Mode (no water physics)
+    const disabledInMatrix = ['splashSize', 'puddleDrain'];
+    for (const id of disabledInMatrix) {
+      const row = this.root.querySelector(`[data-slider-id="${id}"]`) as HTMLElement;
+      if (row) {
+        row.classList.toggle('matrix-disabled', isMatrix);
+      }
+    }
+
+    // Update toggle labels that have matrix alternatives
+    const toggles = this.root.querySelectorAll('[data-toggle-id]');
+    toggles.forEach((row) => {
+      const el = row as HTMLElement;
+      const normalLabel = el.dataset.normalLabel;
+      const matrixLabel = el.dataset.matrixLabel;
+      if (normalLabel && matrixLabel) {
+        const labelEl = el.querySelector('.control-label') as HTMLElement;
+        if (labelEl) {
+          labelEl.textContent = isMatrix ? matrixLabel : normalLabel;
+        }
+      }
+    });
   }
 
   private getAppStatus(): { dot: string; text: string } {

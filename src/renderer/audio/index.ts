@@ -36,6 +36,7 @@ export { AudioSystem, type AudioSystemConfig } from './AudioSystem';
 
 // Export Matrix Mode audio
 export { GlitchSynth } from './GlitchSynth';
+export { ArpeggioSequencer, type Section } from './ArpeggioSequencer';
 
 // Export Tone.js for audio context initialization
 export * as Tone from 'tone';

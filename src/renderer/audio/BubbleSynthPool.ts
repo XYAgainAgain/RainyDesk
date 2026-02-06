@@ -74,6 +74,7 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
       id: this._nextId++,
       synth,
       busy: false,
+      acquireTime: 0,
       releaseTime: 0,
     };
 

@@ -48,19 +48,34 @@ export abstract class VoicePool<T extends SynthType> implements IVoicePool<T> {
 
   /**
    * Acquire an idle voice from the pool.
-   * If all busy and stealing enabled, steals the first busy voice.
+   * If all busy and stealing enabled, steals the oldest busy voice
+   * (the one with the earliest acquireTime).
    */
   acquire(): Voice<T> | null {
+    const now = performance.now();
+
     const idleVoice = this._voices.find(v => !v.busy);
     if (idleVoice) {
       idleVoice.busy = true;
+      idleVoice.acquireTime = now;
       idleVoice.releaseTime = 0;
       return idleVoice;
     }
 
     if (this._config.enableStealing && this._voices.length > 0) {
-      const stolen = this._voices.find(v => v.busy);
-      if (stolen) return stolen;
+      // Find the truly oldest busy voice by acquireTime
+      let oldest: Voice<T> | null = null;
+      let oldestTime = Infinity;
+      for (const voice of this._voices) {
+        if (voice.busy && voice.acquireTime < oldestTime) {
+          oldestTime = voice.acquireTime;
+          oldest = voice;
+        }
+      }
+      if (oldest) {
+        oldest.acquireTime = now; // Reset for new usage
+        return oldest;
+      }
     }
 
     return null;
