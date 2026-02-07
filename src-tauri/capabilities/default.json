@@ -6,7 +6,8 @@
     "main",
     "overlay",
     "background",
-    "rainscaper"
+    "rainscaper",
+    "help"
   ],
   "permissions": [
     "core:default",
@@ -18,6 +19,7 @@
     "core:window:allow-available-monitors",
     "core:event:default",
     "core:path:default",
+    "core:app:allow-version",
     "log:default"
   ]
 }

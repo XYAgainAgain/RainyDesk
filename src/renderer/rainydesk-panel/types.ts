@@ -19,7 +19,13 @@ declare global {
       hideRainscaper: () => Promise<void>;
       showRainscaper: (trayX: number, trayY: number) => Promise<void>;
       toggleRainscaper: (trayX: number, trayY: number) => Promise<void>;
+      getVersion: () => Promise<string>;
       getWindowsAccentColor: () => Promise<string>;
+      showHelpWindow: () => Promise<void>;
+      hideHelpWindow: () => Promise<void>;
+      resizeHelpWindow: (width: number, height: number) => Promise<void>;
+      openUrl: (url: string) => Promise<void>;
+      openAppDataFolder: () => Promise<void>;
       getDisplayInfo: () => Promise<{
         monitors: Array<{
           width: number;

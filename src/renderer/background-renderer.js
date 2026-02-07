@@ -34,6 +34,7 @@ let renderer = null;
 let renderScale = 0.25;
 let virtualDesktop = null;
 let isPaused = false;
+let isFullscreenActive = false;
 let lastTime = performance.now();
 
 // Matrix Mode (background layer)
@@ -80,8 +81,8 @@ function renderLoop() {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  // Skip rendering when paused (keep last frame visible)
-  if (!isPaused) {
+  // Skip rendering when paused or fullscreen (save GPU cycles)
+  if (!isPaused && !isFullscreenActive) {
     if (matrixMode && matrixRenderer) {
       // Matrix mode: render digital rain (background layer)
       matrixRenderer.update(dt);
@@ -141,9 +142,17 @@ function registerEventListeners() {
 
     if (path === 'backgroundRain.enabled') {
       renderer.setBackgroundRainConfig({ enabled: Boolean(value) });
+      // Also toggle BG matrix visibility when in Matrix Mode
+      if (matrixMode && matrixCanvas) {
+        matrixCanvas.style.display = Boolean(value) ? 'block' : 'none';
+      }
     }
     if (path === 'backgroundRain.intensity') {
       renderer.setBackgroundRainConfig({ intensity: value / 100 });
+      // Sync intensity to BG matrix alpha (0-100 → 0.1-0.6 alpha range)
+      if (matrixRenderer) {
+        matrixRenderer.setAlphaMult(0.1 + (value / 100) * 0.5);
+      }
     }
     if (path === 'backgroundRain.layerCount' || path === 'backgroundRain.layers') {
       renderer.setBackgroundRainConfig({ layerCount: Math.max(1, Math.min(5, value)) });
@@ -163,6 +172,18 @@ function registerEventListeners() {
       // Sync Gaytrix to background matrix
       if (matrixRenderer) {
         matrixRenderer.setGaytrixMode(Boolean(value));
+      }
+    }
+
+    // Trans Mode sync (background matrix layer)
+    if (path === 'visual.transMode') {
+      if (matrixRenderer) {
+        matrixRenderer.setTransMode(Boolean(value));
+      }
+    }
+    if (path === 'visual.transScrollDirection') {
+      if (matrixRenderer) {
+        matrixRenderer.setTransScrollDirection(String(value));
       }
     }
 
@@ -223,21 +244,54 @@ function registerEventListeners() {
       }
     }
   });
+
+  // Reinit status: pause background during overlay reset
+  window.rainydesk.onReinitStatus?.((status) => {
+    if (status === 'stopped' || status === 'initializing') {
+      isPaused = true;
+      canvas.style.opacity = '0';
+      if (matrixCanvas) matrixCanvas.style.opacity = '0';
+      window.rainydesk.log(`[Background] Reinit: ${status} — hiding`);
+    } else if (status === 'raining') {
+      isPaused = false;
+      if (!isFullscreenActive) {
+        canvas.style.opacity = '1';
+        if (matrixCanvas) matrixCanvas.style.opacity = '1';
+      }
+      window.rainydesk.log('[Background] Reinit complete — showing');
+    }
+  });
+
+  // Fullscreen hiding is handled locally via window-data classification, not IPC events
 }
 
 /**
  * Initialize background Matrix renderer (dimmed, no collision)
  */
 async function initBackgroundMatrix() {
-  if (matrixRenderer || !matrixCanvas) return;
+  if (matrixRenderer || !matrixCanvas) {
+    window.rainydesk?.log?.(`[Background] initBackgroundMatrix skipped: renderer=${!!matrixRenderer}, canvas=${!!matrixCanvas}`);
+    return;
+  }
 
   try {
-    const { MatrixPixiRenderer } = await import('./simulation.bundle.js');
+    window.rainydesk.log('[Background] Importing simulation.bundle.js for Matrix...');
+    const module = await import('./simulation.bundle.js');
+    window.rainydesk.log(`[Background] Import OK, MatrixPixiRenderer: ${typeof module.MatrixPixiRenderer}`);
+
+    const { MatrixPixiRenderer } = module;
+    if (!MatrixPixiRenderer) {
+      throw new Error('MatrixPixiRenderer not exported from simulation.bundle.js');
+    }
+
+    const width = virtualDesktop?.width || window.innerWidth;
+    const height = virtualDesktop?.height || window.innerHeight;
+    window.rainydesk.log(`[Background] Creating MatrixPixiRenderer: ${width}x${height}`);
 
     matrixRenderer = new MatrixPixiRenderer({
-      canvas: matrixCanvas, // Use separate canvas to avoid WebGL context conflicts
-      width: virtualDesktop?.width || window.innerWidth,
-      height: virtualDesktop?.height || window.innerHeight,
+      canvas: matrixCanvas,
+      width,
+      height,
       dimmed: true,
       speedMultiplier: 0.5,
       alphaMultiplier: 0.4,
@@ -246,12 +300,23 @@ async function initBackgroundMatrix() {
     await matrixRenderer.init();
     window.rainydesk.log('[Background] Matrix renderer initialized (dimmed layer)');
   } catch (err) {
-    window.rainydesk.log(`[Background] Failed to init matrix: ${err}`);
+    window.rainydesk.log(`[Background] Failed to init matrix: ${err?.message || err}`);
+    if (err?.stack) {
+      window.rainydesk.log(`[Background] Stack: ${err.stack.substring(0, 300)}`);
+    }
     // Clean up broken instance so render loop doesn't try to use it
     if (matrixRenderer) {
       try { matrixRenderer.destroy(); } catch (_) { /* ignore */ }
       matrixRenderer = null;
     }
+    // Fallback: re-enable rain shader so SOMETHING renders in the background
+    if (matrixCanvas) {
+      matrixCanvas.remove();
+      matrixCanvas = null;
+    }
+    canvas.style.display = 'block';
+    renderer.setBackgroundRainConfig({ enabled: true });
+    window.rainydesk.log('[Background] Falling back to rain shader (matrix init failed)');
   }
 }
 

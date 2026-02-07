@@ -1,4 +1,4 @@
-#  🌧️ RainyDesk 💻
+#  🌧️ RainyDesk 💻 <sub>v0.7.0-alpha</sub>
 
 Ever wish it could rain on your desktop? Now it can, and you can use windows as umbrellas. ☔
 
@@ -33,7 +33,7 @@ RainyDesk isn't released just yet, but you can run it from source if you're cool
 
 ```bash
 npm install
-npm run tauri dev
+npm run dev
 ```
 
 *Pre-built installers coming once it's more polished!*
@@ -63,7 +63,7 @@ Imagine your entire desktop — *all* your monitors, no matter how weirdly they'
 **The Point:**
 It's like having a tiny rainstorm on your desktop, except you can't get wet. Not from RainyDesk, at least. Don't come running to me if you spill something on yourself.
 
-## Current Status: Gathering Clouds ☁
+## Current Status: Lightly Drizzling 🌦
 RainyDesk is in active development and I'm really not rushing it because it's my first big non-website project. The core experience is working pretty well — rain physics simulation, mathematically correct audio synthesis, and a painfully detailed control panel (defaults to easy mode, don't worry).
 
 **What Works:**
@@ -108,6 +108,13 @@ Truly could not have made this without these. Holy heck, what a huge help! Thank
 - [Tauri](https://tauri.app) (v2) — MIT License — Desktop app framework
 - [Pixi.js](https://pixijs.com) (v8) — MIT License — GPU-accelerated rendering
 - [Tone.js](https://tonejs.github.io) (v15.1.22) — MIT License — Audio synthesis
+
+## Bundled Fonts
+- [Convergence](https://fonts.google.com/specimen/Convergence) — SIL OFL 1.1 — Nicolas Silva & John Vargas Beltran
+- [Departure Mono](https://departuremono.com) v1.500 — SIL OFL 1.1 — Helena Zhang
+- [JetBrains Mono](https://www.jetbrains.com/lp/mono/) v2.305 — SIL OFL 1.1 — Philipp Nurullin & Konstantin Bulenkov
+- [Nimbus Mono PS](https://github.com/twardoch/urw-core35-fonts) v1.00 — SIL OFL 1.1 — URW++ Design & Development
+- [Matrix Code](https://github.com/Rezmason/matrix) v2.0 — MIT License — Rezmason
 
 ## License & Acknowledgments
 RainyDesk is currently source-available under the Business Source License 1.1 (BSL-1.1). That means you are welcome to use, tinker with, and modify RainyDesk for personal, educational, and non-commercial purposes. I've chosen BSL so I can keep the project freely available while preventing third parties from repackaging and selling it as a commercial product without permission. Don't want that, now do we?

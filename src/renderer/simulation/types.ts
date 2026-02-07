@@ -18,7 +18,7 @@ export interface CollisionEvent {
     /** Impact position in screen coordinates */
     position: { x: number; y: number };
     /** Which surface was hit */
-    collisionSurface: 'top' | 'left' | 'right';
+    collisionSurface: 'top' | 'left' | 'right' | 'bottom';
 }
 
 /** Callback for collision events (wired to AudioSystem) */

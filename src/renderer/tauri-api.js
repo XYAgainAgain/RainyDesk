@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
 
 window.rainydesk = {
   // Receive display info from main process (event-based)
@@ -56,7 +57,7 @@ window.rainydesk = {
 
   // Receive window position data for exclusion zones
   onWindowData: (callback) => {
-    listen('window-data', (event) => callback(event.payload));
+    return listen('window-data', (event) => callback(event.payload));
   },
 
   // Get current configuration
@@ -108,16 +109,6 @@ window.rainydesk = {
     listen('start-fade-in', () => callback());
   },
 
-  // Fullscreen detection: hide rain on this monitor when fullscreen window detected
-  onFullscreenStatus: (callback) => {
-    listen('fullscreen-status', (event) => callback(event.payload));
-  },
-
-  // Audio muffling: triggered when ANY monitor has fullscreen (since audio is global)
-  onAudioMuffle: (callback) => {
-    listen('audio-muffle', (event) => callback(event.payload));
-  },
-
   // Log messages to main process console
   log: (message) => invoke('log_message', { message }),
 
@@ -128,8 +119,22 @@ window.rainydesk = {
   toggleRainscaper: (trayX, trayY) => invoke('toggle_rainscaper', { trayX, trayY }),
   resizeRainscaper: (width, height) => invoke('resize_rainscaper', { width, height }),
 
+  // App version (from tauri.conf.json)
+  getVersion: () => getVersion(),
+
   // System integration
   getWindowsAccentColor: () => invoke('get_windows_accent_color'),
+
+  // Help window
+  showHelpWindow: () => invoke('show_help_window'),
+  hideHelpWindow: () => invoke('hide_help_window'),
+  resizeHelpWindow: (width, height) => invoke('resize_help_window', { width, height }),
+
+  // Open URL in default browser
+  openUrl: (url) => invoke('open_url', { url }),
+
+  // Open app data folder in Explorer
+  openAppDataFolder: () => invoke('open_app_data_folder'),
 
   // Stats bridge (overlay → panel)
   // Emits stats from overlay window so panel can display them

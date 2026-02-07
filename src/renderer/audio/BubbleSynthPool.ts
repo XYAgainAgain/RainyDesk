@@ -40,6 +40,7 @@ const DEFAULT_BUBBLE_CONFIG: BubbleSynthConfig = {
 export class BubbleSynthPool extends VoicePool<Tone.Synth> {
   private _synthConfig: BubbleSynthConfig;
   private _panners: Map<number, Tone.Panner> = new Map();
+  private _releaseEventIds: number[] = [];
   private _output: Tone.Gain;
 
   constructor(
@@ -121,9 +122,9 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
     const releaseDelay = duration + 0.05;
     voice.releaseTime = performance.now() + releaseDelay * 1000;
 
-    Tone.getTransport().scheduleOnce(() => {
+    this._releaseEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this.release(voice);
-    }, now + releaseDelay);
+    }, now + releaseDelay));
 
     return voice;
   }
@@ -147,6 +148,11 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
   }
 
   override dispose(): void {
+    // Clear pending release callbacks before disposing nodes
+    for (const id of this._releaseEventIds) {
+      Tone.getTransport().clear(id);
+    }
+    this._releaseEventIds = [];
     for (const panner of this._panners.values()) {
       panner.dispose();
     }

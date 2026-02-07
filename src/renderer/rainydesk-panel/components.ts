@@ -18,16 +18,22 @@ export interface SliderConfig {
   formatValue?: (v: number) => string;
   defaultValue?: number;
   onChange: (value: number) => void;
+  /** When true, onChange only fires on mouse release (not during drag) */
+  lazy?: boolean;
+  /** Optional extra element appended to the label container (e.g. a RotaryKnob) */
+  extraElement?: HTMLElement;
 }
 
 export function Slider(config: SliderConfig): HTMLElement {
-  const { id, label, matrixLabel, value, min, max, step = 1, unit, formatValue, defaultValue, onChange } = config;
+  const { id, label, matrixLabel, value, min, max, step = 1, unit, formatValue, defaultValue, onChange, lazy = false, extraElement } = config;
 
   const row = document.createElement('div');
   row.className = 'control-row';
   if (id) {
     row.dataset.sliderId = id;
   }
+  // Store unit for external value updates (e.g. OSC knob sync)
+  row.dataset.sliderUnit = unit;
   // Store both labels for dynamic switching
   if (matrixLabel) {
     row.dataset.normalLabel = label;
@@ -59,6 +65,10 @@ export function Slider(config: SliderConfig): HTMLElement {
     labelContainer.appendChild(resetBtn);
   }
 
+  if (extraElement) {
+    labelContainer.appendChild(extraElement);
+  }
+
   const sliderContainer = document.createElement('div');
   sliderContainer.className = 'slider-container';
 
@@ -79,8 +89,12 @@ export function Slider(config: SliderConfig): HTMLElement {
     const newValue = parseFloat(slider.value);
     const display = formatValue ? formatValue(newValue) : String(Math.round(newValue));
     valueEl.textContent = unit ? `${display}${unit}` : display;
-    onChange(newValue);
+    if (!lazy) onChange(newValue);
   };
+
+  if (lazy) {
+    slider.onchange = () => onChange(parseFloat(slider.value));
+  }
 
   sliderContainer.appendChild(slider);
   sliderContainer.appendChild(valueEl);
@@ -88,7 +102,37 @@ export function Slider(config: SliderConfig): HTMLElement {
   row.appendChild(labelContainer);
   row.appendChild(sliderContainer);
 
+  // Attach formatter for external value updates (OSC knob sync, etc.)
+  if (formatValue) {
+    (row as SliderRow)._formatValue = formatValue;
+  }
+
   return row;
+}
+
+/** Slider row with optional attached formatter (for external updates) */
+export interface SliderRow extends HTMLElement {
+  _formatValue?: (v: number) => string;
+}
+
+/**
+ * Update a Slider's visual state externally (e.g. from OSC knob sync).
+ * Finds the slider by its data-slider-id within the given container.
+ * Updates both the range input position and the display value text.
+ * Does NOT fire onChange (to avoid feedback loops).
+ */
+export function updateSliderValue(container: HTMLElement, sliderId: string, value: number): void {
+  const row = container.querySelector(`[data-slider-id="${sliderId}"]`) as SliderRow | null;
+  if (!row) return;
+  const slider = row.querySelector('.slider') as HTMLInputElement | null;
+  const valueEl = row.querySelector('.control-value') as HTMLElement | null;
+  if (slider) slider.value = String(value);
+  if (valueEl) {
+    const unit = row.dataset.sliderUnit || '';
+    const formatter = row._formatValue;
+    const display = formatter ? formatter(value) : String(Math.round(value));
+    valueEl.textContent = unit ? `${display}${unit}` : display;
+  }
 }
 
 export interface ToggleConfig {
@@ -248,4 +292,180 @@ export function ColorPicker(config: ColorPickerConfig): HTMLElement {
   row.appendChild(pickerContainer);
 
   return row;
+}
+
+// --- TriToggle (3-state selector: left / off / right) ---
+
+export interface TriToggleConfig {
+  label: string;
+  value: 'left' | 'off' | 'right';
+  leftLabel?: string;
+  rightLabel?: string;
+  onChange: (value: 'left' | 'off' | 'right') => void;
+  id?: string;
+}
+
+export function TriToggle(config: TriToggleConfig): HTMLElement {
+  const { label, value, leftLabel = '\u25C0', rightLabel = '\u25B6', onChange, id } = config;
+
+  const row = document.createElement('div');
+  row.className = 'tri-toggle';
+  if (id) row.id = id;
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'tri-toggle-label';
+  labelEl.textContent = label;
+
+  const track = document.createElement('div');
+  track.className = 'tri-toggle-track';
+
+  const segments: { key: 'left' | 'off' | 'right'; label: string }[] = [
+    { key: 'left', label: leftLabel },
+    { key: 'off', label: 'Off' },
+    { key: 'right', label: rightLabel },
+  ];
+
+  // Sliding highlight pill that moves between positions
+  const slider = document.createElement('div');
+  slider.className = 'tri-toggle-slider';
+  track.appendChild(slider);
+
+  const positionMap: Record<string, { left: string; colorClass: string }> = {
+    left: { left: '2px', colorClass: 'slider-left' },
+    off: { left: 'calc(33.33% + 0.5px)', colorClass: 'slider-off' },
+    right: { left: 'calc(66.66% - 1px)', colorClass: 'slider-right' },
+  };
+
+  const updateSlider = (key: string) => {
+    const pos = positionMap[key]!;
+    slider.style.left = pos.left;
+    slider.className = `tri-toggle-slider ${pos.colorClass}`;
+  };
+  updateSlider(value);
+
+  const segmentEls: HTMLElement[] = [];
+
+  for (const seg of segments) {
+    const el = document.createElement('div');
+    el.className = 'tri-toggle-segment';
+    el.textContent = seg.label;
+    if (seg.key === value) el.classList.add('selected');
+    el.addEventListener('click', () => {
+      for (const s of segmentEls) s.classList.remove('selected');
+      el.classList.add('selected');
+      updateSlider(seg.key);
+      onChange(seg.key);
+    });
+    segmentEls.push(el);
+    track.appendChild(el);
+  }
+
+  row.appendChild(labelEl);
+  row.appendChild(track);
+
+  return row;
+}
+
+// --- RotaryKnob (generic, reusable fine-tuning control) ---
+
+export interface RotaryKnobConfig {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  id?: string;
+  /** Short description shown in tooltip (e.g. "Wind oscillation") */
+  description?: string;
+}
+
+export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
+  const { min, max, onChange, id, description } = config;
+  let currentValue = config.value;
+
+  const knob = document.createElement('div');
+  knob.className = 'rotary-knob';
+  if (id) knob.dataset.knobId = id;
+
+  const tooltipPrefix = description ? `${description}: ` : '';
+  knob.title = `${tooltipPrefix}${Math.round(currentValue)}`;
+
+  const indicator = document.createElement('div');
+  indicator.className = 'rotary-knob-indicator';
+  knob.appendChild(indicator);
+
+  // Map value to rotation angle: 0 = 225deg (7 o'clock), max = 315deg (5 o'clock)
+  // Arc spans 270 degrees total (from 225 to 495/135)
+  const updateVisual = () => {
+    const t = (currentValue - min) / (max - min); // 0-1
+    const angle = 225 + t * 270; // 225deg to 495deg
+    indicator.style.transform = `rotate(${angle}deg)`;
+    knob.title = `${tooltipPrefix}${Math.round(currentValue)}`;
+
+    // Toggle has-value class for CSS glow arc
+    knob.classList.toggle('has-value', t > 0.01);
+
+    // Update glow arc degree (CSS custom property for conic-gradient)
+    const arcDeg = t * 270; // 0deg to 270deg
+    knob.style.setProperty('--glow-arc-deg', `${arcDeg}deg`);
+  };
+
+  updateVisual();
+
+  // DAW-style dual-axis drag
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startValue = 0;
+
+  const onMouseDown = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    startValue = currentValue;
+    knob.classList.add('active');
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!dragging) return;
+    // Up or right = increase, down or left = decrease
+    const deltaX = e.clientX - startX;
+    const deltaY = -(e.clientY - startY); // Invert Y so up = positive
+    const combined = (deltaX + deltaY) * 0.5;
+    const range = max - min;
+    // ~2px per unit of value
+    const sensitivity = range / 100;
+    const newValue = Math.max(min, Math.min(max, startValue + combined * sensitivity));
+    currentValue = Math.round(newValue);
+    updateVisual();
+    onChange(currentValue);
+  };
+
+  const onMouseUp = () => {
+    dragging = false;
+    knob.classList.remove('active');
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  };
+
+  knob.addEventListener('mousedown', onMouseDown);
+
+  // Safety cleanup: if knob is removed from DOM mid-drag, release listeners
+  const observer = new MutationObserver(() => {
+    if (!knob.isConnected) {
+      onMouseUp();
+      observer.disconnect();
+    }
+  });
+  // Observe parent removal (deferred since knob isn't attached yet)
+  requestAnimationFrame(() => {
+    if (knob.parentElement) {
+      observer.observe(knob.parentElement, { childList: true });
+    }
+  });
+
+  return knob;
 }

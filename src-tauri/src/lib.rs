@@ -433,7 +433,7 @@ fn load_theme_icon() -> tauri::image::Image<'static> {
 #[cfg(target_os = "windows")]
 fn is_dark_theme() -> bool {
     use windows::Win32::System::Registry::{
-        RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
     };
     use windows::core::PCWSTR;
 
@@ -448,14 +448,18 @@ fn is_dark_theme() -> bool {
             let mut data_size = std::mem::size_of::<u32>() as u32;
             let mut data_type = REG_DWORD;
 
-            if RegQueryValueExW(
+            let result = RegQueryValueExW(
                 hkey,
                 PCWSTR(value_name.as_ptr()),
                 None,
                 Some(&mut data_type),
                 Some(&mut data as *mut u32 as *mut u8),
                 Some(&mut data_size),
-            ).is_ok() {
+            );
+
+            let _ = RegCloseKey(hkey);
+
+            if result.is_ok() {
                 return data == 0; // 0 = dark theme, 1 = light theme
             }
         }
@@ -691,7 +695,7 @@ fn log_message(message: String) {
 
 #[tauri::command]
 fn get_config(state: tauri::State<AppState>) -> Result<serde_json::Value, String> {
-    let config = state.config.lock().unwrap();
+    let config = state.config.lock().map_err(|e| format!("Config lock poisoned: {}", e))?;
     Ok(config.clone())
 }
 
@@ -935,7 +939,7 @@ fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<()
     } else {
         // Create the window at saved/calculated position
         log::info!("[Rainscaper] Window not found, creating new one at ({}, {})", x, y);
-        create_rainscaper_window_at(&app, x, y)?;
+        create_rainscaper_window_at(&app, x, y, true)?;
     }
 
     Ok(())
@@ -1042,6 +1046,106 @@ fn get_windows_accent_color() -> String {
     get_accent_color_from_registry().unwrap_or_else(|| "#0078d4".to_string())
 }
 
+/// Show the Help window (show-or-create pattern, like Rainscaper)
+#[tauri::command]
+fn show_help_window(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("[Help] Show requested");
+
+    if let Some(window) = app.get_webview_window("help") {
+        window.unminimize().ok();
+        window.show().map_err(|e| format!("Failed to show help: {}", e))?;
+        window.set_focus().map_err(|e| format!("Failed to focus help: {}", e))?;
+        log::info!("[Help] Shown existing window");
+    } else {
+        create_help_window(&app, true)?;
+    }
+
+    Ok(())
+}
+
+/// Hide the Help window
+#[tauri::command]
+fn hide_help_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("help") {
+        window.hide().map_err(|e| format!("Failed to hide help: {}", e))?;
+        log::info!("[Help] Hidden");
+    }
+    Ok(())
+}
+
+/// Resize the Help window (for UI scale inheritance)
+#[tauri::command]
+fn resize_help_window(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("help") {
+        window.set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| format!("Failed to resize help: {}", e))?;
+        log::info!("[Help] Resized to {}x{}", width, height);
+    }
+    Ok(())
+}
+
+/// Open the app data folder in Explorer
+#[tauri::command]
+fn open_app_data_folder() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .map_err(|e| format!("Failed to read LOCALAPPDATA: {}", e))?;
+        let folder = std::path::Path::new(&local_app_data).join("com.rainydesk.app");
+        log::info!("[OpenFolder] Opening: {}", folder.display());
+        std::process::Command::new("explorer")
+            .arg(folder.as_os_str())
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Open a URL in the default system browser.
+/// Uses ShellExecuteW on Windows to avoid cmd.exe command injection
+/// (cmd.exe doesn't recognize backslash-escaped quotes, so passing
+/// untrusted strings through `cmd /c start` allows shell breakout).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    // Reject non-HTTP(S) schemes (blocks file://, javascript:, etc.)
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Only http/https URLs are allowed".to_string());
+    }
+
+    log::info!("[OpenURL] Opening: {}", url);
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::HSTRING;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let url_wide = HSTRING::from(url.as_str());
+        let operation = HSTRING::from("open");
+
+        unsafe {
+            ShellExecuteW(
+                None,
+                &operation,
+                &url_wide,
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    Ok(())
+}
+
 /// Calculate position for Rainscaper window above tray icon
 fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i32) -> (i32, i32) {
     const PANEL_WIDTH: i32 = 400;
@@ -1094,15 +1198,9 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
     (x, y)
 }
 
-/// Create the Rainscaper popup window (calculates position from tray coords)
-fn create_rainscaper_window(app: &tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<(), String> {
-    let (x, y) = calculate_rainscaper_position(app, tray_x, tray_y);
-    create_rainscaper_window_at(app, x, y)
-}
-
 /// Create the Rainscaper popup window at specified position
-fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32) -> Result<(), String> {
-    log::info!("[Rainscaper] Creating window at ({}, {})", x, y);
+fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32, visible: bool) -> Result<(), String> {
+    log::info!("[Rainscaper] Creating window at ({}, {}), visible={}", x, y, visible);
 
     let window = WebviewWindowBuilder::new(
         app,
@@ -1117,14 +1215,19 @@ fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32) -> Result
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .focused(true)
+        .focused(visible)
         .shadow(false)
-        .visible(true)
+        .visible(visible)
         .build()
         .map_err(|e| format!("Failed to create window: {}", e))?;
 
-    // Enable mouse events so panel is clickable (not click-through)
-    window.set_ignore_cursor_events(false).ok();
+    if visible {
+        // Enable mouse events so panel is clickable (not click-through)
+        window.set_ignore_cursor_events(false).ok();
+    } else {
+        // Preloaded hidden — set click-through so rain doesn't interact with it
+        window.set_ignore_cursor_events(true).ok();
+    }
 
     // Open DevTools in dev mode
     #[cfg(debug_assertions)]
@@ -1132,9 +1235,43 @@ fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32) -> Result
         window.open_devtools();
     }
 
-    RAINSCAPER_VISIBLE.store(true, Ordering::SeqCst);
-    log::info!("[Rainscaper] Window created successfully");
+    RAINSCAPER_VISIBLE.store(visible, Ordering::SeqCst);
+    log::info!("[Rainscaper] Window created successfully (visible={})", visible);
 
+    Ok(())
+}
+
+/// Create the Help window
+fn create_help_window(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
+    log::info!("[Help] Creating window, visible={}", visible);
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        "help",
+        WebviewUrl::App("help.html".into())
+    )
+        .title("RainyDesk Help")
+        .inner_size(860.0, 1024.0)
+        .center()
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(false)
+        .resizable(true)
+        .focused(visible)
+        .shadow(false)
+        .visible(visible)
+        .build()
+        .map_err(|e| format!("Failed to create help window: {}", e))?;
+
+    // Open DevTools in dev mode
+    #[cfg(debug_assertions)]
+    {
+        window.open_devtools();
+    }
+
+    let _ = window; // suppress unused warning in release
+    log::info!("[Help] Window created (visible={})", visible);
     Ok(())
 }
 
@@ -1430,7 +1567,12 @@ pub fn run() {
             hide_rainscaper,
             toggle_rainscaper,
             resize_rainscaper,
-            get_windows_accent_color
+            get_windows_accent_color,
+            show_help_window,
+            hide_help_window,
+            resize_help_window,
+            open_url,
+            open_app_data_folder
         ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("overlay") {
@@ -1486,11 +1628,29 @@ pub fn run() {
                 log::error!("Failed to create mega-overlay: {}", e);
             }
 
-            // Start window detection polling (25ms for responsive physics)
+            // Preload Rainscaper panel hidden so first tray-click open is instant
+            // Use saved position if available, otherwise a default off-screen position
+            let preload_pos = load_panel_config(app.handle())
+                .and_then(|c| c.x.zip(c.y))
+                .unwrap_or((0, 0));
+            if let Err(e) = create_rainscaper_window_at(app.handle(), preload_pos.0, preload_pos.1, false) {
+                log::warn!("[Rainscaper] Failed to preload panel: {}", e);
+            } else {
+                log::info!("[Rainscaper] Panel preloaded hidden at ({}, {})", preload_pos.0, preload_pos.1);
+            }
+
+            // Preload Help window hidden so first open is instant
+            if let Err(e) = create_help_window(app.handle(), false) {
+                log::warn!("[Help] Failed to preload: {}", e);
+            } else {
+                log::info!("[Help] Window preloaded hidden");
+            }
+
+            // Start window detection polling (16ms ≈ 60 Hz, matching physics tick rate)
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    std::thread::sleep(std::time::Duration::from_millis(16));
 
                     match window_detector::get_visible_windows() {
                         Ok(window_data) => {
@@ -1544,65 +1704,10 @@ pub fn run() {
                 &MenuItem::with_id(app, "vol_100", "100%", true, None::<&str>)?,
             ])?;
 
-            // Load rainscape files for quick-select submenu
-            let rainscapes_dir = get_rainscapes_dir(&app.handle())?;
-            let custom_dir = rainscapes_dir.join("Custom");
-
-            // Collect all .rain files (root + Custom/)
-            let mut rainscape_files: Vec<String> = fs::read_dir(&rainscapes_dir)
-                .map(|entries| {
-                    entries.filter_map(|e| {
-                        let entry = e.ok()?;
-                        let path = entry.path();
-                        // Only .rain files, skip Autosave (internal), skip directories
-                        if path.is_file()
-                            && path.extension().map(|ext| ext == "rain").unwrap_or(false)
-                            && path.file_stem().map(|s| s != "Autosave").unwrap_or(true)
-                        {
-                            path.file_stem()?.to_str().map(String::from)
-                        } else {
-                            None
-                        }
-                    }).collect()
-                })
-                .unwrap_or_default();
-
-            // Add custom rainscapes with "Custom/" prefix for display
-            if custom_dir.exists() {
-                let custom_files: Vec<String> = fs::read_dir(&custom_dir)
-                    .map(|entries| {
-                        entries.filter_map(|e| {
-                            let entry = e.ok()?;
-                            let path = entry.path();
-                            if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
-                                path.file_stem()?.to_str().map(String::from)
-                            } else {
-                                None
-                            }
-                        }).collect()
-                    })
-                    .unwrap_or_default();
-                rainscape_files.extend(custom_files);
-            }
-
-            // Build rainscape submenu
-            let rainscape_submenu = Submenu::with_id(app, "rainscapes", "Rainscapes", true)?;
-            if rainscape_files.is_empty() {
-                let placeholder = MenuItem::with_id(app, "rs_none", "(No saved rainscapes)", false, None::<&str>)?;
-                rainscape_submenu.append(&placeholder)?;
-            } else {
-                for name in &rainscape_files {
-                    let id = format!("rs_{}", name);
-                    let item = MenuItem::with_id(app, &id, name, true, None::<&str>)?;
-                    rainscape_submenu.append(&item)?;
-                }
-            }
-
             let menu = Menu::with_items(app, &[
                 &pause_item,
                 &rainscaper_item,
                 &volume_submenu,
-                &rainscape_submenu,
                 &quit_item
             ])?;
 
@@ -1650,12 +1755,6 @@ pub fn run() {
                                     _ => vol_str.parse::<i32>().unwrap_or(50),
                                 };
                                 let _ = app.emit("set-volume", volume);
-                            }
-                            // Rainscape selection (rs_<name>)
-                            else if let Some(name) = id.strip_prefix("rs_") {
-                                let filename = format!("{}.rain", name);
-                                let _ = app.emit("load-rainscape", filename);
-                                log::info!("Rainscape selected: {}", name);
                             }
                         }
                     }

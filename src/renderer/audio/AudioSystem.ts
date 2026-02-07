@@ -88,6 +88,7 @@ export class AudioSystem {
   // State tracking
   private _isMuted = false;
   private _isMuffled = false;
+  private _fadeInActive = false; // Guard: prevents setMasterVolume/setMuted from cancelling startup fade
   private _matrixModeEnabled = false;
   private _currentRainscape: RainscapeConfig | null = null;
   private _currentRainscapeV2: RainscapeConfigV2 | null = null;
@@ -112,6 +113,9 @@ export class AudioSystem {
     this._state = 'initializing';
 
     try {
+      // Resume AudioContext FIRST — prevents "suspended" warnings from every new Tone node
+      await Tone.start();
+
       this.createMasterChain();
       this.createBuses();
       this.createVoicePools();
@@ -166,7 +170,7 @@ export class AudioSystem {
     });
 
     this._windBus = new AudioBus('wind', {
-      gain: -6,
+      gain: 0,
       reverbSend: 0.2,
       compressorEnabled: false,
     });
@@ -253,8 +257,12 @@ export class AudioSystem {
     this._masterGain.toDestination();
   }
 
-  /** Start audio playback with optional fade-in. */
-  async start(fadeIn = true): Promise<void> {
+  /**
+   * Start audio playback with optional fade-in.
+   * @param fadeIn Whether to fade in (true) or start at full volume (false)
+   * @param resumeFade If true, use a short 0.5s fade instead of full startup fade (for pause/resume)
+   */
+  async start(fadeIn = true, resumeFade = false): Promise<void> {
     if (this._state === 'uninitialized') {
       await this.init();
     }
@@ -262,18 +270,33 @@ export class AudioSystem {
     if (this._state !== 'ready' && this._state !== 'stopped') return;
 
     if (fadeIn && this._masterGain) {
+      const fadeTime = resumeFade ? 0.5 : this._config.fadeInTime;
       this._masterGain.gain.value = 0;
       this._masterGain.gain.rampTo(
         Tone.dbToGain(this._config.masterVolume),
-        this._config.fadeInTime
+        fadeTime
       );
+      // Guard: block setMasterVolume/setMuted from cancelling this ramp
+      // Only use full guard for startup fade, not resume
+      if (!resumeFade) {
+        this._fadeInActive = true;
+        setTimeout(() => {
+          this._fadeInActive = false;
+        }, fadeTime * 1000);
+      }
     }
 
-    // Start all layers
-    this._sheetLayer?.start();
-    this._windModule?.start();
+    // Start layers based on current mode — zero bleed between modes
     if (this._matrixModeEnabled) {
       this._matrixModule?.start();
+      // Explicitly stop rain-mode layers (belt AND suspenders)
+      this._windModule?.stop();
+      this._sheetLayer?.stop();
+    } else {
+      this._sheetLayer?.start();
+      this._windModule?.start();
+      // Explicitly stop matrix-mode layers
+      this._matrixModule?.stop();
     }
 
     this._state = 'playing';
@@ -284,15 +307,16 @@ export class AudioSystem {
   stop(fadeOut = true): void {
     if (this._state !== 'playing') return;
 
+    // Set state immediately so start() can be called during fade-out
+    this._state = 'stopped';
+
     if (fadeOut && this._masterGain) {
       this._masterGain.gain.rampTo(0, this._config.fadeOutTime);
       setTimeout(() => {
         this.stopAllLayers();
-        this._state = 'stopped';
       }, this._config.fadeOutTime * 1000);
     } else {
       this.stopAllLayers();
-      this._state = 'stopped';
     }
 
     console.log('[AudioSystem] Playback stopped');
@@ -459,6 +483,8 @@ export class AudioSystem {
 
   setMasterVolume(db: number): void {
     this._config.masterVolume = db;
+    // Don't interrupt startup fade-in ramp
+    if (this._fadeInActive) return;
     if (this._masterGain && !this._isMuted) {
       this._masterGain.gain.rampTo(Tone.dbToGain(db), 0.1);
     }
@@ -484,6 +510,8 @@ export class AudioSystem {
 
   setMuted(muted: boolean): void {
     this._isMuted = muted;
+    // Don't interrupt startup fade-in ramp (except for explicit muting)
+    if (this._fadeInActive && !muted) return;
     if (this._masterGain) {
       const target = muted ? 0 : Tone.dbToGain(this._config.masterVolume);
       this._masterGain.gain.rampTo(target, 0.1);
@@ -905,6 +933,11 @@ export class AudioSystem {
 
   getMatrixModule(): MatrixModule | null {
     return this._matrixModule;
+  }
+
+  /** Get the entry point of the master chain (limiter) for external audio routing */
+  getMasterInput(): Tone.ToneAudioNode | null {
+    return this._masterLimiter;
   }
 
   getSystemConfig(): {

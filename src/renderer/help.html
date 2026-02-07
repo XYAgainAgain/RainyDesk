@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RainyDesk Help</title>
+  <link rel="stylesheet" href="help.css">
+</head>
+<body>
+  <div id="help-root">
+    <div class="help-window">
+      <div class="help-header">
+        <div class="help-title">&#9730; RainyDesk Help</div>
+        <div class="help-header-controls">
+          <div class="text-size-rocker">
+            <button class="text-size-btn" id="text-size-down" title="Decrease text size">-</button>
+            <button class="text-size-btn text-size-reset" id="text-size-reset" title="Reset text size">A</button>
+            <button class="text-size-btn" id="text-size-up" title="Increase text size">+</button>
+          </div>
+          <button class="help-close" id="help-close-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="help-body">
+        <nav class="help-toc" id="help-toc"></nav>
+        <div class="help-content" id="help-content">
+          <p class="help-loading">Loading help...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Theme wipe overlay (injected by JS during transitions) -->
+  <script type="module" src="tauri-api.bundle.js"></script>
+  <script type="module" src="help.bundle.js"></script>
+</body>
+</html>

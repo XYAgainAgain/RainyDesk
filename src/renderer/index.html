@@ -5,15 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RainyDesk</title>
   <link rel="stylesheet" href="styles.css">
-  <!-- Matrix Code font preload -->
+  <!-- Matrix font preload (Matrix Code for katakana/digits, Nimbus Mono Bold for Latin) -->
   <style>
     @font-face {
-      font-family: 'Matrix Code NFI';
-      src: url('../../assets/fonts/Matrix-Code-NFI.woff2') format('woff2');
+      font-family: 'Matrix Code';
+      src: url('fonts/Matrix-Code.woff2') format('woff2');
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Nimbus Mono';
+      src: url('fonts/NimbusMono-Bold.woff2') format('woff2');
+      font-weight: 700;
+      font-style: normal;
       font-display: swap;
     }
     .matrix-font-preload {
-      font-family: 'Matrix Code NFI';
+      font-family: 'Matrix Code';
       position: absolute;
       visibility: hidden;
       pointer-events: none;
@@ -30,8 +37,8 @@
   </script>
 </head>
 <body>
-  <!-- Font preload for Matrix Mode -->
-  <span class="matrix-font-preload">A</span>
+  <!-- Font preload for Matrix Mode (katakana char triggers Matrix Code font load) -->
+  <span class="matrix-font-preload">&#x30A2;</span>
   <canvas id="rain-canvas"></canvas>
   <!-- Tauri API compatibility layer (loads before renderer.js) -->
   <script type="module" src="tauri-api.bundle.js"></script>

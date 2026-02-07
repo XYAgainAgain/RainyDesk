@@ -85,6 +85,9 @@ let matrixCanvas = null; // Separate canvas for Matrix Mode (avoids WebGL contex
 // Autosave data (loaded during init, applied after audio starts)
 let pendingAutosave = null;
 
+// Pending Matrix params (queued when glitchSynth is null, applied in initMatrixRenderer)
+let pendingMatrixParams = {};
+
 // Timing
 let lastTime = performance.now();
 let fpsCounter = 0;
@@ -105,6 +108,15 @@ let pendingFullscreenState = false;
 
 // Pause state (from Rainscaper panel)
 let isPaused = false;
+
+// Wind oscillation (gusts) state
+let windOscAmount = 0;     // 0-100 from knob
+let windOscTarget = 0;     // Target wind value to lerp toward
+let windOscCurrent = 0;    // Current interpolated wind value
+let windOscNextChangeTime = 0; // When to pick a new target
+let windOscUserCenter = 0; // User's manual wind slider value (center point)
+let windOscLastBroadcast = 0; // Throttle param broadcasts (ms timestamp)
+let windOscLastBroadcastValue = 0; // Last broadcasted wind value
 
 // Window update state
 let windowUpdateDebounceTimer = null;
@@ -132,6 +144,7 @@ function waitForTauriAPI() {
 function waitForFirstWindowData() {
   return new Promise((resolve) => {
     const unsubscribe = window.rainydesk.onWindowData((data) => {
+      unsubscribe();
       resolve(data);
     });
   });
@@ -384,19 +397,30 @@ function gatherPresetData() {
     name: 'Autosave',
     rain: {
       intensity: config.intensity,
-      wind: config.wind,
+      wind: windOscUserCenter, // Save the user's manual center, not oscillated value
+      windOsc: windOscAmount,
     },
     physics: {
       gravity: gridSimulation?.getGravity?.() ?? 980,
       gridScale: GRID_SCALE,
+      reverseGravity: gridSimulation?.isReverseGravity?.() ?? false,
+      fpsLimit: config.fpsLimit,
     },
     audio: {
       muted: audioSystem?.isMuted ?? false,
       masterVolume: audioSystem?.getMasterVolume?.() ?? -12,
+      matrixBass: glitchSynth?.getBassVolume?.() ?? -12,
+      matrixCollision: glitchSynth?.getCollisionVolume?.() ?? -24,
+      matrixDrone: glitchSynth?.getDroneVolume?.() ?? -12,
     },
     visual: {
       gayMode: pixiRenderer?.isGayMode?.() ?? false,
       rainColor: pixiRenderer?.getRainColor?.() ?? '#4a9eff',
+      matrixMode: matrixMode,
+      matrixDensity: matrixRenderer?.getDensity?.() ?? 20,
+      matrixTranspose: glitchSynth?.getTranspose?.() ?? 0,
+      transMode: matrixRenderer?.getTransMode?.() ?? false,
+      transScrollDirection: matrixRenderer?.getTransScrollDirection?.() ?? 'off',
     },
   };
 }
@@ -428,6 +452,10 @@ function applyRainscapeData(data) {
       gridSimulation?.setGravity?.(data.physics.gravity);
       window.rainydesk.updateRainscapeParam('physics.gravity', data.physics.gravity);
     }
+    if (data.physics.reverseGravity !== undefined) {
+      gridSimulation?.setReverseGravity?.(Boolean(data.physics.reverseGravity));
+      window.rainydesk.updateRainscapeParam('physics.reverseGravity', data.physics.reverseGravity);
+    }
     // Grid scale requires full reinit, skip on startup
   }
 
@@ -436,6 +464,19 @@ function applyRainscapeData(data) {
     if (data.audio.muted !== undefined) {
       audioSystem?.setMuted?.(data.audio.muted);
       window.rainydesk.updateRainscapeParam('audio.muted', data.audio.muted);
+    }
+    // Matrix synth volumes (dB values — applied to glitchSynth or queued as pending)
+    if (data.audio.matrixBass !== undefined) {
+      window.rainydesk.updateRainscapeParam('audio.matrix.bass', data.audio.matrixBass);
+    }
+    if (data.audio.matrixCollision !== undefined) {
+      window.rainydesk.updateRainscapeParam('audio.matrix.collision', data.audio.matrixCollision);
+    }
+    if (data.audio.matrixDrone !== undefined) {
+      window.rainydesk.updateRainscapeParam('audio.drone.volume', data.audio.matrixDrone);
+    }
+    if (data.audio.masterVolume !== undefined) {
+      window.rainydesk.updateRainscapeParam('effects.masterVolume', data.audio.masterVolume);
     }
   }
 
@@ -449,6 +490,38 @@ function applyRainscapeData(data) {
       pixiRenderer?.setRainColor?.(data.visual.rainColor);
       window.rainydesk.updateRainscapeParam('visual.rainColor', data.visual.rainColor);
     }
+    if (data.visual.matrixDensity !== undefined) {
+      window.rainydesk.updateRainscapeParam('visual.matrixDensity', data.visual.matrixDensity);
+    }
+    if (data.visual.matrixTranspose !== undefined) {
+      window.rainydesk.updateRainscapeParam('audio.matrix.transpose', data.visual.matrixTranspose);
+    }
+    if (data.visual.transMode !== undefined) {
+      window.rainydesk.updateRainscapeParam('visual.transMode', data.visual.transMode);
+    }
+    if (data.visual.transScrollDirection !== undefined) {
+      window.rainydesk.updateRainscapeParam('visual.transScrollDirection', data.visual.transScrollDirection);
+    }
+    if (data.visual.matrixMode !== undefined) {
+      // Trigger via param update path to handle full init/destroy cycle
+      window.rainydesk.updateRainscapeParam('visual.matrixMode', data.visual.matrixMode);
+    }
+  }
+
+  // Physics extras
+  if (data.physics) {
+    if (data.physics.fpsLimit !== undefined) {
+      config.fpsLimit = data.physics.fpsLimit;
+      window.rainydesk.updateRainscapeParam('physics.fpsLimit', data.physics.fpsLimit);
+    }
+  }
+
+  // Rain extras (wind OSC)
+  if (data.rain) {
+    if (data.rain.windOsc !== undefined) {
+      windOscAmount = data.rain.windOsc;
+      window.rainydesk.updateRainscapeParam('physics.windOsc', data.rain.windOsc);
+    }
   }
 }
 
@@ -457,23 +530,28 @@ function applyRainscapeData(data) {
  */
 async function reinitializePhysics(newGridScale) {
   if (reinitInProgress) {
-    window.rainydesk.log('[Physics] Reinit already in progress');
+    window.rainydesk.log('[Reset] Already in progress');
     return;
   }
 
   reinitInProgress = true;
   window.rainydesk.emitReinitStatus?.('stopped');
-  window.rainydesk.log(`[Physics] Reinitializing: ${GRID_SCALE} -> ${newGridScale}`);
+  window.rainydesk.log(`[Reset] Starting full reset: grid ${GRID_SCALE} -> ${newGridScale}`);
 
-  // Preserve simulation settings before destroying
+  // Brief pause so "Stopped" state is visible in the panel
+  await new Promise(r => setTimeout(r, 300));
+
+  // --- Preserve all state before destroying ---
   let preservedSettings = null;
   if (gridSimulation) {
     preservedSettings = {
       gravity: gridSimulation.getGravity?.() ?? 980,
       radiusMax: gridSimulation.getDropMaxRadius?.() ?? 2.0,
+      reverseGravity: gridSimulation.isReverseGravity?.() ?? false,
+      wind: config.wind,
+      intensity: config.intensity,
     };
   }
-  // Preserve renderer settings (color, gay mode)
   let preservedVisual = null;
   if (pixiRenderer) {
     preservedVisual = {
@@ -481,35 +559,61 @@ async function reinitializePhysics(newGridScale) {
       gayMode: pixiRenderer.isGayMode?.() ?? false,
     };
   }
-  window.rainydesk.log(`[Physics] Preserving: gravity=${preservedSettings?.gravity}, radiusMax=${preservedSettings?.radiusMax}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}`);
+  let preservedAudio = null;
+  if (audioSystem) {
+    preservedAudio = {
+      masterVolume: audioSystem.getMasterVolume?.() ?? -6,
+      muted: audioSystem.isMuted ?? false,
+    };
+  }
+  const wasMatrixMode = matrixMode;
+  window.rainydesk.log(`[Reset] Preserving: gravity=${preservedSettings?.gravity}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}, masterVol=${preservedAudio?.masterVolume}, muted=${preservedAudio?.muted}, matrix=${wasMatrixMode}`);
 
   try {
-    // Clear timers
+    // --- Tear down ---
     if (windowUpdateDebounceTimer) {
       clearTimeout(windowUpdateDebounceTimer);
       windowUpdateDebounceTimer = null;
     }
 
-    // Disconnect callbacks
+    // Disconnect and destroy physics
     if (gridSimulation) {
       gridSimulation.onCollision = null;
       gridSimulation.onDebugLog = null;
       gridSimulation.dispose();
       gridSimulation = null;
     }
-
     if (pixiRenderer) {
       pixiRenderer.destroy();
       pixiRenderer = null;
     }
     globalGridBounds = null;
 
+    // Destroy Matrix mode if active
+    if (wasMatrixMode) {
+      destroyMatrixRenderer();
+    }
+
+    // Dispose audio gracefully
+    if (audioSystem) {
+      audioSystem.dispose();
+      audioSystem = null;
+      audioInitialized = false;
+    }
+
     window.rainydesk.emitReinitStatus?.('initializing');
 
+    // Brief pause so "Initializing" state is visible in the panel
+    await new Promise(r => setTimeout(r, 300));
+
+    // --- Rebuild ---
     GRID_SCALE = newGridScale;
     await initPixiPhysics();
 
-    // Reconnect audio collision handler
+    // Reinit audio with fade-in
+    await initAudio();
+
+    // Reconnect collision handler
     if (audioSystem && gridSimulation) {
       gridSimulation.onCollision = (event) => audioSystem.handleCollision(event);
     }
@@ -519,22 +623,41 @@ async function reinitializePhysics(newGridScale) {
       gridSimulation.updateWindowZones(lastWindowZonesForReinit.normal, lastWindowZonesForReinit.void, lastWindowZonesForReinit.spawn);
     }
 
-    // Restore preserved settings
+    // Restore physics settings
     if (preservedSettings && gridSimulation) {
       gridSimulation.setGravity?.(preservedSettings.gravity);
       gridSimulation.setDropMaxRadius?.(preservedSettings.radiusMax);
+      gridSimulation.setReverseGravity?.(preservedSettings.reverseGravity);
+      gridSimulation.setWind?.(preservedSettings.wind);
+      gridSimulation.setIntensity?.(preservedSettings.intensity / 100);
     }
-    // Restore visual settings (color, gay mode)
+    // Restore visual settings
     if (preservedVisual && pixiRenderer) {
       pixiRenderer.setRainColor?.(preservedVisual.rainColor);
       pixiRenderer.setGayMode?.(preservedVisual.gayMode);
     }
-    window.rainydesk.log(`[Physics] Restored: gravity=${preservedSettings?.gravity}, radiusMax=${preservedSettings?.radiusMax}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}`);
+    // Restore audio settings after fade-in completes (5s default)
+    // Applying volume immediately would cut the fade-in ramp short
+    if (preservedAudio && audioSystem) {
+      if (preservedAudio.muted) audioSystem.setMuted?.(true);
+      setTimeout(() => {
+        if (audioSystem) audioSystem.setMasterVolume?.(preservedAudio.masterVolume);
+      }, 5500);
+    }
+
+    // Reinit Matrix mode if it was active
+    if (wasMatrixMode) {
+      await initMatrixRenderer().catch(err => {
+        window.rainydesk.log(`[Reset] Matrix re-init failed: ${err}`);
+      });
+    }
+
+    window.rainydesk.log(`[Reset] Restored: gravity=${preservedSettings?.gravity}, reverseGravity=${preservedSettings?.reverseGravity}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}, masterVol=${preservedAudio?.masterVolume}`);
 
     window.rainydesk.emitReinitStatus?.('raining');
-    window.rainydesk.log('[Physics] Reinit complete!');
+    window.rainydesk.log('[Reset] Complete!');
   } catch (error) {
-    window.rainydesk.log(`[Physics] Reinit FAILED: ${error.message}`);
+    window.rainydesk.log(`[Reset] FAILED: ${error.message}`);
     window.rainydesk.emitReinitStatus?.('raining');
   } finally {
     reinitInProgress = false;
@@ -588,46 +711,92 @@ function render() {
  * Main game loop with delta time and optional FPS limiting
  */
 function gameLoop(currentTime) {
+  // Schedule next frame FIRST — uncaught errors must never kill the loop
+  requestAnimationFrame(gameLoop);
+
   // FPS limiting
   if (config.fpsLimit > 0) {
     const minFrameTime = 1000 / config.fpsLimit;
     if (currentTime - lastFrameTime < minFrameTime) {
-      requestAnimationFrame(gameLoop);
       return;
     }
     lastFrameTime = currentTime;
   }
 
-  const dt = Math.min((currentTime - lastTime) / 1000, 0.033);
+  const dt = Math.min((currentTime - lastTime) / 1000, 0.1); // Cap at 100ms (10 FPS min)
   lastTime = currentTime;
 
   // Skip everything during reinit
-  if (reinitInProgress) {
-    requestAnimationFrame(gameLoop);
-    return;
-  }
+  if (reinitInProgress) return;
 
-  // Skip everything when fullscreen (app hidden behind fullscreen window)
-  if (isFullscreenActive) {
-    if (audioSystem) {
-      audioSystem.setParticleCount(0);
-    }
-  } else if (isPaused) {
-    // Paused: freeze physics but keep rendering (Quicksilver mode)
-    render();
-    if (audioSystem) {
-      audioSystem.setParticleCount(0);
-    }
-  } else {
-    // Normal operation: update physics and render
-    update(dt);
-    render();
+  try {
+    // Skip everything when fullscreen (app hidden behind fullscreen window)
+    if (isFullscreenActive) {
+      if (audioSystem) {
+        audioSystem.setParticleCount(0);
+      }
+    } else if (isPaused) {
+      // Paused: freeze physics but keep rendering (Quicksilver mode)
+      render();
+      if (audioSystem) {
+        audioSystem.setParticleCount(0);
+      }
+    } else {
+      // Normal operation: update physics and render
+      update(dt);
+      render();
 
-    // Feed particle count to audio system
-    if (audioSystem && gridSimulation) {
-      const particleCount = gridSimulation.getActiveDropCount();
-      audioSystem.setParticleCount(particleCount);
+      // Wind oscillation (gusts)
+      if (windOscAmount > 0 && !matrixMode) {
+        const now = currentTime / 1000; // seconds
+        if (now >= windOscNextChangeTime) {
+          // Pick new target wind value
+          const oscNorm = windOscAmount / 100; // 0-1
+          // Amplitude: low OSC = small swings around center, high OSC = full range
+          const amplitude = 20 + oscNorm * 80; // 20-100 range
+          windOscTarget = windOscUserCenter + (Math.random() * 2 - 1) * amplitude;
+          windOscTarget = Math.max(-100, Math.min(100, windOscTarget));
+
+          // Frequency: 5-10 changes/min, with 30% jitter
+          const changesPerMin = 5 + oscNorm * 5;
+          const interval = 60 / changesPerMin;
+          const jitter = interval * 0.3 * (Math.random() * 2 - 1);
+          windOscNextChangeTime = now + interval + jitter;
+        }
+
+        // Smooth lerp toward target (~1.5/sec)
+        const lerpRate = 1.5 * dt;
+        windOscCurrent += (windOscTarget - windOscCurrent) * Math.min(1, lerpRate);
+
+        // Apply oscillated wind to simulation
+        config.wind = Math.round(windOscCurrent);
+        if (gridSimulation) {
+          gridSimulation.setWind(config.wind);
+        }
+
+        // Modulate wind audio by magnitude (direction doesn't affect volume)
+        if (audioSystem) {
+          audioSystem.setWindSpeed(Math.abs(config.wind));
+        }
+
+        // Throttle broadcast to ~4 Hz for slider display sync (avoid IPC flood)
+        const windVal = config.wind;
+        if (currentTime - windOscLastBroadcast > 250 && windVal !== windOscLastBroadcastValue) {
+          windOscLastBroadcast = currentTime;
+          windOscLastBroadcastValue = windVal;
+          window.rainydesk.updateRainscapeParam('physics.wind', windVal);
+        }
+      }
+
+      // Feed particle count to audio system (skip in Matrix Mode - wind is muted)
+      if (audioSystem && gridSimulation && !matrixMode) {
+        const particleCount = gridSimulation.getActiveDropCount();
+        audioSystem.setParticleCount(particleCount);
+      }
     }
+  } catch (err) {
+    // Log but never let simulation errors kill the loop
+    window.rainydesk?.log?.(`[GameLoop] Error in update/render: ${err?.message || err}`);
   }
 
   // FPS monitoring (every 5 seconds)
@@ -666,8 +835,6 @@ function gameLoop(currentTime) {
     }
     debugStatsTime = currentTime;
   }
-
-  requestAnimationFrame(gameLoop);
 }
 
 /**
@@ -762,6 +929,10 @@ function registerEventListeners() {
       if (windowZones.length !== windowZoneCount) {
         window.rainydesk.log(`[WindowDebug] Zone count: ${windowZoneCount} -> ${windowZones.length}`);
         windowZoneCount = windowZones.length;
+        // Dump all detected windows for phantom investigation
+        for (const win of windowZones) {
+          window.rainydesk.log(`[WindowDebug]   "${win.title}" at (${win.x},${win.y}) ${win.width}x${win.height}${win.isMaximized ? ' [MAX]' : ''}`);
+        }
       }
 
       // Classify windows
@@ -879,6 +1050,30 @@ function registerEventListeners() {
           right: w.x + w.width - originX,
           bottom: w.y + w.height - originY,
         })));
+
+        // Compute blanked regions: monitors covered by maximized or fullscreen windows
+        // Tracks which monitor indices have work-area or full-resolution windows
+        const blankedMonitorIndices = new Set();
+        for (const win of windowZones) {
+          for (const mon of virtualDesktop.monitors) {
+            const classification = classifyWindow(win, mon, virtualDesktop);
+            if (classification === 'work-area' || classification === 'full-resolution') {
+              blankedMonitorIndices.add(mon.index);
+            }
+          }
+        }
+
+        // Convert blanked monitor indices to pixel X ranges (relative to VD origin)
+        const blankedRegions = [];
+        for (const mon of virtualDesktop.monitors) {
+          if (blankedMonitorIndices.has(mon.index)) {
+            blankedRegions.push({
+              left: mon.x,
+              right: mon.x + mon.width,
+            });
+          }
+        }
+        matrixRenderer.setBlankedRegions(blankedRegions);
       }
     }, 32);
   });
@@ -898,7 +1093,11 @@ function registerEventListeners() {
         }
       }
       if (param === 'wind') {
+        // When OSC is active, it drives wind directly -- skip IPC echo
+        if (windOscAmount > 0) return;
         config.wind = value;
+        windOscUserCenter = value;
+        windOscCurrent = value;
         if (gridSimulation) {
           gridSimulation.setWind(value);
         }
@@ -954,6 +1153,22 @@ function registerEventListeners() {
         const newScale = Math.max(0.125, Math.min(0.5, value));
         reinitializePhysics(newScale);
       }
+      if (param === 'fpsLimit') {
+        config.fpsLimit = Number(value);
+        lastFrameTime = 0; // Reset so next frame renders immediately
+      }
+      if (param === 'windOsc') {
+        windOscAmount = Number(value);
+        if (windOscAmount <= 0) {
+          // Snap back to user's manual wind center
+          config.wind = windOscUserCenter;
+          if (gridSimulation) gridSimulation.setWind(windOscUserCenter);
+          if (audioSystem) audioSystem.setWindSpeed(Math.abs(windOscUserCenter));
+          windOscCurrent = windOscUserCenter;
+          windOscTarget = windOscUserCenter;
+        }
+        windOscNextChangeTime = 0; // Trigger immediate recalc
+      }
     } else if (path === 'audio.muted') {
       if (audioSystem) {
         audioSystem.setMuted(Boolean(value));
@@ -987,6 +1202,36 @@ function registerEventListeners() {
       // Matrix Mode drone volume (dB)
       if (glitchSynth) {
         glitchSynth.setDroneVolume(value);
+      } else {
+        pendingMatrixParams['drone.volume'] = value;
+      }
+    } else if (path === 'audio.matrix.bass') {
+      // Matrix Mode bass synth volume (dB)
+      if (glitchSynth) {
+        glitchSynth.setBassVolume(value);
+      } else {
+        pendingMatrixParams['bass'] = value;
+      }
+    } else if (path === 'audio.matrix.collision') {
+      // Matrix Mode collision sound volume (dB)
+      if (glitchSynth) {
+        glitchSynth.setCollisionVolume(value);
+      } else {
+        pendingMatrixParams['collision'] = value;
+      }
+    } else if (path === 'audio.matrix.strings') {
+      // Matrix Mode string lead volume (dB)
+      if (glitchSynth) {
+        glitchSynth.setStringVolume(value);
+      } else {
+        pendingMatrixParams['strings'] = value;
+      }
+    } else if (path === 'audio.matrix.transpose') {
+      // Matrix Mode key transpose (semitones)
+      if (glitchSynth) {
+        glitchSynth.setTranspose(value);
+      } else {
+        pendingMatrixParams['transpose'] = value;
       }
     } else if (path === 'visual.rainColor') {
       if (pixiRenderer) {
@@ -1011,14 +1256,27 @@ function registerEventListeners() {
         // Switching TO Matrix Mode: pause rain, create separate canvas for matrix
         window.rainydesk.log('[Matrix] Switching to Matrix Mode...');
 
+        // Set Matrix Mode flag on AudioSystem so start()/stop() knows which layers to run
+        if (audioSystem) {
+          audioSystem.setMatrixMode(true);
+          audioSystem.getWindModule()?.stop();
+          audioSystem.getSheetLayer()?.stop();
+          audioSystem.setParticleCount(0);
+          window.rainydesk.log('[Matrix] Stopped wind/sheet audio for Matrix Mode');
+        }
+
         // Hide rain canvas (keep rain system intact, just hidden)
         canvas.style.display = 'none';
 
         // Create a separate canvas for Matrix Mode (avoids WebGL context conflicts)
         matrixCanvas = document.createElement('canvas');
         matrixCanvas.id = 'matrix-canvas';
-        matrixCanvas.style.cssText = canvas.style.cssText; // Copy all styles
+        matrixCanvas.style.cssText = canvas.style.cssText; // Copy layout styles
         matrixCanvas.style.display = 'block';
+        // Override fade-in styles that may still be hiding the rain canvas at startup
+        matrixCanvas.style.visibility = 'visible';
+        matrixCanvas.style.opacity = '1';
+        matrixCanvas.style.transition = 'none';
         matrixCanvas.width = canvas.width;
         matrixCanvas.height = canvas.height;
         document.body.appendChild(matrixCanvas);
@@ -1035,6 +1293,14 @@ function registerEventListeners() {
         window.rainydesk.log('[Matrix] Switching back to Rain Mode...');
         destroyMatrixRenderer();
 
+        // Restore wind and sheet audio
+        if (audioSystem) {
+          audioSystem.setMatrixMode(false);
+          audioSystem.getWindModule()?.start();
+          audioSystem.getSheetLayer()?.start();
+          window.rainydesk.log('[Matrix] Restored wind/sheet audio for Rain Mode');
+        }
+
         // Show rain canvas again
         canvas.style.display = 'block';
       }
@@ -1045,13 +1311,29 @@ function registerEventListeners() {
         if (isPaused) {
           audioSystem.stop();
         } else {
-          audioSystem.start();
+          // Resume with short 0.5s fade (not full 5s startup fade)
+          audioSystem.start(true, true);
         }
       }
     } else if (path === 'visual.crtIntensity') {
       // CRT Filter intensity (Matrix Mode only, 0-1)
       if (matrixRenderer) {
         matrixRenderer.setCrtIntensity(Number(value));
+      }
+    } else if (path === 'visual.matrixDensity') {
+      // Data Stream Density (column spacing in px, Matrix Mode only)
+      if (matrixRenderer) {
+        matrixRenderer.setDensity(Number(value));
+      }
+    } else if (path === 'visual.transMode') {
+      // Trans Mode easter egg (Matrix renderer only)
+      if (matrixRenderer) {
+        matrixRenderer.setTransMode(Boolean(value));
+      }
+    } else if (path === 'visual.transScrollDirection') {
+      // Trans gradient scroll direction
+      if (matrixRenderer) {
+        matrixRenderer.setTransScrollDirection(String(value));
       }
     } else if (audioSystem) {
       audioSystem.updateParam(path, value);
@@ -1063,22 +1345,6 @@ function registerEventListeners() {
   window.rainydesk.onToggleRainscaper(() => {
     // No-op: Rainscaper is now a separate window managed by Rust
     window.rainydesk.log('[Overlay] toggle-rainscaper event received (deprecated)');
-  });
-
-  window.rainydesk.onFullscreenStatus((isFullscreen) => {
-    isFullscreenActive = isFullscreen;
-    if (isFullscreen) {
-      window.rainydesk.log('[Fullscreen] Detected - hiding rain');
-    } else {
-      window.rainydesk.log('[Fullscreen] Ended - showing rain');
-    }
-  });
-
-  window.rainydesk.onAudioMuffle((shouldMuffle) => {
-    if (audioSystem) {
-      audioSystem.setMuffled(shouldMuffle);
-      window.rainydesk.log(`Audio muffling: ${shouldMuffle ? 'ON' : 'OFF'}`);
-    }
   });
 
   window.addEventListener('resize', resizeCanvas);
@@ -1199,6 +1465,29 @@ async function initMatrixRenderer() {
     window.rainydesk.log('[Matrix] WARNING: No window data available for collision detection');
   }
 
+  // Compute initial blanked regions (monitors covered by maximized/fullscreen windows)
+  if (virtualDesktop?.monitors && lastWindowData?.length) {
+    const blankedMonitorIndices = new Set();
+    for (const win of lastWindowData) {
+      for (const mon of virtualDesktop.monitors) {
+        const classification = classifyWindow(win, mon, virtualDesktop);
+        if (classification === 'work-area' || classification === 'full-resolution') {
+          blankedMonitorIndices.add(mon.index);
+        }
+      }
+    }
+    const blankedRegions = [];
+    for (const mon of virtualDesktop.monitors) {
+      if (blankedMonitorIndices.has(mon.index)) {
+        blankedRegions.push({ left: mon.x, right: mon.x + mon.width });
+      }
+    }
+    if (blankedRegions.length > 0) {
+      matrixRenderer.setBlankedRegions(blankedRegions);
+      window.rainydesk.log(`[Matrix] Initial blanked regions: ${blankedRegions.map(r => `${r.left}-${r.right}`).join(', ')}`);
+    }
+  }
+
   // Set floor to bottom of work area (where taskbar is)
   // Use the minimum work area bottom from all monitors
   if (virtualDesktop?.monitors?.length) {
@@ -1217,6 +1506,35 @@ async function initMatrixRenderer() {
 
   // Audio: create glitch synth (beat-quantized at 102 BPM)
   glitchSynth = new GlitchSynth();
+
+  // Route GlitchSynth through AudioSystem master chain (master volume, muffle, limiter)
+  if (audioSystem) {
+    const masterInput = audioSystem.getMasterInput();
+    if (masterInput) {
+      glitchSynth.connectOutput(masterInput);
+      window.rainydesk.log('[Matrix] GlitchSynth routed through AudioSystem master chain');
+    }
+  }
+
+  // Apply any pending Matrix params that were queued before glitchSynth existed
+  if (pendingMatrixParams['transpose'] !== undefined) {
+    glitchSynth.setTranspose(pendingMatrixParams['transpose']);
+    window.rainydesk.log(`[Matrix] Applied pending transpose: ${pendingMatrixParams['transpose']}`);
+  }
+  if (pendingMatrixParams['bass'] !== undefined) {
+    glitchSynth.setBassVolume(pendingMatrixParams['bass']);
+  }
+  if (pendingMatrixParams['collision'] !== undefined) {
+    glitchSynth.setCollisionVolume(pendingMatrixParams['collision']);
+  }
+  if (pendingMatrixParams['drone.volume'] !== undefined) {
+    glitchSynth.setDroneVolume(pendingMatrixParams['drone.volume']);
+  }
+  if (pendingMatrixParams['strings'] !== undefined) {
+    glitchSynth.setStringVolume(pendingMatrixParams['strings']);
+  }
+  pendingMatrixParams = {};
+
   matrixRenderer.onCollision = (x, y) => {
     // Trigger returns { onBeat: boolean } for flash intensity
     const result = glitchSynth?.trigger() || { onBeat: false };
@@ -1241,6 +1559,10 @@ async function initMatrixRenderer() {
   // Sync Gaytrix state from current gayMode
   const isGaytrix = pixiRenderer?.isGayMode?.() ?? false;
   matrixRenderer.setGaytrixMode(isGaytrix);
+
+  // Sync reverse gravity state from rain simulation
+  const isReversed = gridSimulation?.isReverseGravity?.() ?? false;
+  matrixRenderer.setReverseGravity(isReversed);
 
   // DON'T sync rain color - Matrix Mode should default to green unless explicitly set
   // Only apply custom color if Gaytrix is off and user has explicitly set a non-default color

@@ -258,6 +258,9 @@ class WebGLRainRenderer {
         // Background rain shader (atmospheric layer)
         this.backgroundRain = null;
         this.lastFrameTime = performance.now();
+
+        // WebGL context loss state
+        this.contextLost = false;
     }
 
     /**
@@ -303,7 +306,59 @@ class WebGLRainRenderer {
         this.backgroundRain = new BackgroundRainShader(gl);
         this.backgroundRain.init();
 
+        // Handle WebGL context loss (GPU driver reset, sleep/wake, etc.)
+        this.canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault(); // Allows context restoration
+            this.contextLost = true;
+            console.warn('[WebGL] Context lost - halting rendering');
+        }, false);
+
+        this.canvas.addEventListener('webglcontextrestored', () => {
+            console.log('[WebGL] Context restored - reinitializing');
+            this.contextLost = false;
+            this._reinitAfterContextRestore();
+        }, false);
+
         return true;
+    }
+
+    /**
+     * Reinitialize all GPU resources after context restoration.
+     * Context loss destroys all WebGL objects (programs, buffers, textures, etc.)
+     */
+    _reinitAfterContextRestore() {
+        const gl = this.gl;
+
+        // Recompile shaders
+        this.raindropProgram = this._createProgram(RAINDROP_VERT, RAINDROP_FRAG);
+        this.splashProgram = this._createProgram(SPLASH_VERT, SPLASH_FRAG);
+        this.upscaleProgram = this._createProgram(UPSCALE_VERT, UPSCALE_FRAG);
+
+        // Re-get uniform locations
+        this.raindropResolutionLoc = gl.getUniformLocation(this.raindropProgram, 'u_resolution');
+        this.splashResolutionLoc = gl.getUniformLocation(this.splashProgram, 'u_resolution');
+        this.upscaleTextureLoc = gl.getUniformLocation(this.upscaleProgram, 'u_texture');
+
+        // Recreate buffers and VAOs
+        this._initRaindropBuffers();
+        this._initSplashBuffers();
+        this._initUpscaleBuffers();
+
+        // Restore blend state
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+        // Recreate framebuffer if scaled rendering was active
+        if (this.scaleFactor < 1.0) {
+            this._initFramebuffer();
+        }
+
+        // Reinit background rain shader
+        if (this.backgroundRain) {
+            this.backgroundRain.dispose();
+            this.backgroundRain = new BackgroundRainShader(gl);
+            this.backgroundRain.init();
+        }
     }
 
     /**
@@ -644,6 +699,7 @@ class WebGLRainRenderer {
      * Uses two-pass rendering: low-res framebuffer -> upscale to display
      */
     render(physicsSystem) {
+        if (this.contextLost) return;
         const gl = this.gl;
 
         // Calculate delta time for background rain animation

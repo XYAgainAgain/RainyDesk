@@ -77,6 +77,7 @@ class MatrixDropPool {
   private _config: MatrixDropConfig;
   private _voices: FMVoice[] = [];
   private _poolSize = 8;
+  private _releaseEventIds: number[] = [];
   private _nextId = 0;
   private _output: Tone.Gain;
 
@@ -202,9 +203,9 @@ class MatrixDropPool {
 
     // Auto-release
     const releaseDelay = this._config.attackTime + decay + 0.1;
-    Tone.getTransport().scheduleOnce(() => {
+    this._releaseEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this.release(voice);
-    }, `+${releaseDelay}`);
+    }, `+${releaseDelay}`));
   }
 
   setEnabled(enabled: boolean): void {
@@ -237,6 +238,11 @@ class MatrixDropPool {
   }
 
   dispose(): void {
+    // Clear pending release callbacks before disposing nodes
+    for (const id of this._releaseEventIds) {
+      Tone.getTransport().clear(id);
+    }
+    this._releaseEventIds = [];
     for (const voice of this._voices) {
       voice.carrier.dispose();
       voice.modulator.dispose();
@@ -450,6 +456,10 @@ class MatrixGlitchProcessor {
   setEnabled(enabled: boolean): void {
     this._config.enabled = enabled;
     this._output.gain.rampTo(enabled ? 1 : 0, 0.1);
+    if (!enabled && this._scheduleId !== null) {
+      Tone.getTransport().clear(this._scheduleId);
+      this._scheduleId = null;
+    }
     if (enabled && this._isRunning && this._scheduleId === null) {
       this.scheduleGlitch();
     }

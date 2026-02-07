@@ -513,6 +513,9 @@ export class ThunderModule {
   private _autoScheduleId: number | null = null;
   private _isAutoMode = false;
 
+  // Strike event IDs (cleared on stopAuto/dispose to prevent orphan callbacks)
+  private _strikeEventIds: number[] = [];
+
   constructor(config: Partial<ThunderModuleConfig> = {}) {
     this._config = {
       ...DEFAULT_THUNDER_CONFIG,
@@ -577,24 +580,24 @@ export class ThunderModule {
     }
 
     // Tearing: immediate sharp crack
-    Tone.getTransport().scheduleOnce(() => {
+    this._strikeEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this._tearing.trigger(intensity);
-    }, now + 0.01);
+    }, now + 0.01));
 
     // Crack: follows shortly after
-    Tone.getTransport().scheduleOnce(() => {
+    this._strikeEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this._crack.trigger(intensity);
-    }, now + 0.05);
+    }, now + 0.05));
 
     // Body: main rumble with slight delay for distant thunder
-    Tone.getTransport().scheduleOnce(() => {
+    this._strikeEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this._body.trigger(intensity, 2 + dist * 0.3);
-    }, now + 0.1 + dist * 0.02);
+    }, now + 0.1 + dist * 0.02));
 
     // Rumble: sub-bass tail comes last
-    Tone.getTransport().scheduleOnce(() => {
+    this._strikeEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this._rumble.trigger(intensity);
-    }, now + 0.3 + dist * 0.05);
+    }, now + 0.3 + dist * 0.05));
 
     console.log(`[ThunderModule] Strike triggered at ${dist.toFixed(1)}km (intensity: ${intensity.toFixed(2)})`);
   }
@@ -617,6 +620,14 @@ export class ThunderModule {
       Tone.getTransport().clear(this._autoScheduleId);
       this._autoScheduleId = null;
     }
+    // Clear any pending strike layer callbacks
+    for (const id of this._strikeEventIds) {
+      Tone.getTransport().clear(id);
+    }
+    this._strikeEventIds = [];
+    // Reset sidechain to prevent lingering ducking after thunder stops
+    this._sidechainEnvelope.gain.cancelScheduledValues(Tone.now());
+    this._sidechainEnvelope.gain.setValueAtTime(0, Tone.now());
   }
 
   private scheduleNextStrike(): void {

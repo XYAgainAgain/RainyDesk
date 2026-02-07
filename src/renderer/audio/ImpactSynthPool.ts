@@ -37,6 +37,7 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
   private _synthConfig: ImpactSynthConfig;
   private _filters: Map<number, Tone.Filter> = new Map();
   private _panners: Map<number, Tone.Panner> = new Map();
+  private _releaseEventIds: number[] = [];
   private _output: Tone.Gain;
 
   constructor(
@@ -121,9 +122,9 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     const releaseTime = Tone.now() + decay + 0.05;
     voice.releaseTime = performance.now() + (decay + 0.05) * 1000;
 
-    Tone.getTransport().scheduleOnce(() => {
+    this._releaseEventIds.push(Tone.getTransport().scheduleOnce(() => {
       this.release(voice);
-    }, releaseTime);
+    }, releaseTime));
 
     return voice;
   }
@@ -147,6 +148,11 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
   }
 
   override dispose(): void {
+    // Clear pending release callbacks before disposing nodes
+    for (const id of this._releaseEventIds) {
+      Tone.getTransport().clear(id);
+    }
+    this._releaseEventIds = [];
     for (const filter of this._filters.values()) {
       filter.dispose();
     }

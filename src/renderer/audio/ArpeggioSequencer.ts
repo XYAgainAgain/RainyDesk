@@ -86,6 +86,43 @@ const BRIDGE_VARIATION: BridgeBar[] = [
   { chord: { name: 'Eb', root: 'Eb1', notes: ['G3', 'Bb3', 'Eb4', 'G4', 'Bb4', 'G4', 'Eb4', 'Bb3'] } },
 ];
 
+// --- Note transposition helper ---
+
+// Chromatic note names (sharps and flats both mapped)
+const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+// Map note name (with accidentals) to semitone offset (0–11)
+const NOTE_TO_SEMITONE: Record<string, number> = {
+  'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3, 'E': 4, 'Fb': 4,
+  'E#': 5, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8, 'Ab': 8,
+  'A': 9, 'A#': 10, 'Bb': 10, 'B': 11, 'Cb': 11,
+};
+
+/**
+ * Transpose a note name (e.g. "G3", "Bb4", "F#3") by semitones.
+ * Returns the transposed note name (e.g. transposeNote("G3", 2) -> "A3").
+ */
+function transposeNote(note: string, semitones: number): string {
+  if (semitones === 0) return note;
+
+  // Parse note: letter(s) + octave
+  const match = note.match(/^([A-G][b#]?)(-?\d+)$/);
+  if (!match) return note; // Unparseable, return as-is
+
+  const noteName = match[1]!;
+  const octave = parseInt(match[2]!, 10);
+
+  const baseSemitone = NOTE_TO_SEMITONE[noteName];
+  if (baseSemitone === undefined) return note;
+
+  // Total semitone position from C0
+  const totalSemitones = (octave * 12) + baseSemitone + semitones;
+  const newOctave = Math.floor(totalSemitones / 12);
+  const newNoteIdx = ((totalSemitones % 12) + 12) % 12; // Handle negative
+
+  return (NOTE_NAMES[newNoteIdx] ?? 'C') + newOctave;
+}
+
 // --- Sequencer class ---
 
 export class ArpeggioSequencer {
@@ -101,14 +138,32 @@ export class ArpeggioSequencer {
 
   /** Previous bar (for change detection) */
   private lastBar = -1;
+  /** Previous beat (for split-bar crossing detection) */
+  private lastBeat = 0;
   /** Steps through chord notes, resets on bar/chord change */
   private noteIndex = 0;
+
+  /** Semitone transpose offset (0 = Matrix key of G, applied to all returned notes) */
+  private transposeSemitones = 0;
 
   /** Callback fired when section changes */
   onSectionChange: SectionChangeCallback | null = null;
 
   constructor(beatOriginTime: number) {
     this.beatOriginTime = beatOriginTime;
+  }
+
+  /**
+   * Set transpose offset in semitones. 0 = original key (G Dorian).
+   * All notes returned by getNextNote() and getCurrentBassRoot() are transposed.
+   */
+  setTranspose(semitones: number): void {
+    this.transposeSemitones = semitones;
+  }
+
+  /** Get current transpose offset in semitones */
+  getTranspose(): number {
+    return this.transposeSemitones;
   }
 
   /**
@@ -143,21 +198,20 @@ export class ArpeggioSequencer {
       this.lastBar = this.currentBar;
     }
 
-    // Split-bar mid-bar chord change: reset noteIndex when beat crosses 2
+    // Split-bar mid-bar chord change: reset noteIndex when beat crosses 2.0
     // Only applies to bars 84-86 which have splitChord
     if (this.currentBar >= 84 && this.currentBar <= 86) {
       const variationIdx = this.currentBar - 80;
       const bridgeBar = BRIDGE_VARIATION[variationIdx];
       if (bridgeBar?.splitChord) {
-        // Detect crossing from beat <2 to beat >=2
-        // We use a simple threshold: if beat just crossed 2.0 (within one frame)
-        // Instead of tracking previous beat, reset noteIndex if beat is very close to 2
-        if (this.currentBeat >= 2.0 && this.currentBeat < 2.0 + 0.05) {
-          // Small window to catch the transition (roughly 1-2 frames at 144fps)
+        // Detect crossing: lastBeat was <2.0, currentBeat is >=2.0
+        if (this.lastBeat < 2.0 && this.currentBeat >= 2.0) {
           this.noteIndex = 0;
         }
       }
     }
+
+    this.lastBeat = this.currentBeat;
   }
 
   /**
@@ -207,17 +261,18 @@ export class ArpeggioSequencer {
    * Get the next note in the current chord's sequence.
    * Increments noteIndex, wrapping around the chord's note array.
    * Called by GlitchSynth on each on-beat collision.
+   * Applies transpose offset if set.
    */
   getNextNote(): string {
     const chord = this.getCurrentChord();
     const note = chord.notes[this.noteIndex % chord.notes.length]!;
     this.noteIndex++;
-    return note;
+    return transposeNote(note, this.transposeSemitones);
   }
 
-  /** Get the current chord's bass root note (e.g. "G1") */
+  /** Get the current chord's bass root note (e.g. "G1"), transposed if offset is set */
   getCurrentBassRoot(): string {
-    return this.getCurrentChord().root;
+    return transposeNote(this.getCurrentChord().root, this.transposeSemitones);
   }
 
   /** Public accessor for current position info */

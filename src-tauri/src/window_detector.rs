@@ -6,31 +6,45 @@
 // Filtering strategy:
 // - Skip invisible windows (IsWindowVisible)
 // - Skip minimized windows (IsIconic) - they report "visible" but aren't on screen
+// - Skip cloaked windows (DWMWA_CLOAKED) - suspended UWP apps, shell-hidden windows
+// - Skip windows on other virtual desktops (IVirtualDesktopManager)
 // - Skip tiny windows (<50px) - likely system UI elements
 // - Skip untitled windows - usually system background processes
 // - Skip RainyDesk/DevTools - our own windows
 // - Skip system windows by class name (locale-independent)
-// - Skip phantom UWP apps - Settings, Calculator, etc. suspend rather than close
 // - Skip system overlays - Task Switching, Task View, input panels
+//
+// UWP apps (ApplicationFrameWindow) and WinUI3 apps (WinUIDesktopWin32WindowClass)
+// are NOT skipped — the cloaked check handles suspended/phantom instances instead.
 
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(target_os = "windows")]
 use windows::{
+    core::GUID,
     Win32::Foundation::{BOOL, HWND, LPARAM, RECT},
+    Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS},
+    Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED},
+    Win32::UI::Shell::IVirtualDesktopManager,
     Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClassNameW, GetWindowPlacement, GetWindowRect, GetWindowTextW,
         IsIconic, IsWindowVisible, IsZoomed, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
     },
-    Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
 };
 
-// Debug counters using atomic operations (safe across threads)
+// CLSID for VirtualDesktopManager COM class
+#[cfg(target_os = "windows")]
+const CLSID_VIRTUAL_DESKTOP_MANAGER: GUID = GUID {
+    data1: 0xAA509086,
+    data2: 0x5CA9,
+    data3: 0x4C25,
+    data4: [0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A],
+};
+
+// Debug counter for periodic logging (safe across threads)
 #[cfg(target_os = "windows")]
 static POLL_COUNT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "windows")]
-static WINDOW_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WindowInfo {
@@ -53,29 +67,56 @@ pub struct WindowData {
     pub windows: Vec<WindowInfo>,
 }
 
+/// Context passed through LPARAM to the EnumWindows callback.
+/// Holds both the result vec and optional VDM for virtual desktop filtering.
+#[cfg(target_os = "windows")]
+struct EnumContext {
+    windows: Vec<WindowInfo>,
+    vdm: Option<IVirtualDesktopManager>,
+}
+
 #[cfg(target_os = "windows")]
 pub fn get_visible_windows() -> Result<WindowData, Box<dyn std::error::Error>> {
-    let mut windows: Vec<WindowInfo> = Vec::new();
+    // Init COM once per thread (redundant calls are tolerated but leak refcounts)
+    thread_local! {
+        static COM_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    COM_INIT.with(|init| {
+        if !init.get() {
+            unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
+            init.set(true);
+        }
+    });
+
+    // Create IVirtualDesktopManager (graceful fallback if COM fails)
+    let vdm: Option<IVirtualDesktopManager> = unsafe {
+        CoCreateInstance(&CLSID_VIRTUAL_DESKTOP_MANAGER, None, CLSCTX_ALL).ok()
+    };
+
+    let mut ctx = EnumContext {
+        windows: Vec::new(),
+        vdm,
+    };
 
     unsafe {
         EnumWindows(
             Some(enum_window_callback),
-            LPARAM(&mut windows as *mut _ as isize),
+            LPARAM(&mut ctx as *mut _ as isize),
         )?;
     }
 
     // DEBUG: Log window count periodically (every 60 calls = ~3 seconds at 50ms)
     let poll_num = POLL_COUNT.fetch_add(1, Ordering::Relaxed);
     if poll_num % 60 == 0 {
-        log::info!("[WindowDetector] Poll #{}: found {} windows (raw)", poll_num + 1, windows.len());
+        log::info!("[WindowDetector] Poll #{}: found {} windows (raw)", poll_num + 1, ctx.windows.len());
     }
 
-    Ok(WindowData { windows })
+    Ok(WindowData { windows: ctx.windows })
 }
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let windows = &mut *(lparam.0 as *mut Vec<WindowInfo>);
+    let ctx = &mut *(lparam.0 as *mut EnumContext);
 
     // Only include visible windows
     if !IsWindowVisible(hwnd).as_bool() {
@@ -95,6 +136,28 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
     if GetWindowPlacement(hwnd, &mut placement).is_ok() {
         if placement.showCmd == SW_SHOWMINIMIZED.0 as u32 {
             return BOOL(1);
+        }
+    }
+
+    // Skip cloaked windows (suspended UWP apps, hidden by shell, etc.)
+    // This is how OBS Studio distinguishes active UWP windows from phantoms.
+    // Cloaked windows report as "visible" but aren't actually on screen.
+    let mut cloaked: u32 = 0;
+    if DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut _ as *mut std::ffi::c_void,
+        std::mem::size_of::<u32>() as u32,
+    ).is_ok() && cloaked != 0 {
+        return BOOL(1);
+    }
+
+    // Skip windows on other virtual desktops
+    if let Some(ref vdm) = ctx.vdm {
+        match vdm.IsWindowOnCurrentVirtualDesktop(hwnd) {
+            Ok(is_current) if !is_current.as_bool() => return BOOL(1),
+            Err(_) => {} // COM error — don't filter (safer to show than hide)
+            _ => {}
         }
     }
 
@@ -118,8 +181,16 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         }
     }
 
-    let width = (rect.right - rect.left) as u32;
-    let height = (rect.bottom - rect.top) as u32;
+    let width_raw = rect.right - rect.left;
+    let height_raw = rect.bottom - rect.top;
+
+    // Guard against malformed windows with negative dimensions
+    if width_raw <= 0 || height_raw <= 0 {
+        return BOOL(1);
+    }
+
+    let width = width_raw as u32;
+    let height = height_raw as u32;
 
     // Filter out tiny windows (likely system UI elements)
     if width < 50 || height < 50 {
@@ -137,17 +208,25 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
 
     // Skip system windows by class name (works on all localized Windows installs)
     // These class names are constant regardless of UI language
+    //
+    // NOTE: ApplicationFrameWindow (UWP frames) and WinUIDesktopWin32WindowClass
+    // (WinUI3 apps) are intentionally NOT skipped — they're real app windows
+    // (Settings, Calculator, Terminal, etc.). Suspended/phantom UWP apps are
+    // caught by the DWMWA_CLOAKED check above instead.
+    //
+    // Windows.UI.Core.CoreWindow is skipped to avoid duplicate detection —
+    // it's the content area inside an ApplicationFrameWindow, which already
+    // provides the full window bounds.
     if class_name == "Progman" ||           // Desktop (Program Manager)
        class_name == "WorkerW" ||           // Desktop worker windows
        class_name == "Shell_TrayWnd" ||     // Taskbar
        class_name == "Shell_SecondaryTrayWnd" ||  // Secondary taskbar (multi-monitor)
        class_name == "NotifyIconOverflowWindow" ||  // System tray overflow
-       class_name == "Windows.UI.Core.CoreWindow" ||  // UWP system overlays
-       class_name == "XamlExplorerHostIslandWindow" ||  // XAML islands (Settings, etc.)
-       class_name == "ApplicationFrameWindow" ||  // UWP app frames (when suspended)
+       class_name == "Windows.UI.Core.CoreWindow" ||  // UWP content (covered by ApplicationFrameWindow)
+       class_name == "XamlExplorerHostIslandWindow" ||  // XAML hosting islands inside other windows
        class_name == "ForegroundStaging" ||  // Compositor staging
        class_name == "MultitaskingViewFrame" ||  // Task View (Win+Tab)
-       class_name == "XamlWindow" {         // Various XAML overlays
+       class_name == "XamlWindow" {          // Various XAML overlays
         return BOOL(1);
     }
 
@@ -191,14 +270,14 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         return BOOL(1);
     }
 
-    // DEBUG: Log first ~20 windows detected (covers first poll cycle)
-    let log_count = WINDOW_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if log_count < 20 {
+    // DEBUG: Log windows periodically (every ~30 sec only, not at startup)
+    let poll_num = POLL_COUNT.load(Ordering::Relaxed);
+    if poll_num % 600 == 0 {
         log::info!("[WindowDetector] Found: \"{}\" [{}] at ({},{}) {}x{}",
             title, class_name, rect.left, rect.top, width, height);
     }
 
-    windows.push(WindowInfo {
+    ctx.windows.push(WindowInfo {
         bounds: Bounds {
             x: rect.left,
             y: rect.top,

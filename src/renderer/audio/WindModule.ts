@@ -69,7 +69,7 @@ const DEFAULT_KATABATIC_CONFIG: KatabaticConfig = {
 };
 
 const DEFAULT_WIND_CONFIG: WindModuleConfig = {
-  masterGain: -12,
+  masterGain: -6,
   bed: DEFAULT_BED_CONFIG,
   interaction: {
     enabled: false,

@@ -39,6 +39,7 @@ yarn-error.log*
 CLAUDE.md
 .gemini/
 GEMINI.md
+llms.md
 
 # Backup
 .backup/

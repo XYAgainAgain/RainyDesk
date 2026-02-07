@@ -79,9 +79,11 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind, float reverse
     // Physics: 150/350 = 0.43, but shader looks steeper due to full-screen stretching
     // Use 0.22 base (roughly half) for visual match
     // Negate wind due to UV coordinate system (Y-flip)
+    // Multiply by scrollDir so slant flips with reverse gravity
     // Add slight oscillation for atmospheric realism
     float windOscillation = sin(time * 0.4 + layerIndex * 1.5) * 0.04;
-    float slant = -wind * (0.18 + windOscillation);
+    float scrollDir = 1.0 - 2.0 * reverseGravity;
+    float slant = -wind * (0.18 + windOscillation) * scrollDir;
     uv.x += uv.y * slant;
 
     // Stretch UV for rain streaks (taller than wide)
@@ -89,8 +91,7 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind, float reverse
 
     // Scroll based on gravity direction (with time), adjusted by depth
     // Fast atmospheric rain - should feel distant and quick
-    // reverseGravity: 0.0 = scroll down (normal), 1.0 = scroll up (reversed)
-    float scrollDir = 1.0 - 2.0 * reverseGravity; // 1.0 normal, -1.0 reversed
+    // scrollDir already computed above: 1.0 normal, -1.0 reversed
     rainUV.y -= time * 50.0 * depthFactor * scrollDir;
 
     // Add horizontal drift from wind (negated for UV coords)
