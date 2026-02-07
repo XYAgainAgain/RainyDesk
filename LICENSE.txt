@@ -8,7 +8,7 @@ This software is licensed under the Business Source License 1.1 (the "License") 
 1. Definitions
    - "You" means any natural person or legal entity who uses or access the Licensed Work.
    - "Licensed Work" means the files in this repository.
-   - "Change Date" means 2029-01-01.
+   - "Change Date" means 2030-02-05.
    - "Change License" means the MIT License.
    - "Commercial Use" means offering, distributing, or sublicensing the Licensed Work (or derivative works)
      in exchange for money, subscriptions, fees, or other monetary compensation. (Selling an installer,
@@ -29,7 +29,7 @@ This software is licensed under the Business Source License 1.1 (the "License") 
      prominent notice of this Business Source License and the Change Date.
 
 4. Change Date and Conversion
-   - On the Change Date (2029-01-01), the Licensed Work will be relicensed under the Change License (MIT)
+   - On the Change Date (2030-02-05), the Licensed Work will be relicensed under the Change License (MIT)
      and such Change License will apply to all copies of the Licensed Work distributed after that date.
    - After the Change Date, the restrictions in Section 3 no longer apply and the Licensed Work
      may be used under the terms of the Change License.
