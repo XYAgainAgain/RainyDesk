@@ -139,13 +139,20 @@ function waitForTauriAPI() {
 }
 
 /**
- * Wait for first window data to be received
+ * NOT A BUG, I PROMISE! CRUCIAL INIT FUNCTION!
+ *
+ * Waits for first window-data event before starting the game loop.
+ * onWindowData() returns Promise<UnlistenFn> (Tauri listen() is async),
+ * so we can't call the return value as a function — we resolve first,
+ * then clean up the listener via .then(). A previous attempt to call
+ * unsubscribe() synchronously threw TypeError and hung init forever,
+ * killing ALL foreground rain and audio. Don't touch this.
  */
 function waitForFirstWindowData() {
   return new Promise((resolve) => {
-    const unsubscribe = window.rainydesk.onWindowData((data) => {
-      unsubscribe();
+    const listenerPromise = window.rainydesk.onWindowData((data) => {
       resolve(data);
+      listenerPromise.then(unsub => unsub());
     });
   });
 }
@@ -157,21 +164,34 @@ function classifyWindow(win, mon, desktop) {
   const winRelX = win.x - desktop.originX;
   const winRelY = win.y - desktop.originY;
 
-  // Check work area match (exact)
-  const workAreaMatch =
-    win.width === mon.workWidth &&
-    win.height === mon.workHeight &&
-    winRelX === mon.workX &&
-    winRelY === mon.workY;
+  // Maximized windows (especially WPF/HwndWrapper apps like Affinity Photo)
+  // may overshoot monitor edges by ~8px on each side. DWM extended frame
+  // bounds don't always trim invisible borders for these windows.
+  const tol = win.isMaximized ? 16 : 0;
+
+  // Check work area match (exact for normal windows, fuzzy for maximized)
+  const workAreaMatch = tol > 0
+    ? Math.abs(win.width - mon.workWidth) <= tol &&
+      Math.abs(win.height - mon.workHeight) <= tol &&
+      Math.abs(winRelX - mon.workX) <= tol &&
+      Math.abs(winRelY - mon.workY) <= tol
+    : win.width === mon.workWidth &&
+      win.height === mon.workHeight &&
+      winRelX === mon.workX &&
+      winRelY === mon.workY;
 
   if (workAreaMatch) return 'work-area';
 
-  // Check full resolution match (exact)
-  const fullResMatch =
-    win.width === mon.width &&
-    win.height === mon.height &&
-    winRelX === mon.x &&
-    winRelY === mon.y;
+  // Check full resolution match (exact for normal, fuzzy for maximized)
+  const fullResMatch = tol > 0
+    ? Math.abs(win.width - mon.width) <= tol &&
+      Math.abs(win.height - mon.height) <= tol &&
+      Math.abs(winRelX - mon.x) <= tol &&
+      Math.abs(winRelY - mon.y) <= tol
+    : win.width === mon.width &&
+      win.height === mon.height &&
+      winRelX === mon.x &&
+      winRelY === mon.y;
 
   if (fullResMatch) return 'full-resolution';
 
@@ -897,7 +917,7 @@ function registerEventListeners() {
   window.rainydesk.onWindowData((data) => {
     // Filter out RainyDesk and DevTools windows
     const newWindowZones = data.windows
-      .filter(w => !w.title || !w.title.includes('RainyDesk'))
+      .filter(w => !w.title || !w.title.startsWith('RainyDesk'))
       .filter(w => !w.title || !w.title.includes('DevTools'))
       .map(w => ({
         x: w.bounds.x,

@@ -251,8 +251,9 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         return BOOL(1);
     }
 
-    // Skip our own overlay windows (use contains for robustness)
-    if title.contains("RainyDesk") {
+    // Skip our own overlay windows (starts_with avoids false positives on
+    // terminals whose title includes a "RainyDesk" directory path)
+    if title.starts_with("RainyDesk") {
         return BOOL(1);
     }
 

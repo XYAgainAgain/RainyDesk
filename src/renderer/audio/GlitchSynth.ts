@@ -79,6 +79,8 @@ export class GlitchSynth {
   // C4: Sub-bass doubling (felt-not-heard rumble)
   private subBassSynth: Tone.Synth | null = null;
   private subBassGain: Tone.Gain | null = null;
+  private subBassFilter: Tone.Filter | null = null;
+  private breakdownSubBassActive = false;
 
   // D: String lead synth (continuous melody)
   private stringSynth: Tone.PolySynth | null = null;
@@ -293,8 +295,10 @@ export class GlitchSynth {
         oscillator: { type: 'triangle' },
         envelope: BASS_SUSTAINED,
       });
+      this.subBassFilter = new Tone.Filter({ type: 'lowpass', frequency: 20000, rolloff: -12 });
       this.subBassGain = new Tone.Gain(Tone.dbToGain(-24)).connect(this.masterOutput);
-      this.subBassSynth.connect(this.subBassGain);
+      this.subBassSynth.connect(this.subBassFilter);
+      this.subBassFilter.connect(this.subBassGain);
 
       // D: String lead synth — DISABLED pending volume/melody tuning
       // this.stringSynth = new Tone.PolySynth(Tone.Synth, {
@@ -421,10 +425,13 @@ export class GlitchSynth {
       this.octaveGain = null;
 
       // Clean up C4: sub-bass
+      this.subBassFilter?.dispose();
       this.subBassSynth?.dispose();
       this.subBassGain?.dispose();
+      this.subBassFilter = null;
       this.subBassSynth = null;
       this.subBassGain = null;
+      this.breakdownSubBassActive = false;
 
       // Clean up D: string lead
       this.stringSynth?.dispose();
@@ -502,10 +509,13 @@ export class GlitchSynth {
     this.octaveGain = null;
 
     // C4: sub-bass
+    this.subBassFilter?.dispose();
     this.subBassSynth?.dispose();
     this.subBassGain?.dispose();
+    this.subBassFilter = null;
     this.subBassSynth = null;
     this.subBassGain = null;
+    this.breakdownSubBassActive = false;
 
     // D: string lead
     this.stringSynth?.dispose();
@@ -576,6 +586,16 @@ export class GlitchSynth {
         this.subBassSynth.detune.cancelScheduledValues(Tone.now());
         this.subBassSynth.detune.rampTo(0, 0.5);
       }
+      // Clean up breakdown sub-bass sweep if it was active
+      if (this.breakdownSubBassActive) {
+        this.breakdownSubBassActive = false;
+        this.subBassSynth?.triggerRelease();
+      }
+      // Reset sub-bass filter to fully open
+      if (this.subBassFilter) {
+        this.subBassFilter.frequency.cancelScheduledValues(Tone.now());
+        this.subBassFilter.frequency.rampTo(20000, 0.5);
+      }
       // Ramp bass back to main loop volume (B1)
       this.bassGain?.gain.rampTo(Tone.dbToGain(BASS_VOLUME_MAIN), 1);
       // C2: Dry reverb send in main loop
@@ -605,13 +625,34 @@ export class GlitchSynth {
       // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-36), 2);
     } else {
-      // Breakdown: fade drone to silence
+      // Breakdown (bars 88–89): fade drone to silence
       this.droneGain?.gain.rampTo(0, 2);
       this.bassSynth?.triggerRelease();
       this.lastBassBar = -1;
       // Let pitch bend sweep finish naturally into silence (don't cancel it)
       // C2: Fade reverb back to dry
       this.reverbSend?.gain.rampTo(0, 1);
+
+      // Sub-bass filter sweep: 80Hz → 300Hz over 2 bars ("rising from the depths")
+      if (this.subBassSynth && this.subBassFilter) {
+        // Cancel any lingering detune from bridge pitch bend
+        this.subBassSynth.detune.cancelScheduledValues(Tone.now());
+        this.subBassSynth.detune.rampTo(0, 0.3);
+        // Close filter down to 80Hz, then sweep open
+        this.subBassFilter.frequency.cancelScheduledValues(Tone.now());
+        this.subBassFilter.frequency.setValueAtTime(80, Tone.now());
+        const sweepDuration = BEAT_CONFIG.BEAT_MS * 8 / 1000; // 2 bars = 8 beats
+        this.subBassFilter.frequency.rampTo(300, sweepDuration);
+        // Trigger sustained sub-bass drone on G1
+        this.subBassSynth.triggerRelease();
+        setTimeout(() => {
+          if (this.subBassSynth && this.droneActive) {
+            this.subBassSynth.triggerAttack('G1');
+          }
+        }, 10);
+        this.breakdownSubBassActive = true;
+      }
+
       // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-30), 0.5);
     }
@@ -767,7 +808,8 @@ export class GlitchSynth {
         // Pulsed sub-bass matches bass pulse
         this.subBassSynth.triggerAttackRelease(subRoot, BEAT_CONFIG.EIGHTH_MS / 1000);
       }
-    } else if (this.subBassSynth) {
+    } else if (this.subBassSynth && !this.breakdownSubBassActive) {
+      // Release sub-bass on silent bars (but not during breakdown filter sweep)
       this.subBassSynth.triggerRelease();
     }
 

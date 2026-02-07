@@ -33,7 +33,6 @@ html, body {
   -webkit-backdrop-filter: blur(20px);
   overflow: hidden;
   color: var(--text-primary);
-  transform-origin: top left;
 }
 
 /* Draggable header */
@@ -103,8 +102,8 @@ html, body {
   font-size: 11px;
 }
 
-/* Close button */
-.help-close {
+/* Window control buttons (maximize, close) */
+.help-window-control {
   width: 28px;
   height: 28px;
   display: flex;
@@ -119,15 +118,25 @@ html, body {
   padding: 0;
 }
 
-.help-close svg {
+.help-window-control svg {
   width: 14px;
   height: 14px;
+}
+
+.help-window-control:hover {
+  background: var(--tab-hover);
+  color: var(--text-primary);
 }
 
 .help-close:hover {
   background: var(--close-hover);
   color: #fff;
 }
+
+/* Maximize/restore icon toggle */
+#help-maximize-btn .restore-icon { display: none; }
+#help-maximize-btn.is-maximized .maximize-icon { display: none; }
+#help-maximize-btn.is-maximized .restore-icon { display: block; }
 
 /* Body: TOC sidebar + content */
 .help-body {

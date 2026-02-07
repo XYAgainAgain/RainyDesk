@@ -2005,6 +2005,11 @@ export class RainyDeskPanel {
 
   private renderIntensityStatus(element: HTMLElement): void {
     const statusText = this.getIntensityStatusText();
+
+    // Skip re-render if text hasn't changed (preserves running CSS animations)
+    if (element.dataset.currentText === statusText) return;
+    element.dataset.currentText = statusText;
+
     const hasEllipsis = statusText.endsWith('...');
     const isSpecial = statusText === 'Did you feel that?' || statusText === 'Maximum coziness!';
 
@@ -2013,8 +2018,8 @@ export class RainyDeskPanel {
       const textPart = statusText.slice(0, -3);
       element.innerHTML = `<span class="intensity-text-main">${textPart}</span><span class="ellipsis-dot" style="animation-delay: 0s">.</span><span class="ellipsis-dot" style="animation-delay: 0.15s">.</span><span class="ellipsis-dot" style="animation-delay: 0.3s">.</span>`;
     } else if (isSpecial) {
-      // Wave animation for special states
-      element.innerHTML = `<span class="intensity-text-wave">${statusText}</span>`;
+      // Per-character sine wave (same as Gaytrix banner)
+      element.innerHTML = this.waveText(statusText);
     } else {
       element.textContent = statusText;
     }

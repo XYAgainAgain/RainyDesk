@@ -1084,6 +1084,82 @@ fn resize_help_window(app: tauri::AppHandle, width: f64, height: f64) -> Result<
     Ok(())
 }
 
+/// Re-center Help window on primary monitor (accounts for post-creation resize)
+#[tauri::command]
+fn center_help_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("help")
+        .ok_or_else(|| "Help window not found".to_string())?;
+
+    let win_size = window.outer_size()
+        .map_err(|e| format!("Failed to get help size: {}", e))?;
+
+    let monitors: Vec<tauri::Monitor> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    if monitors.is_empty() {
+        return Ok(());
+    }
+
+    let idx = get_primary_monitor_index(&monitors);
+    let mon = &monitors[idx];
+    let mon_pos = mon.position();
+    let mon_size = mon.size();
+    let work = get_monitor_work_area(
+        mon_pos.x, mon_pos.y, mon_size.width, mon_size.height,
+    );
+    let scale = mon.scale_factor();
+
+    // Convert work area to logical pixels
+    let work_w = work.width as f64 / scale;
+    let work_h = work.height as f64 / scale;
+    let work_x = work.x as f64 / scale;
+    let work_y = work.y as f64 / scale;
+
+    // Window's actual logical size
+    let mut win_w = win_size.width as f64 / scale;
+    let mut win_h = win_size.height as f64 / scale;
+
+    // Clamp to work area with margin so it doesn't spill off-screen
+    const MARGIN: f64 = 16.0;
+    let max_w = work_w - MARGIN * 2.0;
+    let max_h = work_h - MARGIN * 2.0;
+    let needs_resize = win_w > max_w || win_h > max_h;
+    if needs_resize {
+        win_w = win_w.min(max_w);
+        win_h = win_h.min(max_h);
+        window.set_size(tauri::LogicalSize::new(win_w, win_h))
+            .map_err(|e| format!("Failed to clamp help size: {}", e))?;
+    }
+
+    let pos_x = work_x + (work_w - win_w) / 2.0;
+    let pos_y = work_y + (work_h - win_h) / 2.0;
+
+    window.set_position(tauri::LogicalPosition::new(pos_x, pos_y))
+        .map_err(|e| format!("Failed to position help: {}", e))?;
+
+    log::info!("[Help] Centered on primary monitor: ({:.0}, {:.0}), size {:.0}x{:.0}{}",
+        pos_x, pos_y, win_w, win_h, if needs_resize { " (clamped)" } else { "" });
+    Ok(())
+}
+
+/// Toggle maximize/restore for the Help window
+#[tauri::command]
+fn toggle_maximize_help_window(app: tauri::AppHandle) -> Result<bool, String> {
+    let window = app.get_webview_window("help")
+        .ok_or_else(|| "Help window not found".to_string())?;
+    let is_maximized = window.is_maximized()
+        .map_err(|e| format!("Failed to check maximized state: {}", e))?;
+    if is_maximized {
+        window.unmaximize().map_err(|e| format!("Failed to unmaximize: {}", e))?;
+    } else {
+        window.maximize().map_err(|e| format!("Failed to maximize: {}", e))?;
+    }
+    Ok(!is_maximized)
+}
+
 /// Open the app data folder in Explorer
 #[tauri::command]
 fn open_app_data_folder() -> Result<(), String> {
@@ -1245,14 +1321,44 @@ fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32, visible: 
 fn create_help_window(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
     log::info!("[Help] Creating window, visible={}", visible);
 
+    // Size to 75% of the primary monitor's shorter work-area dimension (square)
+    let monitors: Vec<tauri::Monitor> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    let (help_w, help_h, pos_x, pos_y) = if !monitors.is_empty() {
+        let idx = get_primary_monitor_index(&monitors);
+        let mon = &monitors[idx];
+        let mon_pos = mon.position();
+        let mon_size = mon.size();
+        let work = get_monitor_work_area(
+            mon_pos.x, mon_pos.y, mon_size.width, mon_size.height,
+        );
+        let scale = mon.scale_factor();
+        let work_w = work.width as f64 / scale;
+        let work_h = work.height as f64 / scale;
+        let work_x = work.x as f64 / scale;
+        let work_y = work.y as f64 / scale;
+        let side = (work_w.min(work_h) * 0.75).round();
+        (
+            side, side,
+            work_x + (work_w - side) / 2.0,
+            work_y + (work_h - side) / 2.0,
+        )
+    } else {
+        (700.0, 700.0, 100.0, 100.0)
+    };
+
     let window = WebviewWindowBuilder::new(
         app,
         "help",
         WebviewUrl::App("help.html".into())
     )
         .title("RainyDesk Help")
-        .inner_size(860.0, 1024.0)
-        .center()
+        .inner_size(help_w, help_h)
+        .position(pos_x, pos_y)
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
@@ -1571,6 +1677,8 @@ pub fn run() {
             show_help_window,
             hide_help_window,
             resize_help_window,
+            center_help_window,
+            toggle_maximize_help_window,
             open_url,
             open_app_data_folder
         ])

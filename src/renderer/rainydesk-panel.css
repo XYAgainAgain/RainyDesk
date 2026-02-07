@@ -766,8 +766,8 @@ html, body {
   100% { transform: skewX(0deg) translateY(0); }
 }
 
-/* Per-character sine wave on banner text */
-.gaytrix-hint .wave-char {
+/* Per-character sine wave on banner text + footer flavor text */
+.wave-char {
   display: inline-block;
   animation: char-sine 2.5s ease-in-out infinite;
 }
@@ -1013,7 +1013,8 @@ html, body {
 .rainscaper-panel.matrix-font-mode .gaytrix-hint,
 .rainscaper-panel.matrix-font-mode .section-title,
 .rainscaper-panel.matrix-font-mode .reinit-button,
-.rainscaper-panel.matrix-font-mode .reset-rain-button {
+.rainscaper-panel.matrix-font-mode .reset-rain-button,
+.rainscaper-panel.matrix-font-mode .version-menu-item {
   font-family: 'Departure Mono', 'Consolas', monospace;
 }
 

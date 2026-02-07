@@ -129,6 +129,8 @@ window.rainydesk = {
   showHelpWindow: () => invoke('show_help_window'),
   hideHelpWindow: () => invoke('hide_help_window'),
   resizeHelpWindow: (width, height) => invoke('resize_help_window', { width, height }),
+  centerHelpWindow: () => invoke('center_help_window'),
+  toggleMaximizeHelpWindow: () => invoke('toggle_maximize_help_window'),
 
   // Open URL in default browser
   openUrl: (url) => invoke('open_url', { url }),

@@ -24,6 +24,8 @@ declare global {
       showHelpWindow: () => Promise<void>;
       hideHelpWindow: () => Promise<void>;
       resizeHelpWindow: (width: number, height: number) => Promise<void>;
+      centerHelpWindow: () => Promise<void>;
+      toggleMaximizeHelpWindow: () => Promise<boolean>;
       openUrl: (url: string) => Promise<void>;
       openAppDataFolder: () => Promise<void>;
       getDisplayInfo: () => Promise<{

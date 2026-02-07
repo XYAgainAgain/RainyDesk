@@ -21,8 +21,7 @@ const BASE_FONT_SIZE = 12; // Default text size in pt
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 42;
 const FONT_STEP = 2;
-const BASE_WIDTH = 860;
-const BASE_HEIGHT = 1024;
+// Window size is now calculated by Rust (75% of primary monitor's shorter dimension)
 
 let currentTheme = '';
 let currentFontSize = BASE_FONT_SIZE;
@@ -67,24 +66,13 @@ function syncMatrixMode(): void {
   helpWindow.classList.toggle('matrix-font-mode', matrixMode);
 }
 
-// Apply UI scale from panel setting
+// Apply UI scale — only affects CSS zoom, window size is owned by Rust
+// Zoom goes on #help-root (not <html>) so the theme wipe overlay
+// stays outside the zoomed context and covers the full viewport
 function applyUIScale(): void {
   const scale = parseFloat(localStorage.getItem('rainscaper-ui-scale') || '1.0');
-  const helpWindow = document.querySelector('.help-window') as HTMLElement;
-  if (helpWindow && scale !== 1.0) {
-    helpWindow.style.width = `${BASE_WIDTH}px`;
-    helpWindow.style.height = `${BASE_HEIGHT}px`;
-    helpWindow.style.transform = `scale(${scale})`;
-  } else if (helpWindow) {
-    helpWindow.style.width = '';
-    helpWindow.style.height = '';
-    helpWindow.style.transform = '';
-  }
-
-  // Resize the Tauri window to match
-  const newWidth = Math.round(BASE_WIDTH * scale);
-  const newHeight = Math.round(BASE_HEIGHT * scale);
-  window.rainydesk?.resizeHelpWindow?.(newWidth, newHeight);
+  const root = document.getElementById('help-root');
+  if (root) root.style.zoom = scale !== 1.0 ? `${scale}` : '';
 }
 
 // Diagonal wipe transition (matches panel's corner wipe)
@@ -116,6 +104,10 @@ async function themeWipeTransition(newTheme: string): Promise<void> {
 
   // Apply new theme under the overlay
   await applyThemeToWindow(newTheme);
+
+  // Force the browser to commit the initial clip-path before animating.
+  // Without this, the initial and final states can batch into one paint frame.
+  overlay.getBoundingClientRect();
 
   // Animate the wipe
   requestAnimationFrame(() => {
@@ -225,11 +217,16 @@ function setupTextSizeRocker(): void {
   });
 }
 
-// Close button handler
-function setupClose(): void {
-  const closeBtn = document.getElementById('help-close-btn');
-  closeBtn?.addEventListener('click', () => {
+// Window control button handlers
+function setupWindowControls(): void {
+  document.getElementById('help-close-btn')?.addEventListener('click', () => {
     window.rainydesk?.hideHelpWindow?.();
+  });
+
+  const maxBtn = document.getElementById('help-maximize-btn');
+  maxBtn?.addEventListener('click', async () => {
+    const isNowMaximized = await window.rainydesk?.toggleMaximizeHelpWindow?.();
+    maxBtn.classList.toggle('is-maximized', isNowMaximized);
   });
 }
 
@@ -255,8 +252,8 @@ async function init(): Promise<void> {
   // Sync Matrix Mode font
   syncMatrixMode();
 
-  // Set up close button and text size rocker
-  setupClose();
+  // Set up window controls and text size rocker
+  setupWindowControls();
   setupTextSizeRocker();
 
   // Apply persisted text size
