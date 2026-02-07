@@ -1,4 +1,4 @@
-#  🌧️ RainyDesk 💻 <sub>v0.7.0-alpha</sub>
+#  🌧️ RainyDesk 💻 <sub>v0.8.5-alpha</sub>
 
 Ever wish it could rain on your desktop? Now it can, and you can use windows as umbrellas. ☔
 
@@ -26,7 +26,7 @@ Once running, RainyDesk sits in your system tray. Left-click the tray icon to op
 - Volume Presets (there's a bunch)
 - Quit RainyDesk
 
-The Rainscaper panel is a little more complicated, but it has an Easy Mode (for most folks) and an Admin Mode (for the real rain-heads). I'll include a full guide here once it's done!
+The Rainscaper panel is a little more complicated, but it has an Easy Mode (for most folks) and an Admin Mode (for the real rain-heads). I've included a straightforward guide in the app itself; just click the version number in the bottom right of the panel, then click the Help Me button.
 
 #### Installation
 RainyDesk isn't released just yet, but you can run it from source if you're cool. Download the project as a ZIP, extract anywhere you like, then open a `cmd` terminal in that directory and do these lil guys to make yourself an executable:
@@ -50,8 +50,8 @@ Imagine your entire desktop — *all* your monitors, no matter how weirdly they'
 **The Magic:**
 - **Void Mask:** RainyDesk figures out where your monitors *aren't* and ignores that space. Got gaps between your screens? Those are "walls" that rain can't pass through. If they're right next to each other, though, the water treats it all as one big space to splash around in! 🌊
 - **Spawn Map:** Rain only falls from the top of each monitor, not from empty space. Or the other direction, if you click the Reverse Gravity toggle. 🙃
-- **Puddles:** When rain hits something, it turns into water that spreads out like a real puddle. Well, a real 2D puddle. It's pretty close, at least! 😰
-- **Waterfalls:** Try lining up a bunch of windows and making a little cascade! Also, if your monitors are at different heights, puddles can spill over the edge and cascade down to the lower monitor. Be careful accidentally drowning your taskbar icons! 🤿
+- **Puddles:** When rain hits something, it turns into water that spreads out like a real puddle. Well, a real 2D puddle. It's pretty close, at least!
+- **Waterfalls:** Try lining up a bunch of windows and making a little cascade! Also, if your monitors are at different heights, puddles can spill over the edge and cascade down to the lower monitor.
 
 **The Feel:**
 - Drag a window over a puddle? *Sploosh!* Some water vanishes, some goes flying out sideways!
@@ -69,33 +69,36 @@ RainyDesk is in active development and I'm really not rushing it because it's my
 **What Works:**
 
 - **Cozy pixelated rain** falls on all your monitors (including vertical/rotated ones)
-- **Cool water physics** with surface tension, cohesion/adhesion, dripping, pooling, and all that juicy fluid stuff with oodles of splishysplashies on the tops/sides of windows + the taskbar
-- **Click-through** transparency so the rain never blocks your mouse
-- **System tray controls** for volume & hot-swapping between Rainscapes
-- **High refresh rate** support (anywhere from 60–240Hz) via interpolation
+- **Cool water physics** with surface tension, cohesion/adhesion, dripping, pooling, and all that juicy fluid stuff with oodles of splishysplashies everywhere
+- **Click-through** transparency so the rain never blocks your very important work
+- **System tray controls** for volume & stuff
+- **High refresh rate** support (anywhere from 15–360 Hz) via interpolation
 - **Window detection**; rain flows around your windows unless maximized, and if it's maximized, it's muffled!
-- **Tray icon!** Huge shout-out to my friend Erin for making it! 💙👩‍🎨🧡
-- **Rainscaper control panel** to tweak everything from rain intensity to audio materials to gravity
+- **Rainscaper control panel** to tweak everything from rain intensity to audio materials to gravity to gaiety
 - **Rainscape preset system** to save and load your perfect rainy day vibes as `.rain` files like `TinRoof.rain` & `Forest.rain`
-- **Procedural audio synthesis** for voice-pooled impact sounds, bubble effects, wind, and background sheet noise (and EQ + FX + LFOs!)
+- **Procedural audio synthesis** for impact sounds, wind, and background sheet noise (and EQ + FX + LFOs!)
 - **Background rain** made of atmospheric layers behind your windows with no physics; really sells the effect!
 - **Render scale options** for pixelated 8-bit aesthetic or crispy full-res circles, your choice! Lower render scale is lighter on the graphics card, but it all sounds the same!
 - **Gentle fade-in on startup** so no jump-scares from fake water lol
+- **Matrix Mode** complete with a sweet synth tune that the rain plays automagically 😎
 
 **What's Coming:**
+
+- **Custom icon!** Huge shout-out to my friend Erin for making it! 💙👩‍🎨🧡
 - ***Thunder synth!*** Because we *gotta* have the booms! ⛈
-- **7 audio materials** which are Glass, Metal, Wood, Concrete, Fabric, Foliage, & Water (each sounds different!)
-- 3D spatial audio with full 5.1/7.1 surround sound support (like Dolby Atmos for Headphones — rain all around you!)
-- More visual effects (adjustable trails, colors, droplet styles)
+- **7 audio materials** which will be Glass, Metal, Wood, Concrete, Fabric, Foliage, & Water (each sounding different!)
+- 3D spatial audio with full 5.1/7.1 surround sound support (like Dolby Atmos for Headphones)
+- More visual effects (adjustable trails, droplet styles)
 - Auto-launch on startup/login to immediately soak your desktop; currently manual for my sanity
 - Linux support (I pinkie promise!) and maybe MacOS later if my Mac Mini behaves
 - A nice easy installer & decent app size (<50 MB)
 - Snow? 🌨👀
 
 ## Tech Specs for Big Nerds
-RainyDesk is built with **Tauri** (Rust backend + WebView2), **Pixi.js** v8 rendering, and **Tone.js** audio synthesis.
+RainyDesk is built with **Tauri** (Rust backend + WebView2), **Pixi.js** v8 rendering, & **Tone.js** audio synthesis... and a whole lot of gaffer's tape.
 
 **Architecture:**
+
 - One mega-overlay window spans your entire virtual desktop (all monitors, even weird setups)
 - Another mega-background window renders atmospheric rain behind everything
 - Void mask treats gaps between/around monitors as solid walls; calculated automatically on start
@@ -103,20 +106,7 @@ RainyDesk is built with **Tauri** (Rust backend + WebView2), **Pixi.js** v8 rend
 - Cellular automata for natural water flow (Noita-style!)
 - Spatial audio: rain position → stereo pan (5.1/7.1 coming later, I swear)
 
-## Third-Party Libraries
-Truly could not have made this without these. Holy heck, what a huge help! Thanks y'all! ♥
-- [Tauri](https://tauri.app) (v2) — MIT License — Desktop app framework
-- [Pixi.js](https://pixijs.com) (v8) — MIT License — GPU-accelerated rendering
-- [Tone.js](https://tonejs.github.io) (v15.1.22) — MIT License — Audio synthesis
-
-## Bundled Fonts
-- [Convergence](https://fonts.google.com/specimen/Convergence) — SIL OFL 1.1 — Nicolas Silva & John Vargas Beltran
-- [Departure Mono](https://departuremono.com) v1.500 — SIL OFL 1.1 — Helena Zhang
-- [JetBrains Mono](https://www.jetbrains.com/lp/mono/) v2.305 — SIL OFL 1.1 — Philipp Nurullin & Konstantin Bulenkov
-- [Nimbus Mono PS](https://github.com/twardoch/urw-core35-fonts) v1.00 — SIL OFL 1.1 — URW++ Design & Development
-- [Matrix Code](https://github.com/Rezmason/matrix) v2.0 — MIT License — Rezmason
-
-## License & Acknowledgments
+## License
 RainyDesk is currently source-available under the Business Source License 1.1 (BSL-1.1). That means you are welcome to use, tinker with, and modify RainyDesk for personal, educational, and non-commercial purposes. I've chosen BSL so I can keep the project freely available while preventing third parties from repackaging and selling it as a commercial product without permission. Don't want that, now do we?
 
 >  **Change Date: 2030-02-05** — on or after this date RainyDesk will automatically be relicensed under the MIT License, making it fully permissive and open-source.
@@ -125,13 +115,31 @@ If you'd like to use RainyDesk commercially before the Change Date, which is my 
 
 ---
 
-None of this wacky wetness would have been possible without the hard work and research of all the folks who made the above libraries and wrote the papers with excruciatingly accurate titles I used for the raindrop audio synthesis:
-- ["Computational Real-Time Sound Synthesis of Rain"](https://www.diva-portal.org/smash/record.jsf?pid=diva2%3A19156&dswid=-6144) (2003) by Andreas Zita
-- ["On the Measurement and Prediction of Rainfall Noise"](https://www.sciencedirect.com/science/article/abs/pii/S0003682X20307404?via%3Dihub) (2021) by G. Schmid, M. J. Kingan, L. Panton, G. Willmott, Y. Yang, C. Decraene, E. Reynders, & A. Hall
-- ["Procedural Modeling of Interactive Sound Sources in Virtual Reality"](https://link.springer.com/chapter/10.1007/978-3-031-04021-4_2) (2023) by Federico Avanzini
-- ["Rainfall Observation Leveraging Raindrop Sounds Acquired Using Waterproof Enclosure: Exploring Optimal Length of Sounds for Frequency Analysis"](https://www.mdpi.com/1424-8220/24/13/4281) (2024) by Seunghyun Hwang, Changhyun Jun, Carlo De Michele, Hyeon-Joon Kim, & Jinwook Lee
-- ["A Theoretical Study on Drop Impact Sound and Rain Noise"](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/abs/theoretical-study-on-drop-impact-sound-and-rain-noise/7A703959CA20067BB96BE8037030143E) (1991) by Y. P. Guo & J. E. Ffowcs Williams
-- ["Advances in Thunder Sound Synthesis"](https://arxiv.org/abs/2204.08026) (2022) by E. Fineberg, J. Walters, & J. Reiss — Thunder synthesis techniques from the [thunder-synthesis](https://github.com/bineferg/thunder-synthesis) project
+## Acknowledgments
+
+None of this wacky wetness would have been possible without the hard work and research of all the folks who made these libraries, crafted these typefaces, and wrote the research papers with excruciatingly accurate titles I used for the raindrop audio synthesis:
+
+### Third-Party Libraries
+Truly could not have made this without these. Holy heck, what a huge help! Thanks y'all! ♥
+- [Tauri](https://tauri.app) (v2) — MIT License — Desktop app framework
+- [Pixi.js](https://pixijs.com) (v8) — MIT License — GPU-accelerated rendering
+- [Tone.js](https://tonejs.github.io) (v15.1.22) — MIT License — Real-time audio synthesis
+
+### Bundled Fonts
+- [Convergence](https://fonts.google.com/specimen/Convergence) — SIL OFL 1.1 — by Nicolas Silva & John Vargas Beltran
+- [Departure Mono](https://departuremono.com) (v1.500) — SIL OFL 1.1 — by Helena Zhang
+- [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (v2.305) — SIL OFL 1.1 — by Philipp Nurullin & Konstantin Bulenkov
+- [Nimbus Mono PS](https://github.com/twardoch/urw-core35-fonts) (v1.00) — SIL OFL 1.1 — by URW++ Design & Development
+- [Matrix Code](https://github.com/Rezmason/matrix) (v2.0) — MIT License — by Rezmason
+
+### References
+- [Computational Real-Time Sound Synthesis of Rain](https://www.diva-portal.org/smash/record.jsf?pid=diva2%3A19156&dswid=-6144) (2003) — Andreas Zita
+- [On the Measurement and Prediction of Rainfall Noise](https://www.sciencedirect.com/science/article/abs/pii/S0003682X20307404?via%3Dihub) (2021) — G. Schmid et al.
+- [Procedural Modeling of Interactive Sound Sources in Virtual Reality](https://link.springer.com/chapter/10.1007/978-3-031-04021-4_2) (2023) — Federico Avanzini
+- [Rainfall Observation Leveraging Raindrop Sounds Acquired Using Waterproof Enclosure](https://www.mdpi.com/1424-8220/24/13/4281) (2024) — Seunghyun Hwang et al.
+- [A Theoretical Study on Drop Impact Sound and Rain Noise](https://www.cambridge.org/core/journals/journal-of-fluid-mechanics/article/abs/theoretical-study-on-drop-impact-sound-and-rain-noise/7A703959CA20067BB96BE8037030143E) (1991) — Y. P. Guo & J. E. Ffowcs Williams
+- [Advances in Thunder Sound Synthesis](https://arxiv.org/abs/2204.08026) (2022) — E. Fineberg, J. Walters, & J. Reiss
+  - *Note: Thunder synthesis techniques adapted from the [thunder-synthesis](https://github.com/bineferg/thunder-synthesis) project.*
 
 ---
 
