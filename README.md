@@ -36,7 +36,7 @@ The Rainscaper panel is a little more complicated, but you'll figure it out quic
 I've included a straightforward guide in the app itself; just click the version number in the bottom right of the panel, then click the **Help Me!** button. That same menu has a **Start with Windows** toggle so RainyDesk can launch on login, and a link to RainyDesk's GitHub repository.
 
 #### Installation
-Grab the latest `.exe` installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases) and follow the prompts. It installs to your user profile (no admin elevation needed) and adds a Start Menu shortcut.
+Grab the latest `.exe` installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases) (check the Assets section at the bottom) and follow the prompts. It installs to your user profile (no admin elevation needed) and adds a Start Menu shortcut.
 
 Want to build from source instead? You'll need [Node.js](https://nodejs.org/) (v18+), [Rust](https://rustup.rs/) (1.77+), and the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/). Then clone the repo and run these bad boys:
 

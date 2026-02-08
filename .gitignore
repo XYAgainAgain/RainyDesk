@@ -9,6 +9,7 @@ dist/
 .webpack/
 *.bundle.js
 *.bundle.js.map
+
 # Cache
 .cache/
 
@@ -44,3 +45,4 @@ llms.md
 # Temporary files
 *.tmp
 *.temp
+test_flags.pdb
