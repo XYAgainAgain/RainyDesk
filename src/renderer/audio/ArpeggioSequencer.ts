@@ -102,7 +102,7 @@ const NOTE_TO_SEMITONE: Record<string, number> = {
  * Transpose a note name (e.g. "G3", "Bb4", "F#3") by semitones.
  * Returns the transposed note name (e.g. transposeNote("G3", 2) -> "A3").
  */
-function transposeNote(note: string, semitones: number): string {
+export function transposeNote(note: string, semitones: number): string {
   if (semitones === 0) return note;
 
   // Parse note: letter(s) + octave

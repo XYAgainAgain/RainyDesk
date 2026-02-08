@@ -9,8 +9,6 @@ dist/
 .webpack/
 *.bundle.js
 *.bundle.js.map
-src/renderer/sounds/
-
 # Cache
 .cache/
 
@@ -37,8 +35,6 @@ yarn-error.log*
 # AI instruction files (shout-out to Claude for not sucking)
 .claude/
 CLAUDE.md
-.gemini/
-GEMINI.md
 llms.md
 
 # Backup

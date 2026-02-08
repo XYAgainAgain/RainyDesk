@@ -20,6 +20,9 @@
     "core:event:default",
     "core:path:default",
     "core:app:allow-version",
-    "log:default"
+    "log:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }

@@ -9,6 +9,7 @@ declare global {
       setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void;
       updateRainscapeParam: (path: string, value: unknown) => void;
       onUpdateRainscapeParam: (callback: (path: string, value: unknown) => void) => void;
+      onSetVolume: (callback: (value: number) => void) => void;
       onLoadRainscape: (callback: (filename: string) => void) => void;
       resizeRainscaper: (width: number, height: number) => Promise<void>;
       saveRainscape: (name: string, data: unknown) => Promise<void>;

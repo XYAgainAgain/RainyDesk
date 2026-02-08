@@ -451,6 +451,13 @@ export class GridSimulation {
     }
 
     /**
+     * Get current evaporation (puddle drain) rate.
+     */
+    getEvaporationRate(): number {
+        return this.config.evaporationRate;
+    }
+
+    /**
      * Enable or disable reverse gravity mode.
      * @param reversed true = rain falls up, false = normal
      */

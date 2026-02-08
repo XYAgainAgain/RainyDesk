@@ -9,7 +9,7 @@
  */
 
 import * as Tone from 'tone';
-import { ArpeggioSequencer, type Section } from './ArpeggioSequencer';
+import { ArpeggioSequencer, transposeNote, type Section } from './ArpeggioSequencer';
 
 // Beat quantization config (102 BPM, quantized to 16th notes)
 const BEAT_CONFIG = {
@@ -27,6 +27,9 @@ const BASS_PULSED = { attack: 0.01, decay: 0.4, sustain: 0.3, release: 0.3 }; //
 // Bass volume per section (B1)
 const BASS_VOLUME_MAIN = -12;    // Present in main loop
 const BASS_VOLUME_BRIDGE = -8;   // Prominent in bridge pulsed section
+
+// G Dorian ascending walk (sub-bass intro, bars 0-3)
+const G_DORIAN_WALK = ['G0', 'A0', 'Bb0', 'C1', 'D1', 'Eb1', 'F1', 'G1'];
 
 export interface TriggerResult {
   onBeat: boolean;  // Was this collision on a beat?
@@ -81,6 +84,14 @@ export class GlitchSynth {
   private subBassGain: Tone.Gain | null = null;
   private subBassFilter: Tone.Filter | null = null;
   private breakdownSubBassActive = false;
+
+  // Sub-bass intro Dorian walk (bars 0-3)
+  private introSubBassActive = false;
+  private introStepIndex = 0;
+  private introSnarlFired = false;
+
+  // Drone delay: suppress gain until first OGG crossfade completes
+  private droneFirstLoop = true;
 
   // D: String lead synth (continuous melody)
   private stringSynth: Tone.PolySynth | null = null;
@@ -203,6 +214,7 @@ export class GlitchSynth {
     if (!this.sequencer || !this.droneActive) return;
     try {
       this.sequencer.update();
+      this.updateSubBassIntro();
       this.updateBass();
       this.updateStringLead();
       this.updateBassLfo();
@@ -229,7 +241,7 @@ export class GlitchSynth {
   }
 
   /** Load and start background drone with crossfade looping */
-  async startDrone(url: string, fadeInSeconds = 3): Promise<void> {
+  async startDrone(url: string): Promise<void> {
     // Block if already active OR currently stopping (fade-out in progress)
     if (this.droneActive || this.droneStopping) return;
 
@@ -318,8 +330,11 @@ export class GlitchSynth {
       this.droneActive = true;
       this.currentSection = 'main';
       this.lastBassBar = -1;
-      this.droneGain.gain.rampTo(Tone.dbToGain(this.targetDroneVolumeDb), fadeInSeconds);
+      this.droneFirstLoop = true;
+      // Drone gain stays at 0 (created at 0 on line above) — delayed until first OGG crossfade
       this.startDroneLoop();
+      // Start sub-bass intro Dorian walk (bars 0-3)
+      this.startSubBassIntro();
     } catch (err) {
       console.error('[Matrix] Failed to load drone:', err);
       throw err; // Re-throw so caller knows it failed
@@ -359,6 +374,11 @@ export class GlitchSynth {
         // Use the Transport-provided time for accurate scheduling
         nextPlayer.start(time);
         this.droneCrossfade?.fade.rampTo(useA ? 1 : 0, crossfadeTime);
+        // First crossfade = OGG's second loop starting. Fade drone in now.
+        if (this.droneFirstLoop) {
+          this.droneGain?.gain.rampTo(Tone.dbToGain(this.targetDroneVolumeDb), 2);
+          this.droneFirstLoop = false;
+        }
         scheduleNext(!useA, time);
       }, startTime);
       this.scheduledEventIds.push(eventId);
@@ -378,6 +398,10 @@ export class GlitchSynth {
 
     this.droneGain?.gain.rampTo(0, fadeOutSeconds);
 
+    // Cancel scheduled filter automations before release
+    this.subBassFilter?.frequency.cancelScheduledValues(Tone.now());
+    this.bassFilter?.frequency.cancelScheduledValues(Tone.now());
+
     // Release bass and string lead immediately
     this.bassSynth?.triggerRelease();
     this.subBassSynth?.triggerRelease();
@@ -385,6 +409,12 @@ export class GlitchSynth {
 
     // Stop LFO
     this.bassLfo?.stop();
+
+    // Reset intro/drone state
+    this.introSubBassActive = false;
+    this.introStepIndex = 0;
+    this.introSnarlFired = false;
+    this.droneFirstLoop = true;
 
     // Clear only our scheduled crossfade events (not global Transport)
     this.clearScheduledEvents();
@@ -467,12 +497,22 @@ export class GlitchSynth {
       this.droneCleanupTimeout = null;
     }
 
+    // Cancel scheduled filter automations before dispose
+    this.subBassFilter?.frequency.cancelScheduledValues(Tone.now());
+    this.bassFilter?.frequency.cancelScheduledValues(Tone.now());
+
     // Release synths immediately before dispose
     this.bassSynth?.triggerRelease();
     this.subBassSynth?.triggerRelease();
     this.stringSynth?.releaseAll();
     this.bassLfo?.stop();
     this.clearScheduledEvents();
+
+    // Reset intro/drone state
+    this.introSubBassActive = false;
+    this.introStepIndex = 0;
+    this.introSnarlFired = false;
+    this.droneFirstLoop = true;
 
     // Dispose all drone-related nodes immediately (skip stopDrone's setTimeout)
     this.dronePlayerA?.stop();
@@ -570,8 +610,10 @@ export class GlitchSynth {
     console.log(`[Matrix] Section change: ${section} (bar ${bar})`);
 
     if (section === 'main') {
-      // Fade drone back in to user's volume over 2s
-      this.droneGain?.gain.rampTo(Tone.dbToGain(this.targetDroneVolumeDb), 2);
+      // Fade drone back in to user's volume over 2s (skip if still on first OGG loop)
+      if (!this.droneFirstLoop) {
+        this.droneGain?.gain.rampTo(Tone.dbToGain(this.targetDroneVolumeDb), 2);
+      }
       // Switch bass to sustained envelope and main loop volume
       if (this.bassSynth) {
         this.bassSynth.envelope.attack = BASS_SUSTAINED.attack;
@@ -581,6 +623,11 @@ export class GlitchSynth {
         // Reset pitch bend from breakdown sweep
         this.bassSynth.detune.cancelScheduledValues(Tone.now());
         this.bassSynth.detune.rampTo(0, 0.5);
+      }
+      // Reset bass filter from breakdown sweep (was closed to 80Hz)
+      if (this.bassFilter) {
+        this.bassFilter.frequency.cancelScheduledValues(Tone.now());
+        this.bassFilter.frequency.rampTo(20000, 0.5);
       }
       if (this.subBassSynth) {
         this.subBassSynth.detune.cancelScheduledValues(Tone.now());
@@ -600,6 +647,8 @@ export class GlitchSynth {
       this.bassGain?.gain.rampTo(Tone.dbToGain(BASS_VOLUME_MAIN), 1);
       // C2: Dry reverb send in main loop
       this.reverbSend?.gain.rampTo(0, 0.5);
+      // Restart sub-bass intro Dorian walk for new cycle
+      this.startSubBassIntro();
       // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-30), 1);
     } else if (section === 'bridge') {
@@ -625,13 +674,26 @@ export class GlitchSynth {
       // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-36), 2);
     } else {
-      // Breakdown (bars 88–89): fade drone to silence
+      // Breakdown (bars 88-89): fade drone to silence, bass sustains with filter sweep
       this.droneGain?.gain.rampTo(0, 2);
-      this.bassSynth?.triggerRelease();
       this.lastBassBar = -1;
-      // Let pitch bend sweep finish naturally into silence (don't cancel it)
+      // Let pitch bend sweep finish naturally (don't cancel it)
       // C2: Fade reverb back to dry
       this.reverbSend?.gain.rampTo(0, 1);
+
+      // Switch bass to sustained envelope (was pulsed from bridge)
+      if (this.bassSynth) {
+        this.bassSynth.envelope.attack = BASS_SUSTAINED.attack;
+        this.bassSynth.envelope.decay = BASS_SUSTAINED.decay;
+        this.bassSynth.envelope.sustain = BASS_SUSTAINED.sustain;
+        this.bassSynth.envelope.release = BASS_SUSTAINED.release;
+      }
+      // Bass filter sweep: 20kHz down to 80Hz over 2 bars (detuned siren winding down)
+      if (this.bassFilter) {
+        this.bassFilter.frequency.cancelScheduledValues(Tone.now());
+        const sweepDuration = BEAT_CONFIG.BEAT_MS * 8 / 1000; // 2 bars = 8 beats
+        this.bassFilter.frequency.rampTo(80, sweepDuration);
+      }
 
       // Sub-bass filter sweep: 80Hz → 300Hz over 2 bars ("rising from the depths")
       if (this.subBassSynth && this.subBassFilter) {
@@ -656,6 +718,99 @@ export class GlitchSynth {
       // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-30), 0.5);
     }
+  }
+
+  /**
+   * Start sub-bass intro Dorian walk (bars 0-3).
+   * 8 ascending notes G0-G1, one every 2 beats (half-bar), with filter opening.
+   */
+  private startSubBassIntro(): void {
+    if (!this.subBassSynth || !this.subBassFilter || !this.sequencer) return;
+
+    this.introSubBassActive = true;
+    this.introStepIndex = 0;
+    this.introSnarlFired = false;
+
+    // Prominent intro volume (-12dB, not the usual -24dB background level)
+    this.subBassGain?.gain.cancelScheduledValues(Tone.now());
+    const barMs = BEAT_CONFIG.BEAT_MS * 4;
+    this.subBassGain?.gain.rampTo(Tone.dbToGain(-12), barMs / 1000);
+
+    // Filter sweep: closed at 40Hz, opens to 300Hz over 4 bars (~9.4s)
+    this.subBassFilter.frequency.cancelScheduledValues(Tone.now());
+    this.subBassFilter.frequency.setValueAtTime(40, Tone.now());
+    const sweepDuration = barMs * 4 / 1000; // 4 bars
+    this.subBassFilter.frequency.rampTo(300, sweepDuration);
+
+    // Trigger first note (G0, transposed by user key)
+    const transpose = this.sequencer.getTranspose();
+    const firstNote = transposeNote(G_DORIAN_WALK[0]!, transpose);
+    this.subBassSynth.triggerRelease();
+    setTimeout(() => {
+      if (this.subBassSynth && this.droneActive) {
+        this.subBassSynth.triggerAttack(firstNote);
+      }
+    }, 10);
+  }
+
+  /**
+   * Per-frame update for sub-bass intro walk.
+   * Advances through G Dorian scale during bars 0-3, fires snarl at bar 2.
+   */
+  private updateSubBassIntro(): void {
+    if (!this.introSubBassActive || !this.sequencer || !this.subBassSynth) return;
+
+    const { bar, beat } = this.sequencer.getBarPosition();
+
+    // End intro at bar 4 (or later if we wrapped past): ramp volume back down
+    if (bar >= 4 && bar < 88) {
+      this.introSubBassActive = false;
+      this.subBassGain?.gain.cancelScheduledValues(Tone.now());
+      this.subBassGain?.gain.rampTo(Tone.dbToGain(-24), 0.5);
+      return;
+    }
+
+    // Calculate which step we're on (0-7 across bars 0-3, 2 steps per bar)
+    const step = (bar * 2) + (beat >= 2 ? 1 : 0);
+    if (step > 7) return; // Safety: only 8 notes in the walk
+
+    // Advance to next note when step changes
+    if (step > this.introStepIndex) {
+      this.introStepIndex = step;
+      const transpose = this.sequencer.getTranspose();
+      const note = transposeNote(G_DORIAN_WALK[step]!, transpose);
+      this.subBassSynth.triggerRelease();
+      setTimeout(() => {
+        if (this.subBassSynth && this.droneActive) {
+          this.subBassSynth.triggerAttack(note);
+        }
+      }, 10);
+    }
+
+    // Fire single snarl at bar 2
+    if (bar >= 2 && !this.introSnarlFired) {
+      this.triggerIntroSnarl();
+    }
+  }
+
+  /**
+   * Single snarl at bar 2: triangle-wave filter sweep on sub-bass.
+   * Rise 200-800Hz, fall 800-200Hz, settle to 300Hz target.
+   * Matches existing bass LFO character (0.4Hz, 200-800Hz range).
+   */
+  private triggerIntroSnarl(): void {
+    if (!this.subBassFilter || this.introSnarlFired) return;
+    this.introSnarlFired = true;
+
+    // Cancel the ongoing linear filter sweep from startSubBassIntro
+    this.subBassFilter.frequency.cancelScheduledValues(Tone.now());
+
+    // Manual triangle-wave automation: rise → fall → settle
+    const now = Tone.now();
+    this.subBassFilter.frequency.setValueAtTime(200, now);
+    this.subBassFilter.frequency.linearRampToValueAtTime(800, now + 1.25);  // Rise
+    this.subBassFilter.frequency.linearRampToValueAtTime(200, now + 2.5);   // Fall
+    this.subBassFilter.frequency.linearRampToValueAtTime(300, now + 4.5);   // Settle before bar 4
   }
 
   /**
@@ -695,6 +850,14 @@ export class GlitchSynth {
         // Pulsed: first "dmmm" on beat 1
         this.bassSynth.triggerAttackRelease(root, BEAT_CONFIG.EIGHTH_MS / 1000);
         this.bassNextPulseIndex = 1;
+      } else if (this.currentSection === 'breakdown') {
+        // Breakdown: sustained bass with detuned pitch + closing filter
+        this.bassSynth.triggerRelease();
+        setTimeout(() => {
+          if (this.bassSynth && this.droneActive) {
+            this.bassSynth.triggerAttack(root);
+          }
+        }, 10);
       }
     }
 
@@ -745,8 +908,8 @@ export class GlitchSynth {
     if (bar >= 64 && bar <= 75) return false;
     // Bars 76-87: pulsed bass (bridge re-entry)
     if (bar >= 76 && bar <= 87) return true;
-    // Bars 88-89: silent (breakdown)
-    return false;
+    // Bars 88-89: bass sustains through breakdown with filter sweep
+    return true;
   }
 
   /** Whether this bar uses pulsed "dmm dmm" bass articulation */
@@ -773,8 +936,10 @@ export class GlitchSynth {
       this.bassLfo.start();
     } else if (!shouldBeActive && this.bassLfo.state === 'started') {
       this.bassLfo.stop();
-      // Reset filter to open when LFO is off
-      this.bassFilter?.frequency.rampTo(20000, 0.1);
+      // Reset filter to open when LFO is off (skip during breakdown — filter sweep active)
+      if (this.currentSection !== 'breakdown') {
+        this.bassFilter?.frequency.rampTo(20000, 0.1);
+      }
     }
   }
 
@@ -791,8 +956,8 @@ export class GlitchSynth {
     if (bar === this.lastStringBar) return; // Only act on bar change
     this.lastStringBar = bar;
 
-    // C4: Sub-bass mirrors bass root 1 octave lower
-    if (this.subBassSynth && this.isBassActiveForBar(bar)) {
+    // C4: Sub-bass mirrors bass root 1 octave lower (skip during intro walk)
+    if (this.subBassSynth && this.isBassActiveForBar(bar) && !this.introSubBassActive) {
       const root = this.sequencer.getCurrentBassRoot();
       const subRoot = this.transposeOctave(root, -1);
 
@@ -808,8 +973,8 @@ export class GlitchSynth {
         // Pulsed sub-bass matches bass pulse
         this.subBassSynth.triggerAttackRelease(subRoot, BEAT_CONFIG.EIGHTH_MS / 1000);
       }
-    } else if (this.subBassSynth && !this.breakdownSubBassActive) {
-      // Release sub-bass on silent bars (but not during breakdown filter sweep)
+    } else if (this.subBassSynth && !this.breakdownSubBassActive && !this.introSubBassActive) {
+      // Release sub-bass on silent bars (but not during breakdown sweep or intro walk)
       this.subBassSynth.triggerRelease();
     }
 

@@ -61,6 +61,10 @@ export function Slider(config: SliderConfig): HTMLElement {
       const display = formatValue ? formatValue(defaultValue) : String(Math.round(defaultValue));
       valueEl.textContent = unit ? `${display}${unit}` : display;
       onChange(defaultValue);
+      // Reset accompanying OSC knob to 0 if present
+      if (extraElement && 'setValue' in extraElement) {
+        (extraElement as HTMLElement & { setValue: (v: number) => void }).setValue(0);
+      }
     };
     labelContainer.appendChild(resetBtn);
   }
@@ -452,6 +456,13 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
   };
 
   knob.addEventListener('mousedown', onMouseDown);
+
+  // Expose programmatic setter for external reset (e.g. slider Reset button)
+  (knob as unknown as { setValue: (v: number) => void }).setValue = (v: number) => {
+    currentValue = Math.max(min, Math.min(max, Math.round(v)));
+    updateVisual();
+    onChange(currentValue);
+  };
 
   // Safety cleanup: if knob is removed from DOM mid-drag, release listeners
   const observer = new MutationObserver(() => {

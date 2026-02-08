@@ -1291,6 +1291,7 @@ fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32, visible: 
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
+        .maximizable(false)
         .focused(visible)
         .shadow(false)
         .visible(visible)
@@ -1712,6 +1713,10 @@ pub fn run() {
                 ])
                 .build()
         })
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             log::info!("RainyDesk Tauri starting...");
 
@@ -1752,6 +1757,25 @@ pub fn run() {
                 log::warn!("[Help] Failed to preload: {}", e);
             } else {
                 log::info!("[Help] Window preloaded hidden");
+            }
+
+            // First launch: auto-open help window so new users discover it
+            if let Ok(app_data) = app.handle().path().app_data_dir() {
+                let first_launch_flag = app_data.join("first-launch.flag");
+                if !first_launch_flag.exists() {
+                    std::fs::write(&first_launch_flag, "").ok();
+                    log::info!("[Setup] First launch detected, will show help window");
+                    let handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        // Wait for overlay + panel + help to finish loading
+                        std::thread::sleep(std::time::Duration::from_secs(4));
+                        if let Some(window) = handle.get_webview_window("help") {
+                            window.show().ok();
+                            window.set_focus().ok();
+                            log::info!("[Help] First-launch auto-open complete");
+                        }
+                    });
+                }
             }
 
             // Start window detection polling (16ms ≈ 60 Hz, matching physics tick rate)

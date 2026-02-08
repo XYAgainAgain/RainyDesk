@@ -1,4 +1,4 @@
-#  🌧️ RainyDesk 💻 <sub>v0.8.5-alpha</sub>
+#  🌧️ RainyDesk 💻 <sub>v0.9.0-alpha</sub>
 
 Ever wish it could rain on your desktop? Now it can, and you can use windows as umbrellas. ☔
 
@@ -17,8 +17,8 @@ It makes it rain on your screen! That's pretty much it! Physics-based raindrops 
 ### Why does this exist?
 Sometimes you just want it to rain. I know I sure do. This ~~scratches~~ splashes that itch.
 
-### How do I use this? ☔
-Right now it's a bit tricky, but soon I'll have a proper installer which you can download and double-click to install, then run it like any other application. During the installation, it will ask you if you want RainyDesk to automatically run when you log in. You can change this option (and all the others) at any time!
+### How do I use this? 🌂
+Download the installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases), double-click to install, and run it like any other app. No admin required! Windows might show a SmartScreen warning because the app isn't code-signed yet (costs mad ca$h) — just click **"More info"** then **"Run anyway."**
 
 Once running, RainyDesk sits in your system tray. Left-click the tray icon to open the Rainscaper panel or right-click to open a small context menu:
 - Pause/Resume
@@ -26,17 +26,19 @@ Once running, RainyDesk sits in your system tray. Left-click the tray icon to op
 - Volume Presets (there's a bunch)
 - Quit RainyDesk
 
-The Rainscaper panel is a little more complicated, but it has an Easy Mode (for most folks) and an Admin Mode (for the real rain-heads). I've included a straightforward guide in the app itself; just click the version number in the bottom right of the panel, then click the Help Me button.
+The Rainscaper panel is a little more complicated, but you'll figure it out quickly, I hope. Later on, I'll be adding a Rainscaper Studio for the real rain-heads.
+
+I've included a straightforward guide in the app itself; just click the version number in the bottom right of the panel, then click the **Help Me!** button. That same menu has a **Start with Windows** toggle so RainyDesk can launch on login, and a link to RainyDesk's GitHub repository.
 
 #### Installation
-RainyDesk isn't released just yet, but you can run it from source if you're cool. Download the project as a ZIP, extract anywhere you like, then open a `cmd` terminal in that directory and do these lil guys to make yourself an executable:
+Grab the latest `.exe` installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases) and follow the prompts. It installs to your user profile (no admin elevation needed) and adds a Start Menu shortcut.
+
+Want to build from source instead? You'll need [Node.js](https://nodejs.org/) (v18+), [Rust](https://rustup.rs/) (1.77+), and the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/). Then clone the repo and run these bad boys:
 
 ```bash
 npm install
 npm run dev
 ```
-
-*Pre-built installers coming once it's more polished!*
 
 #### Requirements
 - Windows 10/11 (Linux support coming eventually, X11 window manager only)
@@ -44,7 +46,7 @@ npm run dev
 - ~50 MB of free storage space
 - At least one monitor lmao
 
-### How does this work? 🌂
+### How does this work? ☔
 Imagine your entire desktop — *all* your monitors, no matter how weirdly they're laid out — as one big invisible grid, like graph paper. RainyDesk draws a single giant transparent window over everything and makes it rain on that grid. There's also another one behind everything for extra rain (optional but recommended).
 
 **The Magic:**
@@ -71,27 +73,30 @@ RainyDesk is in active development and I'm really not rushing it because it's my
 - **Cozy pixelated rain** falls on all your monitors (including vertical/rotated ones)
 - **Cool water physics** with surface tension, cohesion/adhesion, dripping, pooling, and all that juicy fluid stuff with oodles of splishysplashies everywhere
 - **Click-through** transparency so the rain never blocks your very important work
-- **System tray controls** for volume & stuff
+- **Custom logo/icon!** *Huge* thank you to my friend EHM for making it! 💙👩‍🎨🧡
+- **System tray controls** for volume & other stuff
 - **High refresh rate** support (anywhere from 15–360 Hz) via interpolation
 - **Window detection**; rain flows around your windows unless maximized, and if it's maximized, it's muffled!
-- **Rainscaper control panel** to tweak everything from rain intensity to audio materials to gravity to gaiety
-- **Rainscape preset system** to save and load your perfect rainy day vibes as `.rain` files like `TinRoof.rain` & `Forest.rain`
-- **Procedural audio synthesis** for impact sounds, wind, and background sheet noise (and EQ + FX + LFOs!)
-- **Background rain** made of atmospheric layers behind your windows with no physics; really sells the effect!
-- **Render scale options** for pixelated 8-bit aesthetic or crispy full-res circles, your choice! Lower render scale is lighter on the graphics card, but it all sounds the same!
+- **Rainscaper control panel** to tweak everything from rain intensity to gravity to gaiety
+- **Procedural audio synthesis** for impact sounds, wind, background noise, and lots more!
+- **Background rain sheets** made of atmospheric layers behind your windows with no physics; really sells the effect!
+- **Render scale options** for chunky, normal, or fairly smooth visuals, your choice! Lower render scale is lighter on the graphics card, but it all sounds the same!
 - **Gentle fade-in on startup** so no jump-scares from fake water lol
 - **Matrix Mode** complete with a sweet synth tune that the rain plays automagically 😎
+- **Oscillator knobs** that auto-drift sliders for natural variation in intensity, wind, turbulence, and splash size
+- **FPS limiter** from 15 Hz all the way to 360 Hz (or uncapped) so you can balance performance vs. smoothness
+- **Start with Windows** toggle so RainyDesk launches on login
+- **Built-in help guide** accessible from the version menu in the panel
+- **12 panel themes** including one that auto-matches your Windows accent color
 
 **What's Coming:**
 
-- **Custom icon!** Huge shout-out to my friend Erin for making it! 💙👩‍🎨🧡
 - ***Thunder synth!*** Because we *gotta* have the booms! ⛈
 - **7 audio materials** which will be Glass, Metal, Wood, Concrete, Fabric, Foliage, & Water (each sounding different!)
+- **Rainscape preset system** to save and load your perfect rainy day vibes as `.rain` files like `TinRoof.rain` & `Forest.rain`
 - 3D spatial audio with full 5.1/7.1 surround sound support (like Dolby Atmos for Headphones)
 - More visual effects (adjustable trails, droplet styles)
-- Auto-launch on startup/login to immediately soak your desktop; currently manual for my sanity
 - Linux support (I pinkie promise!) and maybe MacOS later if my Mac Mini behaves
-- A nice easy installer & decent app size (<50 MB)
 - Snow? 🌨👀
 
 ## Tech Specs for Big Nerds
@@ -103,7 +108,7 @@ RainyDesk is built with **Tauri** (Rust backend + WebView2), **Pixi.js** v8 rend
 - Another mega-background window renders atmospheric rain behind everything
 - Void mask treats gaps between/around monitors as solid walls; calculated automatically on start
 - Hybrid physics: Lagrangian particles (rain) + Eulerian grid (puddles)
-- Cellular automata for natural water flow (Noita-style!)
+- Cellular automata for natural water flow ([Noita](https://noitagame.com/)-style!)
 - Spatial audio: rain position → stereo pan (5.1/7.1 coming later, I swear)
 
 ## License
@@ -120,10 +125,12 @@ If you'd like to use RainyDesk commercially before the Change Date, which is my 
 None of this wacky wetness would have been possible without the hard work and research of all the folks who made these libraries, crafted these typefaces, and wrote the research papers with excruciatingly accurate titles I used for the raindrop audio synthesis:
 
 ### Third-Party Libraries
-Truly could not have made this without these. Holy heck, what a huge help! Thanks y'all! ♥
+Truly could not have made this were in not for these. Holy heck, what a huge help! Thanks y'all! ♥
 - [Tauri](https://tauri.app) (v2) — MIT License — Desktop app framework
 - [Pixi.js](https://pixijs.com) (v8) — MIT License — GPU-accelerated rendering
 - [Tone.js](https://tonejs.github.io) (v15.1.22) — MIT License — Real-time audio synthesis
+- [pixi-filters](https://github.com/pixijs/filters) — MIT License — GlowFilter for Matrix Mode
+- [marked](https://marked.js.org/) — MIT License — Markdown rendering for the help window
 
 ### Bundled Fonts
 - [Convergence](https://fonts.google.com/specimen/Convergence) — SIL OFL 1.1 — by Nicolas Silva & John Vargas Beltran
@@ -146,7 +153,7 @@ Truly could not have made this without these. Holy heck, what a huge help! Thank
 ## 🌈 Whodunnit 🌂
 **RainyDesk** was made with love (and a little Claude Code help) by **Sam Atwood** of [The King's Busketeers](https://tkb.band/)!
 
-If you jive with the project, tips and small [Ko-fi](https://ko-fi.com/xyagain) donations are hugely appreciated!
+If you jive with the project, tips and responsible [Ko-fi](https://ko-fi.com/xyagain) donations are hugely appreciated!
 
 *Please don't submit an issue if rainwater starts pouring out of your USB ports, that's unintended behavior.*
 

@@ -1,5 +1,6 @@
 /* RainyDesk Panel - Glassmorphism Styles */
 
+
 /* Convergence font for header */
 @font-face {
   font-family: 'Convergence';
@@ -410,19 +411,29 @@ html, body {
   cursor: move;
 }
 
+.panel-logo-wrap {
+  width: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.panel-logo {
+  width: 32px;
+  height: 32px;
+}
+
+
 .panel-title {
   font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 16px;
   font-weight: 400;
   color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  flex: 1;
+  text-align: center;
   letter-spacing: 0.5px;
-}
-
-.panel-title-icon {
-  font-size: 18px;
 }
 
 .panel-close {
@@ -446,8 +457,16 @@ html, body {
 }
 
 .panel-close svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
+}
+
+/* Inflate the filled umbrella paths so they read at small size */
+.panel-close svg path {
+  stroke: currentColor;
+  stroke-width: 32;
+  paint-order: stroke;
+  stroke-linejoin: round;
 }
 
 /* Tab Bar */
@@ -1127,13 +1146,35 @@ html, body {
   transform: scale(1.15);
 }
 
-.theme-button.active::after {
+/* Active ring via box-shadow (frees ::after for gleam) */
+.theme-button.active {
+  box-shadow: 0 0 0 2px var(--text-primary), 0 0 6px rgba(255, 255, 255, 0.3);
+}
+
+/* Sword gleam sweep on theme circles */
+.theme-button::after {
   content: '';
   position: absolute;
-  inset: -2px;
-  border: 2px solid var(--text-primary);
-  border-radius: 50%;
-  box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
+  top: -50%;
+  left: -100%;
+  width: 60%;
+  height: 200%;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.15) 42%,
+    rgba(255, 255, 255, 0.5) 50%,
+    rgba(255, 255, 255, 0.15) 58%,
+    transparent 65%
+  );
+  transform: skewX(-15deg);
+  transition: none;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.theme-button:hover::after {
+  animation: sword-gleam 0.6s ease-out forwards;
 }
 
 .theme-button[data-theme="blue"]::before {
@@ -1497,6 +1538,17 @@ html, body {
   color: var(--text-muted);
   margin-left: auto;
   font-style: italic;
+}
+
+/* Autostart toggle in version menu */
+.version-menu-item.autostart-toggle {
+  border-top: 1px solid var(--border-color);
+  margin-top: 2px;
+  padding-top: 8px;
+}
+
+.autostart-check {
+  font-size: 14px;
 }
 
 /* Debug Tab Styles */

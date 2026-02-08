@@ -109,14 +109,161 @@ let pendingFullscreenState = false;
 // Pause state (from Rainscaper panel)
 let isPaused = false;
 
-// Wind oscillation (gusts) state
-let windOscAmount = 0;     // 0-100 from knob
-let windOscTarget = 0;     // Target wind value to lerp toward
-let windOscCurrent = 0;    // Current interpolated wind value
-let windOscNextChangeTime = 0; // When to pick a new target
-let windOscUserCenter = 0; // User's manual wind slider value (center point)
-let windOscLastBroadcast = 0; // Throttle param broadcasts (ms timestamp)
-let windOscLastBroadcastValue = 0; // Last broadcasted wind value
+// Tracked settings for autosave (params without module getters)
+let trackedRainIntensity = 50;       // audio.rainIntensity (0-100)
+let trackedWindGainDb = -24;         // audio.wind.masterGain (dB)
+let trackedThunderEnabled = false;   // audio.thunder.enabled
+let trackedBgEnabled = true;         // backgroundRain.enabled
+let trackedBgIntensity = 50;         // backgroundRain.intensity (0-100)
+let trackedBgLayers = 3;             // backgroundRain.layers (1-5)
+
+/**
+ * ParamOscillator - Reusable oscillation controller for any parameter.
+ * Wobbles a value around a user-set center point. Shared by all OSC knobs.
+ */
+class ParamOscillator {
+  constructor({ min, max, lerpRate = 1.5, minAmplitude = 20, maxAmplitude = 100,
+                minChangesPerMin = 5, maxChangesPerMin = 10, jitter = 0.3,
+                roundOutput = true }) {
+    this._min = min;
+    this._max = max;
+    this._lerpRate = lerpRate;
+    this._minAmplitude = minAmplitude;
+    this._maxAmplitude = maxAmplitude;
+    this._minChangesPerMin = minChangesPerMin;
+    this._maxChangesPerMin = maxChangesPerMin;
+    this._jitter = jitter;
+    this._roundOutput = roundOutput;
+    // State
+    this._amount = 0;        // Knob value (0-100)
+    this._userCenter = 0;    // Manual slider center point
+    this._target = 0;        // Target value to lerp toward
+    this._current = 0;       // Current interpolated value
+    this._nextChangeTime = 0; // When to pick a new target (seconds)
+    this._lastBroadcast = 0;  // Throttle broadcasts (ms timestamp)
+    this._lastBroadcastValue = null; // Dedup broadcasts
+  }
+
+  setAmount(v) { this._amount = v; this._nextChangeTime = 0; }
+  setUserCenter(v) { this._userCenter = v; this._current = v; }
+
+  get active() { return this._amount > 0; }
+  get current() { return this._roundOutput ? Math.round(this._current) : this._current; }
+  get userCenter() { return this._userCenter; }
+  get amount() { return this._amount; }
+
+  /** Advance one frame. Returns new output value, or null if inactive. */
+  tick(dt, nowSec) {
+    if (this._amount <= 0) return null;
+
+    // Pick new random target when timer expires
+    if (nowSec >= this._nextChangeTime) {
+      const oscNorm = this._amount / 100;
+      const amplitude = this._minAmplitude + oscNorm * (this._maxAmplitude - this._minAmplitude);
+      this._target = this._userCenter + (Math.random() * 2 - 1) * amplitude;
+      this._target = Math.max(this._min, Math.min(this._max, this._target));
+
+      const changesPerMin = this._minChangesPerMin + oscNorm * (this._maxChangesPerMin - this._minChangesPerMin);
+      const interval = 60 / changesPerMin;
+      const jitter = interval * this._jitter * (Math.random() * 2 - 1);
+      this._nextChangeTime = nowSec + interval + jitter;
+    }
+
+    // Smooth lerp toward target
+    const rate = this._lerpRate * dt;
+    this._current += (this._target - this._current) * Math.min(1, rate);
+
+    return this.current;
+  }
+
+  /** Reset to user center (when knob set to 0). Returns center value. */
+  snapToCenter() {
+    this._current = this._userCenter;
+    this._target = this._userCenter;
+    return this._roundOutput ? Math.round(this._userCenter) : this._userCenter;
+  }
+
+  /** 250ms throttle + value-change dedup. Returns value to broadcast, or null. */
+  shouldBroadcast(nowMs) {
+    if (this._amount <= 0) return null;
+    const val = this.current;
+    if (nowMs - this._lastBroadcast > 250 && val !== this._lastBroadcastValue) {
+      this._lastBroadcast = nowMs;
+      this._lastBroadcastValue = val;
+      return val;
+    }
+    return null;
+  }
+}
+
+// Oscillator instances
+const windOsc = new ParamOscillator({
+  min: -100, max: 100, lerpRate: 1.5,
+  minAmplitude: 20, maxAmplitude: 100, roundOutput: true
+});
+const intensityOsc = new ParamOscillator({
+  min: 1, max: 100, lerpRate: 2.0,
+  minAmplitude: 10, maxAmplitude: 40, roundOutput: true
+});
+const turbulenceOsc = new ParamOscillator({
+  min: 0, max: 1, lerpRate: 0.8,
+  minAmplitude: 0.1, maxAmplitude: 0.5, roundOutput: false,
+  minChangesPerMin: 3, maxChangesPerMin: 8
+});
+const splashOsc = new ParamOscillator({
+  min: 0.5, max: 2.0, lerpRate: 0.5,
+  minAmplitude: 0.1, maxAmplitude: 0.75, roundOutput: false,
+  minChangesPerMin: 2, maxChangesPerMin: 6
+});
+
+// Apply functions for each oscillator (called on each tick with the new value)
+function applyWind(val) {
+  config.wind = val;
+  if (gridSimulation) gridSimulation.setWind(val);
+  if (audioSystem) audioSystem.setWindSpeed(Math.abs(val));
+}
+function applyIntensity(val) {
+  config.intensity = val;
+  if (gridSimulation) gridSimulation.setIntensity(val / 100);
+  if (matrixRenderer) matrixRenderer.setIntensity(val);
+}
+function applyTurbulence(val) {
+  if (gridSimulation) gridSimulation.setTurbulence(val);
+  if (matrixRenderer) matrixRenderer.setGlitchiness(val);
+}
+function applySplash(val) {
+  if (gridSimulation) gridSimulation.setSplashScale(val);
+}
+function applySheet(val) {
+  if (!audioSystem) return;
+  // SheetLayer bypasses rain bus compressor → directly to master limiter.
+  // Range: -24 dB (1%) to 0 dB (100%), 50% = -12 dB
+  const db = val <= 0 ? -Infinity : (val / 100 * 24) - 24;
+  if (val <= 0) {
+    audioSystem.getSheetLayer()?.stop();
+  } else {
+    audioSystem.updateParam('sheetLayer.maxVolume', db);
+    if (!audioSystem.getSheetLayer()?.isPlaying && !matrixMode) {
+      audioSystem.getSheetLayer()?.start();
+    }
+  }
+}
+
+// Sheet volume oscillator (oscillates the percentage, not dB)
+const sheetOsc = new ParamOscillator({
+  min: 0, max: 100, lerpRate: 0.6,
+  minAmplitude: 5, maxAmplitude: 30, roundOutput: true,
+  minChangesPerMin: 2, maxChangesPerMin: 6
+});
+
+// Oscillator registry: tick loop iterates this
+const oscillators = [
+  { osc: windOsc, apply: applyWind, param: 'physics.wind', disableInMatrix: true },
+  { osc: intensityOsc, apply: applyIntensity, param: 'physics.intensity', disableInMatrix: false },
+  { osc: turbulenceOsc, apply: applyTurbulence, param: 'physics.turbulence', disableInMatrix: false },
+  { osc: splashOsc, apply: applySplash, param: 'physics.splashScale', disableInMatrix: true },
+  { osc: sheetOsc, apply: applySheet, param: 'audio.sheetVolume', disableInMatrix: true },
+];
 
 // Window update state
 let windowUpdateDebounceTimer = null;
@@ -416,9 +563,18 @@ function gatherPresetData() {
   return {
     name: 'Autosave',
     rain: {
-      intensity: config.intensity,
-      wind: windOscUserCenter, // Save the user's manual center, not oscillated value
-      windOsc: windOscAmount,
+      intensity: intensityOsc.active ? intensityOsc.userCenter : config.intensity,
+      wind: windOsc.userCenter, // Save the user's manual center, not oscillated value
+      windOsc: windOsc.amount,
+      turbulence: turbulenceOsc.userCenter,
+      turbulenceOsc: turbulenceOsc.amount,
+      splashScale: splashOsc.userCenter,
+      splashOsc: splashOsc.amount,
+      intensityOsc: intensityOsc.amount,
+      sheetVolume: sheetOsc.userCenter,
+      sheetOsc: sheetOsc.amount,
+      puddleDrain: gridSimulation?.getEvaporationRate?.() ?? 0.2,
+      dropSize: { max: gridSimulation?.getDropMaxRadius?.() ?? 4 },
     },
     physics: {
       gravity: gridSimulation?.getGravity?.() ?? 980,
@@ -429,6 +585,9 @@ function gatherPresetData() {
     audio: {
       muted: audioSystem?.isMuted ?? false,
       masterVolume: audioSystem?.getMasterVolume?.() ?? -12,
+      rainIntensity: trackedRainIntensity,
+      windMasterGain: trackedWindGainDb,
+      thunderEnabled: trackedThunderEnabled,
       matrixBass: glitchSynth?.getBassVolume?.() ?? -12,
       matrixCollision: glitchSynth?.getCollisionVolume?.() ?? -24,
       matrixDrone: glitchSynth?.getDroneVolume?.() ?? -12,
@@ -441,6 +600,9 @@ function gatherPresetData() {
       matrixTranspose: glitchSynth?.getTranspose?.() ?? 0,
       transMode: matrixRenderer?.getTransMode?.() ?? false,
       transScrollDirection: matrixRenderer?.getTransScrollDirection?.() ?? 'off',
+      backgroundShaderEnabled: trackedBgEnabled,
+      backgroundIntensity: trackedBgIntensity,
+      backgroundLayers: trackedBgLayers,
     },
   };
 }
@@ -456,13 +618,33 @@ function applyRainscapeData(data) {
   if (data.rain) {
     if (data.rain.intensity !== undefined) {
       config.intensity = data.rain.intensity;
+      intensityOsc.setUserCenter(data.rain.intensity);
       gridSimulation?.setIntensity(data.rain.intensity / 100);
       window.rainydesk.updateRainscapeParam('physics.intensity', data.rain.intensity);
     }
     if (data.rain.wind !== undefined) {
       config.wind = data.rain.wind;
+      windOsc.setUserCenter(data.rain.wind);
       gridSimulation?.setWind(data.rain.wind);
       window.rainydesk.updateRainscapeParam('physics.wind', data.rain.wind);
+    }
+    if (data.rain.turbulence !== undefined) {
+      gridSimulation?.setTurbulence?.(data.rain.turbulence);
+      turbulenceOsc.setUserCenter(data.rain.turbulence);
+      window.rainydesk.updateRainscapeParam('physics.turbulence', data.rain.turbulence);
+    }
+    if (data.rain.splashScale !== undefined) {
+      gridSimulation?.setSplashScale?.(data.rain.splashScale);
+      splashOsc.setUserCenter(data.rain.splashScale);
+      window.rainydesk.updateRainscapeParam('physics.splashScale', data.rain.splashScale);
+    }
+    if (data.rain.puddleDrain !== undefined) {
+      gridSimulation?.setEvaporationRate?.(data.rain.puddleDrain);
+      window.rainydesk.updateRainscapeParam('physics.puddleDrain', data.rain.puddleDrain);
+    }
+    if (data.rain.dropSize?.max !== undefined) {
+      gridSimulation?.setDropMaxRadius?.(data.rain.dropSize.max);
+      window.rainydesk.updateRainscapeParam('physics.dropMaxSize', data.rain.dropSize.max);
     }
   }
 
@@ -498,6 +680,18 @@ function applyRainscapeData(data) {
     if (data.audio.masterVolume !== undefined) {
       window.rainydesk.updateRainscapeParam('effects.masterVolume', data.audio.masterVolume);
     }
+    if (data.audio.rainIntensity !== undefined) {
+      trackedRainIntensity = data.audio.rainIntensity;
+      window.rainydesk.updateRainscapeParam('audio.rainIntensity', data.audio.rainIntensity);
+    }
+    if (data.audio.windMasterGain !== undefined) {
+      trackedWindGainDb = data.audio.windMasterGain;
+      window.rainydesk.updateRainscapeParam('audio.wind.masterGain', data.audio.windMasterGain);
+    }
+    if (data.audio.thunderEnabled !== undefined) {
+      trackedThunderEnabled = data.audio.thunderEnabled;
+      window.rainydesk.updateRainscapeParam('audio.thunder.enabled', data.audio.thunderEnabled);
+    }
   }
 
   // Visual settings
@@ -526,6 +720,18 @@ function applyRainscapeData(data) {
       // Trigger via param update path to handle full init/destroy cycle
       window.rainydesk.updateRainscapeParam('visual.matrixMode', data.visual.matrixMode);
     }
+    if (data.visual.backgroundShaderEnabled !== undefined) {
+      trackedBgEnabled = data.visual.backgroundShaderEnabled;
+      window.rainydesk.updateRainscapeParam('backgroundRain.enabled', data.visual.backgroundShaderEnabled);
+    }
+    if (data.visual.backgroundIntensity !== undefined) {
+      trackedBgIntensity = data.visual.backgroundIntensity;
+      window.rainydesk.updateRainscapeParam('backgroundRain.intensity', data.visual.backgroundIntensity);
+    }
+    if (data.visual.backgroundLayers !== undefined) {
+      trackedBgLayers = data.visual.backgroundLayers;
+      window.rainydesk.updateRainscapeParam('backgroundRain.layers', data.visual.backgroundLayers);
+    }
   }
 
   // Physics extras
@@ -536,11 +742,32 @@ function applyRainscapeData(data) {
     }
   }
 
-  // Rain extras (wind OSC)
+  // Rain extras (oscillator amounts)
   if (data.rain) {
     if (data.rain.windOsc !== undefined) {
-      windOscAmount = data.rain.windOsc;
+      windOsc.setAmount(data.rain.windOsc);
       window.rainydesk.updateRainscapeParam('physics.windOsc', data.rain.windOsc);
+    }
+    if (data.rain.intensityOsc !== undefined) {
+      intensityOsc.setAmount(data.rain.intensityOsc);
+      window.rainydesk.updateRainscapeParam('physics.intensityOsc', data.rain.intensityOsc);
+    }
+    if (data.rain.turbulenceOsc !== undefined) {
+      turbulenceOsc.setAmount(data.rain.turbulenceOsc);
+      window.rainydesk.updateRainscapeParam('physics.turbulenceOsc', data.rain.turbulenceOsc);
+    }
+    if (data.rain.splashOsc !== undefined) {
+      splashOsc.setAmount(data.rain.splashOsc);
+      window.rainydesk.updateRainscapeParam('physics.splashOsc', data.rain.splashOsc);
+    }
+    if (data.rain.sheetVolume !== undefined) {
+      sheetOsc.setUserCenter(data.rain.sheetVolume);
+      applySheet(data.rain.sheetVolume);
+      window.rainydesk.updateRainscapeParam('audio.sheetVolume', data.rain.sheetVolume);
+    }
+    if (data.rain.sheetOsc !== undefined) {
+      sheetOsc.setAmount(data.rain.sheetOsc);
+      window.rainydesk.updateRainscapeParam('audio.sheetOsc', data.rain.sheetOsc);
     }
   }
 }
@@ -766,45 +993,16 @@ function gameLoop(currentTime) {
       update(dt);
       render();
 
-      // Wind oscillation (gusts)
-      if (windOscAmount > 0 && !matrixMode) {
-        const now = currentTime / 1000; // seconds
-        if (now >= windOscNextChangeTime) {
-          // Pick new target wind value
-          const oscNorm = windOscAmount / 100; // 0-1
-          // Amplitude: low OSC = small swings around center, high OSC = full range
-          const amplitude = 20 + oscNorm * 80; // 20-100 range
-          windOscTarget = windOscUserCenter + (Math.random() * 2 - 1) * amplitude;
-          windOscTarget = Math.max(-100, Math.min(100, windOscTarget));
-
-          // Frequency: 5-10 changes/min, with 30% jitter
-          const changesPerMin = 5 + oscNorm * 5;
-          const interval = 60 / changesPerMin;
-          const jitter = interval * 0.3 * (Math.random() * 2 - 1);
-          windOscNextChangeTime = now + interval + jitter;
-        }
-
-        // Smooth lerp toward target (~1.5/sec)
-        const lerpRate = 1.5 * dt;
-        windOscCurrent += (windOscTarget - windOscCurrent) * Math.min(1, lerpRate);
-
-        // Apply oscillated wind to simulation
-        config.wind = Math.round(windOscCurrent);
-        if (gridSimulation) {
-          gridSimulation.setWind(config.wind);
-        }
-
-        // Modulate wind audio by magnitude (direction doesn't affect volume)
-        if (audioSystem) {
-          audioSystem.setWindSpeed(Math.abs(config.wind));
-        }
-
-        // Throttle broadcast to ~4 Hz for slider display sync (avoid IPC flood)
-        const windVal = config.wind;
-        if (currentTime - windOscLastBroadcast > 250 && windVal !== windOscLastBroadcastValue) {
-          windOscLastBroadcast = currentTime;
-          windOscLastBroadcastValue = windVal;
-          window.rainydesk.updateRainscapeParam('physics.wind', windVal);
+      // Parameter oscillation (all OSC knobs)
+      const nowSec = currentTime / 1000;
+      for (const entry of oscillators) {
+        if (!entry.osc.active) continue;
+        if (entry.disableInMatrix && matrixMode) continue;
+        const val = entry.osc.tick(dt, nowSec);
+        if (val !== null) entry.apply(val);
+        const broadcast = entry.osc.shouldBroadcast(currentTime);
+        if (broadcast !== null) {
+          window.rainydesk.updateRainscapeParam(entry.param, broadcast);
         }
       }
 
@@ -1114,16 +1312,18 @@ function registerEventListeners() {
       }
       if (param === 'wind') {
         // When OSC is active, it drives wind directly -- skip IPC echo
-        if (windOscAmount > 0) return;
+        if (windOsc.active) return;
         config.wind = value;
-        windOscUserCenter = value;
-        windOscCurrent = value;
+        windOsc.setUserCenter(value);
         if (gridSimulation) {
           gridSimulation.setWind(value);
         }
         // Note: Matrix Mode ignores wind (straight down only per spec)
       }
       if (param === 'intensity') {
+        // When OSC is active, only update user center -- skip applying
+        intensityOsc.setUserCenter(value);
+        if (intensityOsc.active) return;
         config.intensity = value;
         if (gridSimulation) {
           gridSimulation.setIntensity(value / 100);
@@ -1134,11 +1334,17 @@ function registerEventListeners() {
         }
       }
       // New physics params
-      if (param === 'splashScale' && gridSimulation) {
-        gridSimulation.setSplashScale(value);
+      if (param === 'splashScale') {
+        splashOsc.setUserCenter(value);
+        if (splashOsc.active) return;
+        if (gridSimulation) {
+          gridSimulation.setSplashScale(value);
+        }
         // Note: Matrix Mode ignores splash (no water physics)
       }
       if (param === 'turbulence') {
+        turbulenceOsc.setUserCenter(value);
+        if (turbulenceOsc.active) return;
         if (gridSimulation) {
           gridSimulation.setTurbulence(value);
         }
@@ -1178,16 +1384,37 @@ function registerEventListeners() {
         lastFrameTime = 0; // Reset so next frame renders immediately
       }
       if (param === 'windOsc') {
-        windOscAmount = Number(value);
-        if (windOscAmount <= 0) {
-          // Snap back to user's manual wind center
-          config.wind = windOscUserCenter;
-          if (gridSimulation) gridSimulation.setWind(windOscUserCenter);
-          if (audioSystem) audioSystem.setWindSpeed(Math.abs(windOscUserCenter));
-          windOscCurrent = windOscUserCenter;
-          windOscTarget = windOscUserCenter;
+        windOsc.setAmount(Number(value));
+        if (!windOsc.active) {
+          const center = windOsc.snapToCenter();
+          config.wind = center;
+          if (gridSimulation) gridSimulation.setWind(center);
+          if (audioSystem) audioSystem.setWindSpeed(Math.abs(center));
         }
-        windOscNextChangeTime = 0; // Trigger immediate recalc
+      }
+      if (param === 'intensityOsc') {
+        intensityOsc.setAmount(Number(value));
+        if (!intensityOsc.active) {
+          const center = intensityOsc.snapToCenter();
+          config.intensity = center;
+          if (gridSimulation) gridSimulation.setIntensity(center / 100);
+          if (matrixRenderer) matrixRenderer.setIntensity(center);
+        }
+      }
+      if (param === 'turbulenceOsc') {
+        turbulenceOsc.setAmount(Number(value));
+        if (!turbulenceOsc.active) {
+          const center = turbulenceOsc.snapToCenter();
+          if (gridSimulation) gridSimulation.setTurbulence(center);
+          if (matrixRenderer) matrixRenderer.setGlitchiness(center);
+        }
+      }
+      if (param === 'splashOsc') {
+        splashOsc.setAmount(Number(value));
+        if (!splashOsc.active) {
+          const center = splashOsc.snapToCenter();
+          if (gridSimulation) gridSimulation.setSplashScale(center);
+        }
       }
     } else if (path === 'audio.muted') {
       if (audioSystem) {
@@ -1195,6 +1422,7 @@ function registerEventListeners() {
         window.rainydesk.log(`Audio muted: ${value}`);
       }
     } else if (path === 'audio.rainMix' || path === 'audio.rainIntensity') {
+      trackedRainIntensity = Number(value);
       if (audioSystem) {
         audioSystem.setRainMix(value);
       }
@@ -1208,13 +1436,27 @@ function registerEventListeners() {
       if (audioSystem) {
         audioSystem.updateParam('bubble.gain', value);
       }
+    } else if (path === 'audio.sheetVolume') {
+      // Rain sheet noise volume (percentage) — skip when OSC is driving
+      if (sheetOsc.active) return;
+      sheetOsc.setUserCenter(Number(value));
+      applySheet(Number(value));
+    } else if (path === 'audio.sheetOsc') {
+      // Rain sheet OSC knob amount
+      sheetOsc.setAmount(Number(value));
+      if (!sheetOsc.active) {
+        const center = sheetOsc.snapToCenter();
+        applySheet(center);
+      }
     } else if (path === 'audio.wind.masterGain') {
       // Wind sound volume (dB)
+      trackedWindGainDb = Number(value);
       if (audioSystem) {
         audioSystem.updateParam('wind.masterGain', value);
       }
     } else if (path === 'audio.thunder.enabled') {
       // Thunder toggle (future)
+      trackedThunderEnabled = Boolean(value);
       if (audioSystem) {
         audioSystem.updateParam('thunder.enabled', value);
       }
@@ -1355,6 +1597,12 @@ function registerEventListeners() {
       if (matrixRenderer) {
         matrixRenderer.setTransScrollDirection(String(value));
       }
+    } else if (path === 'backgroundRain.enabled') {
+      trackedBgEnabled = Boolean(value);
+    } else if (path === 'backgroundRain.intensity') {
+      trackedBgIntensity = Number(value);
+    } else if (path === 'backgroundRain.layers') {
+      trackedBgLayers = Number(value);
     } else if (audioSystem) {
       audioSystem.updateParam(path, value);
     }
@@ -1417,6 +1665,13 @@ async function initPixiPhysics() {
   gridSimulation.onDebugLog = (msg) => window.rainydesk.log(msg);
   gridSimulation.setIntensity(config.intensity / 100);
   gridSimulation.setWind(config.wind);
+
+  // Initialize oscillator user centers from config/defaults
+  windOsc.setUserCenter(config.wind);
+  intensityOsc.setUserCenter(config.intensity);
+  turbulenceOsc.setUserCenter(0.3);  // GridSimulation default
+  splashOsc.setUserCenter(1.0);      // GridSimulation default
+  sheetOsc.setUserCenter(35);        // 35% default sheet volume
 
   // Initialize Pixi renderer
   pixiRenderer = new RainPixiRenderer({

@@ -6,6 +6,7 @@
 
 import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, updateSliderValue } from './components';
 import { applyTheme } from './themes';
+import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 
 // Tab definitions
 type TabId = 'basic' | 'physics' | 'audio' | 'visual' | 'debug';
@@ -87,6 +88,7 @@ interface PanelState {
   // Audio
   masterVolume: number;
   rainIntensity: number;
+  sheetVolume: number;
   ambience: number;
   bubbleSound: number;
   thunderEnabled: boolean;
@@ -111,8 +113,12 @@ interface PanelState {
   transScrollDirection: 'left' | 'off' | 'right';
   // FPS Limiter
   fpsLimit: number;
-  // Wind Gusts
+  // Oscillation knobs
   windOsc: number;
+  intensityOsc: number;
+  turbulenceOsc: number;
+  splashOsc: number;
+  sheetOsc: number;
   // Presets
   presets: string[];
   currentPreset: string;
@@ -147,6 +153,12 @@ export class RainyDeskPanel {
   private debugStatsElement: HTMLElement | null = null;
   private gayModeInterval: ReturnType<typeof setInterval> | null = null;
   private titleElement: HTMLElement | null = null;
+  private logoElement: HTMLElement | null = null;
+  private logoTotalRotation = 0;
+  private logoClickCount = 0;
+  private logoFirstClickTime = 0;
+  private logoSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  private logoParticleTimers: ReturnType<typeof setTimeout>[] = [];
   private resetRainButton: HTMLButtonElement | null = null;
   private autosaveIndicatorTimer: ReturnType<typeof setTimeout> | null = null;
   private autosaveRevertTimer: ReturnType<typeof setTimeout> | null = null;
@@ -185,6 +197,7 @@ export class RainyDeskPanel {
       // Audio
       masterVolume: 50,
       rainIntensity: 50,
+      sheetVolume: 35,
       ambience: 30,
       bubbleSound: 30,
       thunderEnabled: false,
@@ -209,8 +222,12 @@ export class RainyDeskPanel {
       transScrollDirection: 'off',
       // FPS Limiter
       fpsLimit: 0,
-      // Wind Gusts
+      // Oscillation knobs
       windOsc: 0,
+      intensityOsc: 0,
+      turbulenceOsc: 0,
+      splashOsc: 0,
+      sheetOsc: 0,
       // Presets
       presets: [],
       currentPreset: '',
@@ -295,6 +312,24 @@ export class RainyDeskPanel {
       this.handleExternalParamUpdate(path, value);
     });
 
+    // Listen for tray menu volume presets
+    window.rainydesk.onSetVolume((value: number) => {
+      const wasZero = this.state.volume === 0;
+      this.state.volume = value;
+      this.state.masterVolume = value;
+      // Sync both volume sliders (Basic tab + Audio tab)
+      updateSliderValue(this.root, 'volume', value);
+      updateSliderValue(this.root, 'masterVolume', value);
+      // Sync mute toggle with volume state
+      if (value === 0 && !this.state.muted) {
+        this.state.muted = true;
+        this.updateMuteToggle();
+      } else if (wasZero && value > 0 && this.state.muted) {
+        this.state.muted = false;
+        this.updateMuteToggle();
+      }
+    });
+
     // Listen for tray menu rainscape selection
     window.rainydesk.onLoadRainscape(async (filename: string) => {
       try {
@@ -333,6 +368,7 @@ export class RainyDeskPanel {
       if (typeof rain.intensity === 'number') this.state.intensity = rain.intensity;
       if (typeof rain.wind === 'number') this.state.wind = rain.wind;
       if (typeof rain.turbulence === 'number') this.state.turbulence = rain.turbulence;
+      if (typeof rain.puddleDrain === 'number') this.state.puddleDrain = rain.puddleDrain;
 
       // Drop size stored in rain.dropSize.max
       if (rain.dropSize && typeof rain.dropSize === 'object') {
@@ -360,19 +396,31 @@ export class RainyDeskPanel {
         this.state.volume = this.state.masterVolume;
       }
 
-      // Thunder settings
-      if (audio.thunder && typeof audio.thunder === 'object') {
-        // Thunder is "enabled" if minInterval < 1000 (i.e., auto-trigger is active)
-        // We'll just leave it false by default since it's a toggle
+      if (typeof audio.muted === 'boolean') {
+        this.state.muted = audio.muted;
       }
 
-      // Wind settings
-      if (audio.wind && typeof audio.wind === 'object') {
+      // Rain impact sound (0-100)
+      if (typeof audio.rainIntensity === 'number') {
+        this.state.rainIntensity = audio.rainIntensity;
+      }
+
+      // Thunder toggle
+      if (typeof audio.thunderEnabled === 'boolean') {
+        this.state.thunderEnabled = audio.thunderEnabled;
+      }
+
+      // Wind sound — flat dB key from new autosave format
+      // Slider: 0% = -60dB (mute), 1-100% maps to -24dB to +12dB (36dB range)
+      if (typeof audio.windMasterGain === 'number') {
+        const db = audio.windMasterGain as number;
+        this.state.windSound = db <= -60 ? 0 : Math.round(Math.max(0, Math.min(100, ((db + 24) / 36) * 100)));
+      } else if (audio.wind && typeof audio.wind === 'object') {
+        // Legacy nested format fallback
         const wind = audio.wind as Record<string, unknown>;
         if (typeof wind.masterGain === 'number') {
-          // Convert from dB to percentage
-          const dbValue = wind.masterGain as number;
-          this.state.windSound = Math.round(Math.max(0, Math.min(100, ((dbValue + 48) / 48) * 100)));
+          const db = wind.masterGain as number;
+          this.state.windSound = db <= -60 ? 0 : Math.round(Math.max(0, Math.min(100, ((db + 24) / 36) * 100)));
         }
       }
 
@@ -396,11 +444,29 @@ export class RainyDeskPanel {
       }
     }
 
-    // Apply rain extras
+    // Apply rain extras (oscillator amounts + extra physics values)
     if (data.rain && typeof data.rain === 'object') {
       const rain = data.rain as Record<string, unknown>;
       if (typeof rain.windOsc === 'number') {
         this.state.windOsc = rain.windOsc;
+      }
+      if (typeof rain.intensityOsc === 'number') {
+        this.state.intensityOsc = rain.intensityOsc;
+      }
+      if (typeof rain.turbulenceOsc === 'number') {
+        this.state.turbulenceOsc = rain.turbulenceOsc;
+      }
+      if (typeof rain.splashOsc === 'number') {
+        this.state.splashOsc = rain.splashOsc;
+      }
+      if (typeof rain.sheetVolume === 'number') {
+        this.state.sheetVolume = rain.sheetVolume;
+      }
+      if (typeof rain.sheetOsc === 'number') {
+        this.state.sheetOsc = rain.sheetOsc;
+      }
+      if (typeof rain.splashScale === 'number') {
+        this.state.splashSize = rain.splashScale;
       }
     }
 
@@ -426,6 +492,18 @@ export class RainyDeskPanel {
       if (typeof visual.transScrollDirection === 'string') {
         this.state.transScrollDirection = visual.transScrollDirection as 'left' | 'off' | 'right';
       }
+      if (typeof visual.rainColor === 'string') {
+        this.state.rainColor = visual.rainColor;
+      }
+      if (typeof visual.backgroundShaderEnabled === 'boolean') {
+        this.state.backgroundShaderEnabled = visual.backgroundShaderEnabled;
+      }
+      if (typeof visual.backgroundIntensity === 'number') {
+        this.state.backgroundIntensity = visual.backgroundIntensity;
+      }
+      if (typeof visual.backgroundLayers === 'number') {
+        this.state.backgroundLayers = visual.backgroundLayers;
+      }
     }
 
   }
@@ -441,6 +519,20 @@ export class RainyDeskPanel {
     } else if (path === 'physics.turbulence' && typeof value === 'number') {
       this.state.turbulence = value;
       updateSliderValue(this.root, 'turbulence', value * 100);
+    } else if (path === 'physics.splashScale' && typeof value === 'number') {
+      this.state.splashSize = value;
+      // Convert 0.5-2.0 → 0-100% for slider display
+      updateSliderValue(this.root, 'splashSize', Math.round(((value - 0.5) / 1.5) * 100));
+    } else if (path === 'audio.sheetVolume' && typeof value === 'number') {
+      this.state.sheetVolume = value;
+      updateSliderValue(this.root, 'sheetVolume', value);
+    } else if (path === 'system.paused' && typeof value === 'boolean') {
+      this.state.paused = value;
+      this.updatePauseToggle();
+      this.updateFooterStatus();
+    } else if (path === 'audio.muted' && typeof value === 'boolean') {
+      this.state.muted = value;
+      this.updateMuteToggle();
     }
   }
 
@@ -529,16 +621,36 @@ export class RainyDeskPanel {
     const header = document.createElement('div');
     header.className = 'panel-header';
 
+    // Logo (left anchor)
+    const logo = document.createElement('div');
+    logo.className = 'panel-logo-wrap';
+    logo.innerHTML = '<svg class="panel-logo" viewBox="0 0 600 600" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M300,0C134.31,0,0,134.31,0,300s134.31,300,300,300,300-134.31,300-300S465.69,0,300,0ZM431.25,414.83c5.26-18.73,17.56-36.28,35.54-44.82,0,0,3.88-1.77,3.88-1.77,6.84-3.12,14.92-.11,18.05,6.74,3.81,8.04-1.53,17.84-10.29,19.13-.83.17-2.74.55-3.53.68-5.43,1.5-10.29,3.93-14.81,7.62-5.65,4.51-10.63,10.55-14.24,16.92-.27.49-.81,1.25-1.09,1.7-4.87,7.1-15.7,2.04-13.5-6.19ZM270.53,76.6l115.07,138.89c6.17,7.45,5.13,18.48-2.31,24.65-7.45,6.17-18.48,5.13-24.65-2.31-.58-.62-106.35-145.8-106.96-146.57-8.61-12.72,8.58-26.15,18.85-14.66ZM254.11,212.59l143.34,174c6.15,7.46,5.08,18.5-2.38,24.64-7.71,6.39-19.35,4.93-25.25-3.16l-133.36-181.76c-8.11-11.89,8.01-24.55,17.65-13.73ZM234.11,414.67c5.24-18.14,17.02-34.86,34.07-43.8,1.27-.62,4.5-2.03,5.81-2.63,16.75-6.72,27.3,16.8,11.12,24.84-2.48,1.16-5.47,1.23-8.02,2.12-4.96,1.5-9.36,3.96-13.5,7.37-5.56,4.54-10.44,10.57-13.97,16.93-.26.5-.87,1.35-1.15,1.8-5.2,7.61-16.78,2.16-14.36-6.63ZM77.59,241.15c-8.19-12.16,8.2-24.97,18.04-14.03l115.47,138.58c6.19,7.43,5.19,18.47-2.24,24.66-7.72,6.49-19.5,5.01-25.38-3.17,0,0-105.89-146.03-105.89-146.03ZM130.46,412.23c-17.62-3.23-14.01-28.56,3.82-26.73,12.29,3.36,22.71,12.13,29.41,22.73.9,1.41,1.65,2.9,2.45,4.33,4.53,8.46-5.92,16.66-13.05,10.42-2.02-1.82-3.95-3.82-6.22-5.3-4.85-3.31-10.69-5.75-16.54-5.55-.02.02-.17.02.13.1ZM500.62,465.42c-5.26,6.36-10.85,12.51-16.77,18.43-49.11,49.11-114.4,76.15-183.85,76.15s-134.74-27.04-183.85-76.15c-5.91-5.91-11.51-12.06-16.77-18.43-3.78-4.57-.54-11.47,5.39-11.47h390.46c5.93,0,9.16,6.9,5.39,11.47ZM525.42,250.5c-7.99,7.21-20.97,5.28-26.56-3.89-4.86-7.46-27.99-43.05-32.31-49.68l-3.24-4.99c-.92-1.32-2.38-3.26-3.37-4.59-4.86-6.51-9.77-13.33-14.2-20.58-3.01-4.93-1.46-11.36,3.47-14.37,4.5-2.75,10.28-1.69,13.53,2.28,6.02,7.28,13.25,14.23,20.08,21.17,2.53,2.85,9.39,10.6,12.01,13.56l32.12,36.3c6.43,7.26,5.75,18.36-1.51,24.79Z"/></svg>';
+    this.logoElement = logo;
+    logo.style.cursor = 'pointer';
+    logo.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.handleLogoClick();
+    });
+
+    // Title (centered)
     const title = document.createElement('div');
     title.className = 'panel-title';
-    title.innerHTML = '<span class="panel-title-icon">&#9730;</span> RainyDesk Rainscaper';
+    title.textContent = 'RainyDesk Rainscaper';
     this.titleElement = title; // Store reference for Gay Mode color sync
 
+    // Close button — folded umbrella icon
     const closeBtn = document.createElement('button');
     closeBtn.className = 'panel-close';
-    closeBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+    closeBtn.innerHTML = '<svg viewBox="0 0 512 512" fill="currentColor"><path d="M140.797,324.832c-5.256-2.381-11.449-0.047-13.829,5.21l-2.671,5.9c-2.379,5.257-0.047,11.449,5.21,13.829c1.398,0.633,2.862,0.933,4.303,0.933c3.978,0,7.779-2.283,9.526-6.142l2.671-5.899C148.386,333.403,146.054,327.212,140.797,324.832z"/><path d="M227.158,134.062c-5.255-2.38-11.449-0.047-13.829,5.21l-67.205,148.453c-2.379,5.257-0.047,11.449,5.21,13.829c1.398,0.633,2.862,0.933,4.303,0.933c3.977,0,7.779-2.284,9.526-6.142l67.204-148.453C234.749,142.634,232.415,136.442,227.158,134.062z"/><path d="M499.315,47.454l-0.577-0.577c-16.909-16.906-44.417-16.908-61.326,0L324.998,159.29c-11.905-17.292-14.589-40.639-5.574-57.021c2.241-4.073,1.521-9.139-1.766-12.426c-3.288-3.288-8.354-4.007-12.426-1.766c-7.605,4.184-16.244,6.396-24.981,6.397c-13.834,0.001-26.84-5.387-36.622-15.169c-13.845-13.843-18.684-34.034-12.627-52.69c1.713-5.275-0.994-10.969-6.165-12.971c-5.171-2.004-11.006,0.382-13.294,5.435L0.93,484.307c-1.794,3.964-0.945,8.622,2.131,11.698c2.002,2.002,4.676,3.061,7.392,3.061c1.456,0,2.924-0.305,4.306-0.931L479.99,287.524c5.052-2.286,7.437-8.121,5.435-13.293c-2.003-5.172-7.695-7.878-12.971-6.165c-5.189,1.684-10.596,2.538-16.071,2.538c-13.835,0-26.841-5.386-36.62-15.164c-16.205-16.206-19.811-41.537-8.77-61.604c2.241-4.073,1.521-9.138-1.765-12.426c-3.289-3.288-8.355-4.007-12.428-1.766c-6.32,3.478-13.988,5.315-22.173,5.316c-12.321,0.001-24.741-3.977-34.838-10.905L452.191,61.656c8.759-8.761,23.011-8.76,31.777,0.006l0.577,0.576c8.76,8.759,8.76,23.012,0,31.77c-4.081,4.081-4.081,10.697,0.001,14.778c4.079,4.081,10.697,4.081,14.778-0.001C516.228,91.878,516.228,64.368,499.315,47.454zM374.629,205.859c3.526,0,7-0.249,10.393-0.737c-4.372,23.19,2.702,47.833,19.964,65.096c7.438,7.437,16.203,13.063,25.763,16.657L31.408,467.659L212.186,68.331c3.583,9.482,9.187,18.273,16.664,25.751c13.731,13.729,31.985,21.291,51.402,21.29c4.597,0,9.176-0.438,13.668-1.296c-3.408,23.582,4.911,49.988,22.998,68.074C331.766,196.996,353.341,205.86,374.629,205.859z"/></svg>';
     closeBtn.onclick = () => this.hide();
 
+    // Prevent double-click from maximizing the frameless window
+    header.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    header.appendChild(logo);
     header.appendChild(title);
     header.appendChild(closeBtn);
 
@@ -639,6 +751,19 @@ export class RainyDeskPanel {
   private createBasicTab(): HTMLElement {
     const container = document.createElement('div');
 
+    // Intensity OSC knob (inline with Intensity slider)
+    const intensityOscKnob = RotaryKnob({
+      value: this.state.intensityOsc,
+      min: 0,
+      max: 100,
+      id: 'intensityOsc',
+      description: 'Rain intensity drift (auto-varies how hard it rains)',
+      onChange: (v) => {
+        this.state.intensityOsc = v;
+        window.rainydesk.updateRainscapeParam('physics.intensityOsc', v);
+      },
+    });
+
     // Intensity (min 1 — intensity 0 was confusing since Matrix still showed streams)
     container.appendChild(
       Slider({
@@ -648,6 +773,7 @@ export class RainyDeskPanel {
         min: 1,
         max: 100,
         unit: '%',
+        extraElement: intensityOscKnob,
         onChange: (v) => {
           this.state.intensity = v;
           window.rainydesk.updateRainscapeParam('physics.intensity', v);
@@ -690,6 +816,7 @@ export class RainyDeskPanel {
     // Volume
     container.appendChild(
       Slider({
+        id: 'volume',
         label: 'Volume',
         value: this.state.volume,
         min: 0,
@@ -755,6 +882,7 @@ export class RainyDeskPanel {
         this.updateFooterStatus();
       },
     });
+    pauseToggle.setAttribute('data-control', 'pause');
     toggleRow.appendChild(pauseToggle);
 
     container.appendChild(toggleRow);
@@ -875,6 +1003,19 @@ export class RainyDeskPanel {
       })
     );
 
+    // Splash OSC knob (inline with Splash Size slider)
+    const splashOscKnob = RotaryKnob({
+      value: this.state.splashOsc,
+      min: 0,
+      max: 100,
+      id: 'splashOsc',
+      description: 'Splash size drift (auto-varies splash scale)',
+      onChange: (v) => {
+        this.state.splashOsc = v;
+        window.rainydesk.updateRainscapeParam('physics.splashOsc', v);
+      },
+    });
+
     // Splash size (disabled in Matrix Mode)
     // Slider 0-100% maps to splashScale 0.5-2.0 (full valid range)
     // Default 33% ≈ splashScale 1.0
@@ -887,6 +1028,7 @@ export class RainyDeskPanel {
         max: 100,
         unit: '%',
         defaultValue: 33,
+        extraElement: splashOscKnob,
         onChange: (v) => {
           // Map 0-100 slider → 0.5-2.0 splashScale
           const splashScale = 0.5 + (v / 100) * 1.5;
@@ -913,6 +1055,19 @@ export class RainyDeskPanel {
       })
     );
 
+    // Turbulence OSC knob (inline with Turbulence slider)
+    const turbulenceOscKnob = RotaryKnob({
+      value: this.state.turbulenceOsc,
+      min: 0,
+      max: 100,
+      id: 'turbulenceOsc',
+      description: 'Turbulence drift (auto-varies chaos level)',
+      onChange: (v) => {
+        this.state.turbulenceOsc = v;
+        window.rainydesk.updateRainscapeParam('physics.turbulenceOsc', v);
+      },
+    });
+
     // Turbulence (Matrix: Glitchiness)
     container.appendChild(
       Slider({
@@ -924,6 +1079,7 @@ export class RainyDeskPanel {
         max: 100,
         unit: '%',
         defaultValue: 30,
+        extraElement: turbulenceOscKnob,
         onChange: (v) => {
           this.state.turbulence = v / 100;
           window.rainydesk.updateRainscapeParam('physics.turbulence', v / 100);
@@ -1090,6 +1246,7 @@ export class RainyDeskPanel {
     // Master volume
     container.appendChild(
       Slider({
+        id: 'masterVolume',
         label: 'Master Volume',
         value: this.state.masterVolume,
         min: 0,
@@ -1124,6 +1281,37 @@ export class RainyDeskPanel {
         onChange: (v) => {
           this.state.rainIntensity = v;
           window.rainydesk.updateRainscapeParam('audio.rainIntensity', v);
+        },
+      })
+    );
+
+    // Rain sheet OSC knob (inline with Rain Sheet slider)
+    const sheetOscKnob = RotaryKnob({
+      value: this.state.sheetOsc,
+      min: 0,
+      max: 100,
+      id: 'sheetOsc',
+      description: 'Rain sheet drift (auto-varies background noise level)',
+      onChange: (v) => {
+        this.state.sheetOsc = v;
+        window.rainydesk.updateRainscapeParam('audio.sheetOsc', v);
+      },
+    });
+
+    // Rain sheet (pink/brown noise bed — Rain Mode only, shut off in Matrix)
+    container.appendChild(
+      Slider({
+        id: 'sheetVolume',
+        label: 'Rain Sheet',
+        value: this.state.sheetVolume,
+        min: 0,
+        max: 100,
+        unit: '%',
+        defaultValue: 50,
+        extraElement: sheetOscKnob,
+        onChange: (v) => {
+          this.state.sheetVolume = v;
+          window.rainydesk.updateRainscapeParam('audio.sheetVolume', v);
         },
       })
     );
@@ -1712,6 +1900,16 @@ export class RainyDeskPanel {
     }
   }
 
+  private updatePauseToggle(): void {
+    const pauseRow = this.root.querySelector('[data-control="pause"]');
+    if (!pauseRow) return;
+
+    const checkbox = pauseRow.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    if (checkbox) {
+      checkbox.checked = this.state.paused;
+    }
+  }
+
   /** Apply CSS transform only — used by render() to restore scale without moving the window */
   private applyUIScaleCSS(scale: number): void {
     const panel = this.root.querySelector('.rainscaper-panel') as HTMLElement;
@@ -1731,7 +1929,7 @@ export class RainyDeskPanel {
     this.applyUIScaleCSS(scale);
   }
 
-  /** Start rainbow color cycling on the title bar (synced with rain Gay Mode) */
+  /** Start rainbow color cycling on the title bar + logo (synced with rain Gay Mode) */
   private startGayModeAnimation(): void {
     if (this.gayModeInterval) return; // Already running
 
@@ -1743,6 +1941,40 @@ export class RainyDeskPanel {
         this.titleElement.style.backgroundImage = 'linear-gradient(90deg, #5BCEFA, #F5A9B8, #FFFFFF, #F5A9B8, #5BCEFA)';
         this.titleElement.style.backgroundClip = 'text';
         (this.titleElement.style as unknown as Record<string, string>)['-webkit-background-clip'] = 'text';
+        // Logo: radiating trans gradient via SVG radialGradient stop cycling
+        if (this.logoElement) {
+          const svg = this.logoElement.querySelector('.panel-logo');
+          if (svg) {
+            // One-time setup: inject radialGradient with 9 stops
+            if (!svg.querySelector('#trans-grad')) {
+              const ns = 'http://www.w3.org/2000/svg';
+              const defs = document.createElementNS(ns, 'defs');
+              const grad = document.createElementNS(ns, 'radialGradient');
+              grad.id = 'trans-grad';
+              for (let i = 0; i < 9; i++) {
+                const stop = document.createElementNS(ns, 'stop');
+                stop.setAttribute('offset', `${(i / 8) * 100}%`);
+                grad.appendChild(stop);
+              }
+              defs.appendChild(grad);
+              svg.insertBefore(defs, svg.firstChild);
+              svg.querySelector('path')!.setAttribute('fill', 'url(#trans-grad)');
+            }
+            // Cycle stop colors: W(#FFF) -> P(#F5A9B8) -> B(#5BCEFA), seamless loop
+            const stops = svg.querySelectorAll('#trans-grad stop');
+            const phase = (performance.now() / 3000) % 1.0;
+            const W = [255, 255, 255], P = [245, 169, 184], B = [91, 206, 250];
+            const C = [W, P, B];
+            for (let i = 0; i < stops.length; i++) {
+              const seg = (((i / 9) - phase + 1) % 1.0) * 3;
+              const si = Math.floor(seg) % 3;
+              const sf = seg - Math.floor(seg);
+              const fr = C[si]!, to = C[(si + 1) % 3]!;
+              stops[i]!.setAttribute('stop-color',
+                `rgb(${fr[0]! + (to[0]! - fr[0]!) * sf | 0},${fr[1]! + (to[1]! - fr[1]!) * sf | 0},${fr[2]! + (to[2]! - fr[2]!) * sf | 0})`);
+            }
+          }
+        }
       } else {
         // Rainbow: cycle hue over 60 seconds
         this.titleElement.style.backgroundImage = '';
@@ -1750,11 +1982,20 @@ export class RainyDeskPanel {
         (this.titleElement.style as unknown as Record<string, string>)['-webkit-background-clip'] = '';
         const hue = ((performance.now() / 60000) % 1.0) * 360;
         this.titleElement.style.color = `hsl(${hue}, 80%, 70%)`;
+        // Logo: same rainbow hue, tear down trans gradient if it was active
+        if (this.logoElement) {
+          const svg = this.logoElement.querySelector('.panel-logo');
+          if (svg?.querySelector('#trans-grad')) {
+            svg.querySelector('defs')?.remove();
+            svg.querySelector('path')!.setAttribute('fill', 'currentColor');
+          }
+          this.logoElement.style.color = `hsl(${hue}, 80%, 70%)`;
+        }
       }
     }, 50); // Update every 50ms for smooth animation
   }
 
-  /** Stop rainbow color cycling and reset title color */
+  /** Stop rainbow color cycling and reset title + logo color */
   private stopGayModeAnimation(): void {
     if (this.gayModeInterval) {
       clearInterval(this.gayModeInterval);
@@ -1765,6 +2006,167 @@ export class RainyDeskPanel {
       this.titleElement.style.backgroundImage = '';
       this.titleElement.style.backgroundClip = '';
       (this.titleElement.style as unknown as Record<string, string>)['-webkit-background-clip'] = '';
+    }
+    if (this.logoElement) {
+      this.logoElement.style.color = '';
+      // Clean up trans gradient if active
+      const svg = this.logoElement.querySelector('.panel-logo');
+      if (svg?.querySelector('#trans-grad')) {
+        svg.querySelector('defs')?.remove();
+        svg.querySelector('path')!.setAttribute('fill', 'currentColor');
+      }
+    }
+  }
+
+  /** Easter egg: logo spin sequence on click */
+  private handleLogoClick(): void {
+    const now = Date.now();
+    const svg = this.logoElement?.querySelector('.panel-logo') as SVGElement | null;
+    if (!svg) return;
+
+    // Clear settle timer
+    if (this.logoSettleTimer) {
+      clearTimeout(this.logoSettleTimer);
+      this.logoSettleTimer = null;
+    }
+    // Clear pending particle timers
+    this.logoParticleTimers.forEach(t => clearTimeout(t));
+    this.logoParticleTimers = [];
+
+    const elapsed = now - this.logoFirstClickTime;
+
+    if (this.logoClickCount >= 3) {
+      // Already in rapid mode — repeat step 3
+      this.doLogoSpin(svg, 5, 1500, true);
+    } else if (this.logoClickCount === 2 && elapsed <= 6000) {
+      // Third click within 6s of first
+      this.logoClickCount = 3;
+      this.doLogoSpin(svg, 5, 1500, true);
+    } else if (this.logoClickCount === 1 && elapsed <= 3000) {
+      // Second click within 3s of first
+      this.logoClickCount = 2;
+      this.doLogoSpin(svg, 2, 1000, false);
+    } else {
+      // First click or sequence expired
+      this.logoClickCount = 1;
+      this.logoFirstClickTime = now;
+      this.doLogoSpin(svg, 1, 500, false);
+    }
+
+    // Settle timer: 3s from this click
+    this.logoSettleTimer = setTimeout(() => {
+      this.logoClickCount = 0;
+    }, 3000);
+  }
+
+  /** Spin the logo SVG and optionally emit particles */
+  private doLogoSpin(svg: SVGElement, spins: number, duration: number, particles: boolean): void {
+    this.logoTotalRotation += spins * 360;
+    // Bouncy overshoot for gentle spins, smooth deceleration for rapid
+    const easing = particles
+      ? 'cubic-bezier(0.22, 1, 0.36, 1)'
+      : 'cubic-bezier(0.34, 1.56, 0.64, 1)';
+    svg.style.transition = `transform ${duration}ms ${easing}`;
+    svg.style.transform = `rotate(${this.logoTotalRotation}deg)`;
+
+    if (particles) {
+      // Rapid-fire bursts — one per spin, 80ms apart so they're done
+      // well before the deceleration settles
+      for (let i = 0; i < spins; i++) {
+        this.logoParticleTimers.push(
+          setTimeout(() => this.emitLogoParticles(), i * 80)
+        );
+      }
+    }
+  }
+
+  /** Emit burst of particles from the logo center */
+  private emitLogoParticles(): void {
+    const logo = this.logoElement;
+    if (!logo) return;
+
+    const rect = logo.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    const isMatrix = this.state.matrixMode;
+    const count = isMatrix ? 8 : 10;
+    // Film-authentic glyphs matching the Matrix renderer
+    const glyphs = 'アウエオカキケコサシスセソタツテ012345789*+:';
+
+    // Spawn from logo edge. Arc tuned so first particles fly roughly
+    // horizontal-right (toward "RainyDesk" title) and last particles
+    // angle down toward the Basic tab. With ~72 deg tangential offset:
+    // spawn -72 deg → flight 0 deg (horizontal right)
+    // spawn   0 deg → flight 72 deg (steep down-right toward tabs)
+    const logoRadius = 14;
+    const arcStart = -Math.PI * 0.4;  // -72 deg
+    const arcSpan = Math.PI * 0.5;    //  90 deg arc (extends 18 deg further clockwise)
+
+    for (let i = 0; i < count; i++) {
+      const el = document.createElement('span');
+      const sizeMul = 3 + Math.random() * 2; // 3-5x random size multiplier
+
+      if (isMatrix) {
+        el.textContent = glyphs[Math.floor(Math.random() * glyphs.length)]!;
+        el.style.fontFamily = "'Departure Mono', 'MS Gothic', monospace";
+        el.style.fontSize = `${Math.round(7 * sizeMul)}px`;
+        el.style.fontWeight = 'bold';
+      } else {
+        el.textContent = '\u25CF'; // Filled circle
+        el.style.fontSize = `${Math.round(6 * sizeMul)}px`;
+      }
+
+      // Spawn at edge of logo, evenly distributed across the arc
+      const spawnAngle = arcStart + arcSpan * (i + 0.5) / count + (Math.random() - 0.5) * 0.2;
+      const startX = cx + Math.cos(spawnAngle) * logoRadius;
+      const startY = cy + Math.sin(spawnAngle) * logoRadius;
+
+      // Color hierarchy: trans flag > rainbow > mode-appropriate default/custom
+      let color: string;
+      if (this.state.transMode) {
+        const transColors = ['#5BCEFA', '#F5A9B8', '#FFFFFF'];
+        color = transColors[Math.floor(Math.random() * 3)]!;
+      } else if (this.state.gayMode) {
+        // Match rainbow hue cycle, spread slightly per particle
+        const baseHue = ((performance.now() / 60000) % 1.0) * 360;
+        color = `hsl(${baseHue + i * 8}, 80%, 70%)`;
+      } else {
+        // If color is still at either mode's default, use the current mode's default.
+        // If user picked something custom, respect that.
+        const modeDefault = this.state.matrixMode ? DEFAULT_MATRIX_COLOR : DEFAULT_RAIN_COLOR;
+        const atDefault = this.state.rainColor === DEFAULT_RAIN_COLOR
+          || this.state.rainColor === DEFAULT_MATRIX_COLOR;
+        color = atDefault ? modeDefault : this.state.rainColor;
+      }
+      el.style.color = color;
+      el.style.position = 'fixed';
+      el.style.left = `${startX}px`;
+      el.style.top = `${startY}px`;
+      el.style.pointerEvents = 'none';
+      el.style.zIndex = '99999';
+      el.style.opacity = '1';
+      el.style.willChange = 'transform, opacity';
+      el.style.transition = 'transform 350ms cubic-bezier(0.16, 1, 0.3, 1), opacity 350ms ease-out';
+      el.style.transform = 'translate(-50%, -50%) rotate(0deg)';
+
+      document.body.appendChild(el);
+
+      // Tangential fling: ~72 deg from radial (mostly tangential, slightly outward)
+      const flightAngle = spawnAngle + Math.PI * 0.4 + (Math.random() - 0.5) * 0.3;
+      const dist = 50 + Math.random() * 80;
+      const dx = Math.cos(flightAngle) * dist;
+      const dy = Math.sin(flightAngle) * dist;
+      const spin = 90 + Math.random() * 180; // Tumble 90-270 deg as it flies
+
+      // Force reflow then animate outward with tumble
+      el.getBoundingClientRect();
+      requestAnimationFrame(() => {
+        el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(${spin}deg) scale(0.2)`;
+        el.style.opacity = '0';
+      });
+
+      setTimeout(() => el.remove(), 450);
     }
   }
 
@@ -1836,6 +2238,7 @@ export class RainyDeskPanel {
       'puddleDrain',  // No puddles
       'gridScale',    // Matrix uses own grid, not physics grid
       'impactSound',  // Rain impact sounds (Rain Mode only)
+      'sheetVolume',  // Rain sheet noise (Rain Mode only)
       'windSound',    // Wind ambient (Rain Mode only, Matrix has Drone slider)
     ];
     for (const id of disabledInMatrix) {
@@ -1845,11 +2248,14 @@ export class RainyDeskPanel {
       }
     }
 
-    // Disable wind OSC knob in Matrix Mode
-    const windOscKnob = this.root.querySelector('[data-knob-id="windOsc"]') as HTMLElement;
-    if (windOscKnob) {
-      windOscKnob.style.opacity = isMatrix ? '0.4' : '';
-      windOscKnob.style.pointerEvents = isMatrix ? 'none' : '';
+    // Disable OSC knobs that have no effect in Matrix Mode (wind + splash)
+    // Intensity + Turbulence knobs stay active (map to stream density + glitchiness)
+    for (const knobId of ['windOsc', 'splashOsc', 'sheetOsc']) {
+      const knob = this.root.querySelector(`[data-knob-id="${knobId}"]`) as HTMLElement;
+      if (knob) {
+        knob.style.opacity = isMatrix ? '0.4' : '';
+        knob.style.pointerEvents = isMatrix ? 'none' : '';
+      }
     }
 
     // Update toggle labels that have matrix alternatives
@@ -1929,10 +2335,10 @@ export class RainyDeskPanel {
       window.rainydesk.getVersion().then((v: string) => {
         versionBtn.textContent = `v${v}-alpha`;
       }).catch(() => {
-        versionBtn.textContent = 'v0.7.0-alpha';
+        versionBtn.textContent = 'v0.9.0-alpha';
       });
     } else {
-      versionBtn.textContent = 'v0.7.0-alpha';
+      versionBtn.textContent = 'v0.9.0-alpha';
     }
 
     // Build the popup menu (reused across toggles)
@@ -1964,6 +2370,40 @@ export class RainyDeskPanel {
     updatesItem.className = 'version-menu-item disabled';
     updatesItem.innerHTML = '<span class="version-menu-icon">&#8635;</span> <span style="flex: 1; text-align: right;">Update <span class="version-menu-sublabel">(soon!)</span></span>';
     menu.appendChild(updatesItem);
+
+    // Start with Windows toggle
+    const autostartItem = document.createElement('button');
+    autostartItem.className = 'version-menu-item autostart-toggle';
+    const checkmark = document.createElement('span');
+    checkmark.className = 'version-menu-icon autostart-check';
+    checkmark.textContent = '\u2610'; // Empty checkbox
+    const autostartLabel = document.createElement('span');
+    autostartLabel.style.cssText = 'flex: 1; text-align: right;';
+    autostartLabel.textContent = 'Start with Windows';
+    autostartItem.appendChild(checkmark);
+    autostartItem.appendChild(autostartLabel);
+
+    // Check current autostart state and update checkbox
+    isAutostartEnabled().then((enabled) => {
+      checkmark.textContent = enabled ? '\u2611' : '\u2610';
+    }).catch(() => {});
+
+    autostartItem.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        const currentlyEnabled = await isAutostartEnabled();
+        if (currentlyEnabled) {
+          await disableAutostart();
+          checkmark.textContent = '\u2610';
+        } else {
+          await enableAutostart();
+          checkmark.textContent = '\u2611';
+        }
+      } catch (err) {
+        window.rainydesk.log(`[Autostart] Toggle failed: ${err}`);
+      }
+    });
+    menu.appendChild(autostartItem);
 
     versionContainer.appendChild(menu);
     versionContainer.appendChild(versionBtn);

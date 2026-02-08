@@ -222,7 +222,11 @@ export class AudioSystem {
     // Connect rain sources to rain bus
     this._impactPool.connect(this._rainBus.input);
     this._bubblePool.connect(this._rainBus.input);
-    this._sheetLayer.connect(this._rainBus.input);
+    // SheetLayer bypasses rain bus — connects directly to master limiter.
+    // The rain bus compressor (threshold -18, ratio 3) permanently squashes
+    // continuous noise while letting transient impacts through. Bypassing
+    // gives the sheet layer its own clean signal path to the limiter.
+    this._sheetLayer.connect(this._masterLimiter);
 
     // Connect modules to their buses
     this._windModule.connect(this._windBus.input);

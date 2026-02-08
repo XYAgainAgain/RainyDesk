@@ -9,13 +9,13 @@ import * as Tone from 'tone';
 import type { SheetLayerConfig, NoiseType, FilterType } from '../../types/audio';
 
 const DEFAULT_CONFIG: SheetLayerConfig = {
-  noiseType: 'pink',
+  noiseType: 'brown',
   filterType: 'lowpass',
-  filterFreq: 2000,
+  filterFreq: 6000,
   filterQ: 1,
-  minVolume: -60,
-  maxVolume: -12,
-  maxParticleCount: 500,
+  minVolume: -30,
+  maxVolume: -16,
+  maxParticleCount: 50,
   rampTime: 0.1,
 };
 

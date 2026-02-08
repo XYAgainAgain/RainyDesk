@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RainyDesk",
-  "version": "0.8.5",
+  "version": "0.9.0-alpha",
   "identifier": "com.rainydesk.app",
   "build": {
     "beforeBuildCommand": "npm run build",
@@ -37,7 +37,8 @@
       },
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerHooks": "windows/installer-hooks.nsh"
       }
     }
   },
