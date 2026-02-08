@@ -84,6 +84,9 @@ static RAIN_PAUSED: AtomicBool = AtomicBool::new(false);
 // Global reference to pause menu item for sync between panel and tray
 static PAUSE_MENU_ITEM: Mutex<Option<MenuItem<tauri::Wry>>> = Mutex::new(None);
 
+// Global reference to rainscaper menu item for Open/Close text sync
+static RAINSCAPER_MENU_ITEM: Mutex<Option<MenuItem<tauri::Wry>>> = Mutex::new(None);
+
 // Rainscaper panel visibility state
 static RAINSCAPER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
@@ -628,6 +631,10 @@ fn load_panel_config(app: &tauri::AppHandle) -> Option<PanelConfig> {
 
 fn save_panel_config(app: &tauri::AppHandle, config: &PanelConfig) {
     let path = get_panel_config_path(app);
+    // Ensure app data directory exists
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     if let Ok(json) = serde_json::to_string_pretty(config) {
         let _ = std::fs::write(&path, json);
     }
@@ -921,7 +928,7 @@ fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<()
         // Window exists, just show and position it
         log::info!("[Rainscaper] Reusing existing window");
         log::info!("[Rainscaper] Positioning to ({}, {})", x, y);
-        window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)))
+        window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x as f64, y as f64)))
             .map_err(|e| format!("Failed to position window: {}", e))?;
         // Unminimize first in case hide() minimized it
         log::info!("[Rainscaper] Calling unminimize()");
@@ -935,6 +942,11 @@ fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<()
         window.set_always_on_top(true).ok();
         window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
         RAINSCAPER_VISIBLE.store(true, Ordering::SeqCst);
+        if let Ok(guard) = RAINSCAPER_MENU_ITEM.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text("Close Rainscaper");
+            }
+        }
         log::info!("[Rainscaper] Shown successfully at ({}, {})", x, y);
     } else {
         // Create the window at saved/calculated position
@@ -950,19 +962,28 @@ fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<()
 fn hide_rainscaper(app: tauri::AppHandle) -> Result<(), String> {
     log::info!("[Rainscaper] Hide requested");
     if let Some(window) = app.get_webview_window("rainscaper") {
-        // Save position before hiding
+        // Save position before hiding (convert physical → logical for consistent storage)
         if let Ok(pos) = window.outer_position() {
+            let scale = window.current_monitor()
+                .ok().flatten()
+                .map(|m| m.scale_factor())
+                .unwrap_or(1.0);
             let mut config = load_panel_config(&app).unwrap_or_default();
-            config.x = Some(pos.x);
-            config.y = Some(pos.y);
+            config.x = Some((pos.x as f64 / scale) as i32);
+            config.y = Some((pos.y as f64 / scale) as i32);
             save_panel_config(&app, &config);
-            log::info!("[Rainscaper] Saved position ({}, {})", pos.x, pos.y);
+            log::info!("[Rainscaper] Saved logical position ({}, {})", config.x.unwrap(), config.y.unwrap());
         }
         // Set click-through BEFORE hiding so rain doesn't puddle on invisible window
         window.set_ignore_cursor_events(true).ok();
         log::info!("[Rainscaper] Calling window.hide()");
         window.hide().map_err(|e| format!("Failed to hide window: {}", e))?;
         RAINSCAPER_VISIBLE.store(false, Ordering::SeqCst);
+        if let Ok(guard) = RAINSCAPER_MENU_ITEM.lock() {
+            if let Some(item) = guard.as_ref() {
+                let _ = item.set_text("Open Rainscaper");
+            }
+        }
         log::info!("[Rainscaper] Hidden successfully, VISIBLE=false");
     } else {
         log::warn!("[Rainscaper] Hide called but window not found");
@@ -1223,6 +1244,10 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 /// Calculate position for Rainscaper window above tray icon
+/// Calculate panel position in LOGICAL coordinates.
+/// Input tray_x/tray_y are physical (from tray click events).
+/// All monitor values are converted to logical so the result works with
+/// WebviewWindowBuilder::position() and Position::Logical.
 fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i32) -> (i32, i32) {
     const PANEL_WIDTH: i32 = 400;
     const PANEL_HEIGHT: i32 = 500;
@@ -1235,7 +1260,8 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
         .into_iter()
         .collect();
 
-    // Find which monitor contains the tray icon
+    // Find which monitor contains the tray icon (hit-test in physical space)
+    let mut scale = 1.0_f64;
     let mut screen_x = 0;
     let mut screen_y = 0;
     let mut screen_width = 1920;
@@ -1248,26 +1274,32 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
 
         if tray_x >= pos.x && tray_x < pos.x + size.width as i32 &&
            tray_y >= pos.y && tray_y < pos.y + size.height as i32 {
-            screen_x = pos.x;
-            screen_y = pos.y;
-            screen_width = size.width as i32;
-            screen_height = size.height as i32;
+            scale = monitor.scale_factor();
+            // Convert physical monitor bounds to logical
+            screen_x = (pos.x as f64 / scale) as i32;
+            screen_y = (pos.y as f64 / scale) as i32;
+            screen_width = (size.width as f64 / scale) as i32;
+            screen_height = (size.height as f64 / scale) as i32;
 
-            // Check if taskbar is at top (tray_y near top of screen)
+            // Check if taskbar is at top (tray_y near top of screen, physical)
             taskbar_at_top = tray_y < pos.y + 100;
             break;
         }
     }
 
-    // Position window above tray icon, centered horizontally
-    let mut x = tray_x - (PANEL_WIDTH / 2);
+    // Convert tray position to logical
+    let tray_lx = (tray_x as f64 / scale) as i32;
+    let tray_ly = (tray_y as f64 / scale) as i32;
+
+    // Position window above tray icon, centered horizontally (all logical)
+    let mut x = tray_lx - (PANEL_WIDTH / 2);
     let mut y = if taskbar_at_top {
-        tray_y + 40 + MARGIN  // Below taskbar
+        tray_ly + (40.0 / scale) as i32 + MARGIN  // Below taskbar
     } else {
-        tray_y - PANEL_HEIGHT - MARGIN  // Above taskbar
+        tray_ly - PANEL_HEIGHT - MARGIN  // Above taskbar
     };
 
-    // Clamp to screen bounds
+    // Clamp to screen bounds (all logical)
     x = x.max(screen_x + MARGIN).min(screen_x + screen_width - PANEL_WIDTH - MARGIN);
     y = y.max(screen_y + MARGIN).min(screen_y + screen_height - PANEL_HEIGHT - MARGIN);
 
@@ -1313,6 +1345,11 @@ fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32, visible: 
     }
 
     RAINSCAPER_VISIBLE.store(visible, Ordering::SeqCst);
+    if let Ok(guard) = RAINSCAPER_MENU_ITEM.lock() {
+        if let Some(item) = guard.as_ref() {
+            let _ = item.set_text(if visible { "Close Rainscaper" } else { "Open Rainscaper" });
+        }
+    }
     log::info!("[Rainscaper] Window created successfully (visible={})", visible);
 
     Ok(())
@@ -1641,6 +1678,34 @@ fn create_mega_overlay(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Reduce WebView2 bloat: disable unnecessary components that would otherwise
+    // auto-download ~50+ MB of DRM, speech, ad filters, ML models, etc. into EBWebView/.
+    // Must be set before any WebView2 initialization.
+    // Wry defaults (msWebOOUI, msPdfOOUI, msSmartScreenProtection) are re-included
+    // because setting this overrides them.
+    // NOTE: GPUCache/GrShaderCache (~11 MB) intentionally kept — stores compiled ANGLE
+    // shaders for WebGL 2; disabling would force recompilation every launch.
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,\
+msWebView2EnableTrackingPrevention,msWebView2EnableShoppingFeatures,\
+SafeBrowsing,AutofillServerCommunication,Translate,\
+PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies,\
+SiteEngagementService,\
+OptimizationGuideModelDownloading,OptimizationHintsFetching,\
+OptimizationTargetPrediction,OptimizationHints,\
+WebGPU \
+         --disable-component-update \
+         --disable-background-networking \
+         --disable-speech-api \
+         --disable-sync \
+         --disable-domain-reliability \
+         --disable-breakpad \
+         --no-pings \
+         --no-first-run \
+         --disk-cache-size=1"
+    );
+
     // Initialize app state
     let default_config = serde_json::json!({
         "rainEnabled": true,
@@ -1760,19 +1825,26 @@ pub fn run() {
             }
 
             // First launch: auto-open help window so new users discover it
+            // Flag is version-specific so dev builds don't suppress installed-version first launch
             if let Ok(app_data) = app.handle().path().app_data_dir() {
-                let first_launch_flag = app_data.join("first-launch.flag");
+                let version = app.config().version.as_deref().unwrap_or("unknown");
+                let flag_name = format!("first-launch-v{}.flag", version);
+                let first_launch_flag = app_data.join(&flag_name);
                 if !first_launch_flag.exists() {
+                    // Ensure app data directory exists before writing the flag
+                    let _ = std::fs::create_dir_all(&app_data);
                     std::fs::write(&first_launch_flag, "").ok();
-                    log::info!("[Setup] First launch detected, will show help window");
+                    log::info!("[Setup] First launch detected (v{}), will show help window", version);
                     let handle = app.handle().clone();
                     std::thread::spawn(move || {
                         // Wait for overlay + panel + help to finish loading
-                        std::thread::sleep(std::time::Duration::from_secs(4));
+                        std::thread::sleep(std::time::Duration::from_secs(5));
                         if let Some(window) = handle.get_webview_window("help") {
                             window.show().ok();
                             window.set_focus().ok();
                             log::info!("[Help] First-launch auto-open complete");
+                        } else {
+                            log::warn!("[Help] First-launch: help window not found after delay");
                         }
                     });
                 }
@@ -1809,6 +1881,11 @@ pub fn run() {
                         log::error!("[Rainscaper] Failed to hide: {}", e);
                     } else {
                         RAINSCAPER_VISIBLE.store(false, Ordering::SeqCst);
+                        if let Ok(guard) = RAINSCAPER_MENU_ITEM.lock() {
+                            if let Some(item) = guard.as_ref() {
+                                let _ = item.set_text("Open Rainscaper");
+                            }
+                        }
                         log::info!("[Rainscaper] Hidden via event, VISIBLE=false");
                     }
                 }
@@ -1822,6 +1899,11 @@ pub fn run() {
             // Store pause item globally for sync between panel and tray
             if let Ok(mut guard) = PAUSE_MENU_ITEM.lock() {
                 *guard = Some(pause_item.clone());
+            }
+
+            // Store rainscaper item globally for Open/Close text sync
+            if let Ok(mut guard) = RAINSCAPER_MENU_ITEM.lock() {
+                *guard = Some(rainscaper_item.clone());
             }
 
             // Volume presets submenu

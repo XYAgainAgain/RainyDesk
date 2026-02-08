@@ -1383,6 +1383,11 @@ function registerEventListeners() {
         config.fpsLimit = Number(value);
         lastFrameTime = 0; // Reset so next frame renders immediately
       }
+      if (param === 'renderScale') {
+        // Update local tracking variable only — background renderer has its own
+        // handler for this path via the same Rust broadcast, so no forwarding needed
+        renderScale = Math.max(0.125, Math.min(1.0, Number(value)));
+      }
       if (param === 'windOsc') {
         windOsc.setAmount(Number(value));
         if (!windOsc.active) {

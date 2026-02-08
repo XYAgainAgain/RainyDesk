@@ -2333,12 +2333,12 @@ export class RainyDeskPanel {
     // Load version from Tauri app config
     if (window.rainydesk?.getVersion) {
       window.rainydesk.getVersion().then((v: string) => {
-        versionBtn.textContent = `v${v}-alpha`;
+        versionBtn.textContent = `v${v}`;
       }).catch(() => {
-        versionBtn.textContent = 'v0.9.0-alpha';
+        versionBtn.textContent = 'v0.9.1-alpha';
       });
     } else {
-      versionBtn.textContent = 'v0.9.0-alpha';
+      versionBtn.textContent = 'v0.9.1-alpha';
     }
 
     // Build the popup menu (reused across toggles)
