@@ -1,21 +1,7 @@
-// Window detection for Z-order collision zones (Windows-only for now)
-//
-// Enumerates visible windows via Win32 API and returns their bounds for rain collision.
-// Renderer clips these to per-monitor local coordinates.
-//
-// Filtering strategy:
-// - Skip invisible windows (IsWindowVisible)
-// - Skip minimized windows (IsIconic) - they report "visible" but aren't on screen
-// - Skip cloaked windows (DWMWA_CLOAKED) - suspended UWP apps, shell-hidden windows
-// - Skip windows on other virtual desktops (IVirtualDesktopManager)
-// - Skip tiny windows (<50px) - likely system UI elements
-// - Skip untitled windows - usually system background processes
-// - Skip RainyDesk/DevTools - our own windows
-// - Skip system windows by class name (locale-independent)
-// - Skip system overlays - Task Switching, Task View, input panels
-//
-// UWP apps (ApplicationFrameWindow) and WinUI3 apps (WinUIDesktopWin32WindowClass)
-// are NOT skipped — the cloaked check handles suspended/phantom instances instead.
+// Window collision detection — Win32 API bounds, clipped to monitor coords.
+// Skips: invisible, minimized, cloaked (UWP phantoms), other virtual desktops,
+//        tiny (<50px), untitled, RainyDesk/DevTools, system class names, system overlays
+// UWP/WinUI3 apps are NOT skipped — cloaked check handles suspended instances.
 
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -140,8 +126,7 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
     }
 
     // Skip cloaked windows (suspended UWP apps, hidden by shell, etc.)
-    // This is how OBS Studio distinguishes active UWP windows from phantoms.
-    // Cloaked windows report as "visible" but aren't actually on screen.
+    // Cloaked windows report "visible" but aren't actually on screen
     let mut cloaked: u32 = 0;
     if DwmGetWindowAttribute(
         hwnd,
@@ -206,18 +191,11 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
         String::new()
     };
 
-    // Skip system windows by class name (works on all localized Windows installs)
-    // These class names are constant regardless of UI language
-    //
-    // NOTE: ApplicationFrameWindow (UWP frames) and WinUIDesktopWin32WindowClass
-    // (WinUI3 apps) are intentionally NOT skipped — they're real app windows
-    // (Settings, Calculator, Terminal, etc.). Suspended/phantom UWP apps are
-    // caught by the DWMWA_CLOAKED check above instead.
-    //
-    // Windows.UI.Core.CoreWindow is skipped to avoid duplicate detection —
-    // it's the content area inside an ApplicationFrameWindow, which already
-    // provides the full window bounds.
-    if class_name == "Progman" ||           // Desktop (Program Manager)
+    // Skip system windows by class name (locale-independent)
+    // UWP/WinUI3 NOT skipped — cloaked check catches suspended instances instead.
+    // CoreWindow skipped to avoid double-counting inside ApplicationFrameWindow.
+    if class_name == "CEF-OSC-WIDGET" ||    // NVIDIA GeForce Overlay (transparent, not a real window)
+       class_name == "Progman" ||           // Desktop (Program Manager)
        class_name == "WorkerW" ||           // Desktop worker windows
        class_name == "Shell_TrayWnd" ||     // Taskbar
        class_name == "Shell_SecondaryTrayWnd" ||  // Secondary taskbar (multi-monitor)

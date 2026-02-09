@@ -149,7 +149,7 @@ export class AudioBus {
     return this._compressor;
   }
 
-  // Configuration methods
+  // Config methods
 
   setGain(db: number): void {
     this._config.gain = db;

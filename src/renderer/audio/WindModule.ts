@@ -21,9 +21,7 @@ import type {
   FormantSet,
 } from '../../types/audio';
 
-// ============================================================================
-// Default Configurations
-// ============================================================================
+// Default Configs:
 
 const DEFAULT_BED_CONFIG: WindBedConfig = {
   enabled: true,
@@ -83,9 +81,7 @@ const DEFAULT_WIND_CONFIG: WindModuleConfig = {
   katabatic: DEFAULT_KATABATIC_CONFIG,
 };
 
-// ============================================================================
 // WindBedLayer - Continuous noise with filter modulation
-// ============================================================================
 
 class WindBedLayer {
   private _config: WindBedConfig;
@@ -220,9 +216,7 @@ class WindBedLayer {
   }
 }
 
-// ============================================================================
 // WindGustScheduler - Stochastic gust events
-// ============================================================================
 
 class WindGustScheduler {
   private _config: WindGustConfig;
@@ -342,9 +336,7 @@ class WindGustScheduler {
   }
 }
 
-// ============================================================================
 // AeolianToneGenerator - Wire whistle via Strouhal formula
-// ============================================================================
 
 class AeolianToneGenerator {
   private _config: AeolianConfig;
@@ -465,9 +457,7 @@ class AeolianToneGenerator {
   }
 }
 
-// ============================================================================
 // SingingWindSynth - Musical wind with formant filtering
-// ============================================================================
 
 // Mode intervals (semitones from root) - for future pitch quantization
 // const MODE_INTERVALS: Record<MusicalMode, number[]> = {
@@ -599,9 +589,7 @@ class SingingWindSynth {
   }
 }
 
-// ============================================================================
 // KatabaticLayer - Low-frequency downslope wind
-// ============================================================================
 
 class KatabaticLayer {
   private _config: KatabaticConfig;
@@ -698,9 +686,7 @@ class KatabaticLayer {
   }
 }
 
-// ============================================================================
 // WindModule - Main orchestrator
-// ============================================================================
 
 export class WindModule {
   private _config: WindModuleConfig;

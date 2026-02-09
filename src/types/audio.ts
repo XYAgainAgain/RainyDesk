@@ -7,9 +7,7 @@
 
 import type * as Tone from 'tone';
 
-// ============================================================================
 // Voice Pool Types
-// ============================================================================
 
 /** Synth types that can be used in voice pools */
 export type SynthType = Tone.Synth | Tone.NoiseSynth | Tone.MembraneSynth | Tone.MetalSynth;
@@ -54,9 +52,7 @@ export interface IVoicePool<T extends SynthType = SynthType> {
   dispose(): void;
 }
 
-// ============================================================================
 // Material Types
-// ============================================================================
 
 /** Types of synths used for impact sounds */
 export type ImpactSynthType = 'noise' | 'membrane' | 'metal';
@@ -90,9 +86,7 @@ export interface MaterialConfig {
   gainOffset: number;
 }
 
-// ============================================================================
 // Physics-to-Audio Mapping Types
-// ============================================================================
 
 /** Data extracted from a Matter.js collision event */
 export interface CollisionEvent {
@@ -129,9 +123,7 @@ export interface AudioParams {
   pan: number;
 }
 
-// ============================================================================
 // Sheet Layer Types
-// ============================================================================
 
 /** Noise types available in Tone.js */
 export type NoiseType = 'white' | 'pink' | 'brown';
@@ -159,9 +151,7 @@ export interface SheetLayerConfig {
   rampTime: number;
 }
 
-// ============================================================================
 // Effects Chain Types
-// ============================================================================
 
 /** 3-band EQ settings */
 export interface EQSettings {
@@ -196,9 +186,7 @@ export interface EffectsConfig {
   masterVolume: number;
 }
 
-// ============================================================================
 // Rainscape Types
-// ============================================================================
 
 /** Voice pool size configuration */
 export interface VoicePoolSizes {
@@ -235,9 +223,7 @@ export interface RainscapeConfig {
   };
 }
 
-// ============================================================================
 // Audio System State Types
-// ============================================================================
 
 /** Audio system lifecycle state */
 export type AudioSystemState = 'uninitialized' | 'initializing' | 'ready' | 'playing' | 'stopped' | 'error';
@@ -258,9 +244,7 @@ export interface AudioSystemStats {
   droppedCollisions: number;
 }
 
-// ============================================================================
 // Event Types
-// ============================================================================
 
 /** Events emitted by the audio system */
 export interface AudioSystemEvents {
@@ -274,9 +258,7 @@ export interface AudioSystemEvents {
   error: (error: Error) => void;
 }
 
-// ============================================================================
 // v2.0 Wind Module Types
-// ============================================================================
 
 /** Configuration for the continuous wind noise bed */
 export interface WindBedConfig {
@@ -392,9 +374,7 @@ export interface WindModuleConfig {
   katabatic: KatabaticConfig;
 }
 
-// ============================================================================
 // v2.0 Thunder Module Types
-// ============================================================================
 
 /** Configuration for the initial high-frequency crack/tear */
 export interface ThunderTearingConfig {
@@ -474,9 +454,7 @@ export interface ThunderModuleConfig {
   rumble: ThunderRumbleConfig;
 }
 
-// ============================================================================
 // v2.0 Matrix Module Types (Sci-Fi/Digital Rain)
-// ============================================================================
 
 /** Configuration for FM synthesis digital rain drops */
 export interface MatrixDropConfig {
@@ -534,9 +512,7 @@ export interface MatrixModuleConfig {
   glitch: MatrixGlitchConfig;
 }
 
-// ============================================================================
 // v2.0 Bus & SFX Types
-// ============================================================================
 
 /** Configuration for an audio bus (gain stage with processing) */
 export interface BusConfig {
@@ -585,9 +561,7 @@ export interface SFXConfig {
   masterBus: MasterBusConfig;
 }
 
-// ============================================================================
 // v2.0 Impact & Bubble Config (Enhanced)
-// ============================================================================
 
 /** Enhanced impact synth configuration */
 export interface ImpactConfig {
@@ -641,9 +615,7 @@ export interface BubbleConfig {
   poolSize: number;
 }
 
-// ============================================================================
 // v2.0 Complete Rainscape Configuration
-// ============================================================================
 
 /** Rain simulation parameters */
 export interface RainConfig {

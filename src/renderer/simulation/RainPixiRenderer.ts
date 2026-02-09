@@ -261,7 +261,7 @@ export class RainPixiRenderer {
         return (rInt << 16) | (gInt << 8) | bInt;
     }
 
-    // === Private methods ===
+    // Private methods
 
     private createTextures(): void {
         if (!this.app) return;
@@ -466,18 +466,22 @@ export class RainPixiRenderer {
             this.createPuddleTexture(grid.width, grid.height);
         }
 
-        // Convert grid to pixel buffer (Uint8Array → Uint32Array RGBA)
-        this.updatePuddleBuffer(grid.data, grid.width, grid.displayFloorMap, grid.depth);
+        // Skip expensive GPU upload when puddles haven't changed
+        if (grid.dirty) {
+            // Convert grid to pixel buffer (Uint8Array → Uint32Array RGBA)
+            this.updatePuddleBuffer(grid.data, grid.width, grid.displayFloorMap, grid.depth);
 
-        // Upload to GPU
-        this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
+            // Upload to GPU
+            this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
 
-        // Update texture from canvas
-        if (this.puddleTexture && this.puddleSprite) {
-            // Force texture update
-            this.puddleTexture.source.update();
+            // Update texture from canvas
+            if (this.puddleTexture) {
+                this.puddleTexture.source.update();
+            }
+        }
 
-            // Position sprite to account for monitor offset
+        // Always update sprite position (may change on reinit/resize)
+        if (this.puddleSprite) {
             this.puddleSprite.x = -offsetX;
             this.puddleSprite.y = -offsetY;
         }

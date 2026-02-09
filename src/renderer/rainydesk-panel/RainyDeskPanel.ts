@@ -170,6 +170,33 @@ export class RainyDeskPanel {
   private docClickListener: (() => void) | null = null;
   private docKeyListener: ((e: KeyboardEvent) => void) | null = null;
 
+  /** Get saved UI Scale, or auto-fit to screen on first launch */
+  private static getInitialUIScale(): number {
+    const saved = localStorage.getItem('rainscaper-ui-scale');
+    if (saved) return parseFloat(saved);
+
+    // First launch: pick the largest scale step that fits the work area
+    const scaleSteps = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5];
+    const BASE_W = 400;
+    const BASE_H = 500;
+    const MARGIN = 32;
+    const availW = window.screen.availWidth;
+    const availH = window.screen.availHeight;
+    const maxScale = Math.min((availW - MARGIN) / BASE_W, (availH - MARGIN) / BASE_H);
+
+    // Find the largest step that fits (default to smallest if none fit)
+    let bestScale = scaleSteps[0]!;
+    for (const step of scaleSteps) {
+      if (step <= maxScale) bestScale = step;
+    }
+
+    // Cap at 1.0 for auto — user can always increase manually
+    bestScale = Math.min(bestScale, 1.0);
+
+    localStorage.setItem('rainscaper-ui-scale', String(bestScale));
+    return bestScale;
+  }
+
   constructor(root: HTMLElement) {
     this.root = root;
     this.state = this.getDefaultState();
@@ -216,7 +243,7 @@ export class RainyDeskPanel {
       matrixMode: false,
       matrixDensity: 28,
       crtIntensity: 0,
-      uiScale: parseFloat(localStorage.getItem('rainscaper-ui-scale') || '1.0'),
+      uiScale: RainyDeskPanel.getInitialUIScale(),
       // Trans Mode easter egg
       transMode: false,
       transScrollDirection: 'off',
@@ -346,7 +373,7 @@ export class RainyDeskPanel {
 
     // Listen for stats from the overlay window
     window.rainydesk.onStats((stats: { fps: number; waterCount: number; activeDrops: number; puddleCells: number }) => {
-      // Update global stats object so the debug tab can display them
+      // Update stats so System tab displays 'em
       window._debugStats = {
         ...window._debugStats,
         ...stats,
@@ -533,6 +560,13 @@ export class RainyDeskPanel {
     } else if (path === 'audio.muted' && typeof value === 'boolean') {
       this.state.muted = value;
       this.updateMuteToggle();
+    } else if (path === 'system.resetPanel') {
+      // Reset UI scale to 100% (triggered by tray "Reset Panel")
+      this.state.uiScale = 1.0;
+      localStorage.setItem('rainscaper-ui-scale', '1');
+      this.applyUIScale(1.0);
+      // Sync slider display (index 2 = 1.0x in scaleSteps)
+      updateSliderValue(this.root, 'uiScale', 2);
     }
   }
 
@@ -826,7 +860,7 @@ export class RainyDeskPanel {
           const wasZero = this.state.volume === 0;
           this.state.volume = v;
           this.state.masterVolume = v;
-          // Convert to dB: 0% = -100dB (effectively silent), 100% = 0dB
+          // Convert percentage to dB; use -1000dB NOT -100 for true silence
           const db = v <= 0 ? -1000 : (v / 100 * 60) - 60;
           window.rainydesk.updateRainscapeParam('effects.masterVolume', db);
           // Auto-toggle mute when volume hits 0
@@ -903,6 +937,7 @@ export class RainyDeskPanel {
 
     themeSection.appendChild(
       Slider({
+        id: 'uiScale',
         label: 'UI Scale',
         value: currentStepIndex,
         min: 0,
@@ -940,7 +975,6 @@ export class RainyDeskPanel {
           // Capture old background color before applying new theme
           const oldBg = getComputedStyle(panel).backgroundColor;
 
-          // Create overlay with old colors
           const overlay = document.createElement('div');
           overlay.className = 'theme-wipe-overlay';
           overlay.style.background = oldBg;
@@ -959,7 +993,6 @@ export class RainyDeskPanel {
           // Apply new theme (colors change instantly under the overlay)
           await applyTheme(theme);
 
-          // Update active button without full re-render
           themeSelector.querySelectorAll('.theme-button').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
 
@@ -1153,11 +1186,11 @@ export class RainyDeskPanel {
     const gridScaleSection = document.createElement('div');
     gridScaleSection.className = 'slider-with-button';
 
-    // Grid Scale slider (3 discrete steps: Chunky/Normal/Detailed)
-    const gridScaleSteps = [0.125, 0.25, 0.375]; // Chunky, Normal, Detailed
-    const gridScaleLabels = ['Chunky', 'Normal', 'Detailed'];
+    // Grid Scale slider (4 discrete steps: Potato/Chunky/Normal/Detailed)
+    const gridScaleSteps = [0.0625, 0.125, 0.25, 0.375]; // Potato, Chunky, Normal, Detailed
+    const gridScaleLabels = ['Potato', 'Chunky', 'Normal', 'Detailed'];
     const currentIndex = gridScaleSteps.findIndex(s => Math.abs(s - this.state.gridScalePending) < 0.01);
-    const safeIndex = currentIndex >= 0 ? currentIndex : 1; // Default to Normal
+    const safeIndex = currentIndex >= 0 ? currentIndex : 2; // Default to Normal
 
     gridScaleSection.appendChild(
       Slider({
@@ -1165,7 +1198,7 @@ export class RainyDeskPanel {
         label: 'Grid Scale',
         value: safeIndex,
         min: 0,
-        max: 2,
+        max: 3,
         step: 1,
         unit: '',
         formatValue: (v: number) => gridScaleLabels[Math.round(v)] || 'Normal',
@@ -1214,7 +1247,7 @@ export class RainyDeskPanel {
     densitySlider.dataset.matrixOnly = 'true';
     container.appendChild(densitySlider);
 
-    // Update button visibility based on current state
+    // Update button visibility per state
     this.updateResetButtonVisibility();
 
     // Apply Matrix Mode state to slider labels and disabled states
@@ -1760,7 +1793,7 @@ export class RainyDeskPanel {
     // Get stats from global window object (updated by main renderer)
     const stats = window._debugStats || this.state.debugStats;
     const frameTime = stats.fps > 0 ? (1000 / stats.fps).toFixed(1) : '0.0';
-    // Memory from performance.memory (WebView2/Chromium only)
+    // Memory from WebView2's performance.memory
     const perf = performance as unknown as { memory?: { usedJSHeapSize: number } };
     const memoryMB = perf.memory ? (perf.memory.usedJSHeapSize / 1048576).toFixed(1) : 'N/A';
     // Uptime since panel init
@@ -1805,7 +1838,7 @@ export class RainyDeskPanel {
 
   private async loadSystemInfo(element: HTMLElement): Promise<void> {
     try {
-      // Get virtual desktop info from Tauri (includes all monitors)
+      // Get all of Tauri's virtual display info
       const vd = await window.rainydesk.getVirtualDesktop();
       const monitors = vd?.monitors || [];
       const primaryIndex = vd?.primaryIndex ?? 0;
@@ -1862,7 +1895,6 @@ export class RainyDeskPanel {
   }
 
   private updateFooterStatus(): void {
-    // Update intensity status
     const intensityEl = this.root.querySelector('.intensity-status');
     if (intensityEl) {
       this.renderIntensityStatus(intensityEl as HTMLElement);
@@ -1880,7 +1912,7 @@ export class RainyDeskPanel {
       }
       // Replace all state classes with the current one
       dot.className = `status-dot ${status.dot}`;
-      // Update text node (the text after the dot)
+      // Update post-dot text
       let textNode = dot.nextSibling;
       if (textNode && textNode.nodeType === Node.TEXT_NODE) {
         textNode.textContent = ` ${status.text}`;
@@ -1992,7 +2024,7 @@ export class RainyDeskPanel {
           this.logoElement.style.color = `hsl(${hue}, 80%, 70%)`;
         }
       }
-    }, 50); // Update every 50ms for smooth animation
+    }, 50); // 50ms updates for smooth animation
   }
 
   /** Stop rainbow color cycling and reset title + logo color */

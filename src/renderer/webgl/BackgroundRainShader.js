@@ -71,16 +71,11 @@ float noise(vec2 p) {
 
 // Layered rain effect
 float rainLayer(vec2 uv, float layerIndex, float time, float wind, float reverseGravity) {
-    // Each layer has different scale and speed for parallax depth
-    float depthFactor = 1.0 - layerIndex * 0.15;  // Farther layers are slower
+    // Each layer has different scale/speed for parallax depth; farther = slower
+    float depthFactor = 1.0 - layerIndex * 0.15;
     float scale = 200.0 + layerIndex * 80.0;      // Higher scale = finer rain streaks
 
-    // Apply wind slant - gentler than physics to account for visual perception
-    // Physics: 150/350 = 0.43, but shader looks steeper due to full-screen stretching
-    // Use 0.22 base (roughly half) for visual match
-    // Negate wind due to UV coordinate system (Y-flip)
-    // Multiply by scrollDir so slant flips with reverse gravity
-    // Add slight oscillation for atmospheric realism
+    // Apply gentle wind slant & oscillation; shader looks steeper due to mega-window stretching so use 0.22 base (~half) for visual match & Y-flip wind, multiply by scrollDir to slant flips with gravity reversal
     float windOscillation = sin(time * 0.4 + layerIndex * 1.5) * 0.04;
     float scrollDir = 1.0 - 2.0 * reverseGravity;
     float slant = -wind * (0.18 + windOscillation) * scrollDir;
@@ -89,9 +84,7 @@ float rainLayer(vec2 uv, float layerIndex, float time, float wind, float reverse
     // Stretch UV for rain streaks (taller than wide)
     vec2 rainUV = vec2(uv.x * scale, uv.y * scale * 0.12);
 
-    // Scroll based on gravity direction (with time), adjusted by depth
-    // Fast atmospheric rain - should feel distant and quick
-    // scrollDir already computed above: 1.0 normal, -1.0 reversed
+    // Scroll based on gravity w/ time + depth adjustment; should feel distant/quick
     rainUV.y -= time * 50.0 * depthFactor * scrollDir;
 
     // Add horizontal drift from wind (negated for UV coords)

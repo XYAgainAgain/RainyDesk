@@ -345,7 +345,7 @@ export class AudioSystem {
 
     // Calculate stereo pan from X position (-1 = left, 0 = center, 1 = right)
     const normalizedX = event.position.x / window.innerWidth;
-    params.pan = (normalizedX * 2) - 1;
+    params.pan = Math.max(-1, Math.min(1, (normalizedX * 2) - 1));
 
     // Trigger impact sound (always)
     const impactVoice = this._impactPool.trigger(params);
@@ -373,9 +373,7 @@ export class AudioSystem {
     this._sheetLayer?.setParticleCount(count);
   }
 
-  // ============================================================================
   // v2.0 Module Controls
-  // ============================================================================
 
   /**
    * Set wind speed (0-100). Affects wind module intensity.
@@ -445,9 +443,7 @@ export class AudioSystem {
     this._matrixModule?.triggerDrop(0.5, 0.7);
   }
 
-  // ============================================================================
   // Bus Controls
-  // ============================================================================
 
   setRainBusConfig(config: Partial<BusConfig>): void {
     this._rainBus?.updateConfig(config);
@@ -465,9 +461,7 @@ export class AudioSystem {
     this._matrixBus?.updateConfig(config);
   }
 
-  // ============================================================================
   // Module Config Updates
-  // ============================================================================
 
   updateWindConfig(config: Partial<WindModuleConfig>): void {
     this._windModule?.updateConfig(config);
@@ -481,9 +475,7 @@ export class AudioSystem {
     this._matrixModule?.updateConfig(config);
   }
 
-  // ============================================================================
   // Volume & Mute
-  // ============================================================================
 
   setMasterVolume(db: number): void {
     this._config.masterVolume = db;
@@ -576,9 +568,7 @@ export class AudioSystem {
     return this._isMuffled;
   }
 
-  // ============================================================================
   // Effects (Legacy API)
-  // ============================================================================
 
   setEQ(settings: Partial<EQSettings>): void {
     if (!this._eq) return;
@@ -614,9 +604,7 @@ export class AudioSystem {
     };
   }
 
-  // ============================================================================
   // Rainscape Loading
-  // ============================================================================
 
   /** Load a v1.0 rainscape configuration (backward compatible). */
   loadRainscape(config: RainscapeConfig): void {
@@ -883,9 +871,7 @@ export class AudioSystem {
     }
   }
 
-  // ============================================================================
   // Voice Pools
-  // ============================================================================
 
   setVoicePoolSizes(sizes: Partial<VoicePoolSizes>): void {
     if (sizes.impactPoolSize !== undefined && this._impactPool) {
@@ -903,9 +889,7 @@ export class AudioSystem {
     };
   }
 
-  // ============================================================================
   // Component Access
-  // ============================================================================
 
   getImpactPool(): ImpactSynthPool | null {
     return this._impactPool;
@@ -956,9 +940,7 @@ export class AudioSystem {
     };
   }
 
-  // ============================================================================
   // Stats & Cleanup
-  // ============================================================================
 
   getStats(): AudioSystemStats {
     const now = performance.now();

@@ -40,7 +40,6 @@ export function Slider(config: SliderConfig): HTMLElement {
     row.dataset.matrixLabel = matrixLabel;
   }
 
-  // Label container to hold label + optional reset button
   const labelContainer = document.createElement('div');
   labelContainer.className = 'control-label-container';
 
@@ -225,7 +224,6 @@ export function ColorPicker(config: ColorPickerConfig): HTMLElement {
   const row = document.createElement('div');
   row.className = 'control-row color-picker-row';
 
-  // Label container to hold label + optional reset button
   const labelContainer = document.createElement('div');
   labelContainer.className = 'control-label-container';
 
@@ -234,7 +232,6 @@ export function ColorPicker(config: ColorPickerConfig): HTMLElement {
   labelEl.textContent = label;
   labelContainer.appendChild(labelEl);
 
-  // Add reset button next to label if defaultValue is provided
   if (defaultValue !== undefined) {
     const resetBtn = document.createElement('button');
     resetBtn.className = 'reset-button';
@@ -282,7 +279,6 @@ export function ColorPicker(config: ColorPickerConfig): HTMLElement {
     swatch.onclick = () => {
       colorInput.value = preset;
       onChange(preset);
-      // Update active state
       swatches.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
       swatch.classList.add('active');
     };
@@ -298,7 +294,7 @@ export function ColorPicker(config: ColorPickerConfig): HTMLElement {
   return row;
 }
 
-// --- TriToggle (3-state selector: left / off / right) ---
+// TriToggle (3-state selector: left / off / right)
 
 export interface TriToggleConfig {
   label: string;
@@ -370,7 +366,7 @@ export function TriToggle(config: TriToggleConfig): HTMLElement {
   return row;
 }
 
-// --- RotaryKnob (generic, reusable fine-tuning control) ---
+// RotaryKnob (generic, reusable fine-tuning control)
 
 export interface RotaryKnobConfig {
   value: number;
@@ -397,18 +393,15 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
   indicator.className = 'rotary-knob-indicator';
   knob.appendChild(indicator);
 
-  // Map value to rotation angle: 0 = 225deg (7 o'clock), max = 315deg (5 o'clock)
-  // Arc spans 270 degrees total (from 225 to 495/135)
+  // Map to rotation angle: 0 = 225deg, max = 315deg, arc spans 270deg total
   const updateVisual = () => {
     const t = (currentValue - min) / (max - min); // 0-1
     const angle = 225 + t * 270; // 225deg to 495deg
     indicator.style.transform = `rotate(${angle}deg)`;
     knob.title = `${tooltipPrefix}${Math.round(currentValue)}`;
 
-    // Toggle has-value class for CSS glow arc
     knob.classList.toggle('has-value', t > 0.01);
 
-    // Update glow arc degree (CSS custom property for conic-gradient)
     const arcDeg = t * 270; // 0deg to 270deg
     knob.style.setProperty('--glow-arc-deg', `${arcDeg}deg`);
   };
@@ -457,7 +450,7 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
 
   knob.addEventListener('mousedown', onMouseDown);
 
-  // Expose programmatic setter for external reset (e.g. slider Reset button)
+  // Enables slider Reset buttons & similar
   (knob as unknown as { setValue: (v: number) => void }).setValue = (v: number) => {
     currentValue = Math.max(min, Math.min(max, Math.round(v)));
     updateVisual();
@@ -471,7 +464,6 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
       observer.disconnect();
     }
   });
-  // Observe parent removal (deferred since knob isn't attached yet)
   requestAnimationFrame(() => {
     if (knob.parentElement) {
       observer.observe(knob.parentElement, { childList: true });

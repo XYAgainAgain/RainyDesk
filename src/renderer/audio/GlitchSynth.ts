@@ -193,7 +193,7 @@ export class GlitchSynth {
       }
       // OFF-BEAT: Silent (no sound, just visual scramble)
 
-      // D: Sidechain duck string lead — DISABLED (string synth disabled)
+      // String lead synth DISABLED (for now), add -3dB ducking sidechain later
       // if (onBeat && this.stringDuckGain) {
       //   this.stringDuckGain.gain.cancelScheduledValues(Tone.now());
       //   this.stringDuckGain.gain.setValueAtTime(Tone.dbToGain(-3), Tone.now());
@@ -599,7 +599,7 @@ export class GlitchSynth {
     this.masterOutput.connect(destination);
   }
 
-  // --- Private helpers ---
+  // Private helpers
 
   /**
    * Handle section transitions (drone fading, bass mode switching).
@@ -649,7 +649,6 @@ export class GlitchSynth {
       this.reverbSend?.gain.rampTo(0, 0.5);
       // Restart sub-bass intro Dorian walk for new cycle
       this.startSubBassIntro();
-      // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-30), 1);
     } else if (section === 'bridge') {
       // C2: Ramp reverb wet to 0.8 at main->bridge transition (long reverb tail)
@@ -671,7 +670,6 @@ export class GlitchSynth {
       // Ramp bass to bridge volume (louder for pulsed section, B1)
       this.bassGain?.gain.rampTo(Tone.dbToGain(BASS_VOLUME_BRIDGE), 0.5);
 
-      // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-36), 2);
     } else {
       // Breakdown (bars 88-89): fade drone to silence, bass sustains with filter sweep
@@ -715,7 +713,6 @@ export class GlitchSynth {
         this.breakdownSubBassActive = true;
       }
 
-      // D: String lead — DISABLED
       // this.stringGain?.gain.rampTo(Tone.dbToGain(-30), 0.5);
     }
   }
@@ -1003,7 +1000,7 @@ export class GlitchSynth {
     return `${pitch}${newOctave}`;
   }
 
-  // --- Volume setters for E1 UI wiring ---
+  // Volume setters for E1 UI wiring
 
   /** Set bass volume in decibels */
   setBassVolume(db: number): void {

@@ -164,11 +164,17 @@ Performance monitoring and fun system info!
 
 ## Settings Location
 
-All your configuration files live here (you can click it to open the folder):
+**Rainscapes** (click to open):
 
-`%LOCALAPPDATA%\com.rainydesk.app\`
+`Documents\RainyDesk\`
 
-This includes your autosave, rainscape presets (available soon as shareable `.rain` files!), panel position, and 5 most recent system logs.
+Your autosave, default preset, and any custom rainscape presets live here. Rainscape sharing doesn't work yet, but it will soon!
+
+**Logs** (click to open):
+
+`%LOCALAPPDATA%\com.rainydesk.app\logs\`
+
+The 5 most recent session logs live here.
 
 **NOTE TO TESTERS:** It would be *very* helpful to send me those logs along with your feedback!
 

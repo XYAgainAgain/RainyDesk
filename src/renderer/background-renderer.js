@@ -81,14 +81,12 @@ function renderLoop() {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  // Skip rendering when paused or fullscreen (save GPU cycles)
+  // Skip rendering when paused/fullscreen to give GPU a breather
   if (!isPaused && !isFullscreenActive) {
     if (matrixMode && matrixRenderer) {
-      // Matrix mode: render digital rain (background layer)
       matrixRenderer.update(dt);
       matrixRenderer.render();
     } else if (renderer) {
-      // Normal mode: render rain shader
       renderer.clear();
       renderer.renderBackgroundOnly(dt);
     }
@@ -262,7 +260,7 @@ function registerEventListeners() {
     }
   });
 
-  // Fullscreen hiding is handled locally via window-data classification, not IPC events
+  // Fullscreen hiding handled locally via window-data
 }
 
 /**

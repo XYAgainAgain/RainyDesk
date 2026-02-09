@@ -5,7 +5,7 @@
 
 import BackgroundRainShader from './BackgroundRainShader.js';
 
-// Shader source code (embedded as strings)
+// Shader src
 const RAINDROP_VERT = `#version 300 es
 precision highp float;
 
@@ -28,7 +28,7 @@ out vec2 v_dims;
 void main() {
     // Calculate rotation angle from velocity
     float speed = length(a_instanceVelocity);
-    // Rotation fix: Subtract PI/2 to align vertical quad with velocity
+    // Rotation should subtract PI/2 to align everything
     float angle = atan(a_instanceVelocity.y, a_instanceVelocity.x) - 1.57079632679;
 
     v_dims = vec2(a_instanceRadius, a_instanceLength);
@@ -50,7 +50,7 @@ void main() {
     // Offset by instance position
     vec2 worldPos = a_instancePosition + rotated;
 
-    // Convert to clip space (-1 to 1) with Y-flip
+    // Clip space with Y-flip (-1 → 1)
     vec2 clipPos = (worldPos / u_resolution) * 2.0 - 1.0;
     clipPos.y = -clipPos.y;
 
@@ -76,35 +76,29 @@ void main() {
     float radius = v_dims.x;
     float len = v_dims.y;
 
-    // Head center in UV space (Y moves from 0 at tail to 1 at head)
+    // Head center in UV (Y moves from 0 at tail to 1 at head); trail is clipped cone so it doesn't overlap
     float headCenterY = 1.0 - (radius / len);
-
-    // --- Trail Logic ---
-    // Trail is a cone from y=0 (width 0) to y=headCenterY (width radius)
-    // It must be clipped above headCenterY so it doesn't overlap the top of the circle
     
     // Normalized position along the trail section (0.0 to 1.0)
     float trailHigh = max(headCenterY, 0.001);
     float trailProgress = clamp(v_uv.y / trailHigh, 0.0, 1.0);
     
-    // Tapered width: 0.0 at tail -> 0.5 at equator
     float halfWidth = 0.5 * trailProgress;
     
     // Distance from center line
     float xDist = abs(v_uv.x - 0.5);
     
-    // Smooth trail edges
+    // Smooth trails
     float blur = 0.05;
     float trailAlpha = 1.0 - smoothstep(halfWidth - blur, halfWidth, xDist);
     
-    // Fade the tail transparency slightly for speed effect
+    // Fade trail for speed effect
     trailAlpha *= smoothstep(0.0, 0.2, v_uv.y);
     
-    // Hard clip the trail above the equator (circle handles the top)
     trailAlpha *= step(v_uv.y, headCenterY);
 
 
-    // --- Head Logic ---
+    // Head logic!
     float dx = (v_uv.x - 0.5) * (radius * 2.0);
     float dy = (v_uv.y - headCenterY) * len;
     float distSq = dx*dx + dy*dy;
@@ -112,7 +106,6 @@ void main() {
     // Circle alpha
     float headAlpha = 1.0 - smoothstep(radius * radius * 0.5, radius * radius, distSq);
 
-    // Combine: The circle "caps" the cone
     float shapeAlpha = max(headAlpha, trailAlpha);
 
     // Combined alpha
@@ -168,10 +161,8 @@ out vec4 fragColor;
 const vec3 RAIN_COLOR = vec3(0.627, 0.769, 0.910);
 
 void main() {
-    // Distance from center for circular soft edge
     float dist = length(v_uv - 0.5) * 2.0;
 
-    // Smooth circular falloff
     float alpha = v_opacity * smoothstep(1.0, 0.5, dist);
 
     if (alpha < 0.01) discard;
@@ -367,7 +358,7 @@ class WebGLRainRenderer {
     _initFramebuffer() {
         const gl = this.gl;
 
-        // Clean up existing framebuffer if any
+        // Clean framebuffer if required
         if (this.framebuffer) {
             gl.deleteFramebuffer(this.framebuffer);
             gl.deleteTexture(this.fbTexture);
@@ -633,7 +624,7 @@ class WebGLRainRenderer {
             data[offset + 6] = drop.opacity;
         }
 
-        // Upload to GPU (only the used portion)
+        // Upload only used portion to GPU
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.raindropInstanceBuffer);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, data.subarray(0, count * 7));
@@ -659,7 +650,7 @@ class WebGLRainRenderer {
             data[offset + 3] = particle.opacity;
         }
 
-        // Upload to GPU
+        // Put GPU to work
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.splashInstanceBuffer);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, data.subarray(0, count * 4));
@@ -714,9 +705,8 @@ class WebGLRainRenderer {
 
         // Skip framebuffer path if not using scaled rendering
         if (this.scaleFactor >= 1.0 || !this.framebuffer || !this.framebufferComplete) {
-            // Direct rendering (no scaling or framebuffer unavailable)
+            // Direct rendering; BG in separate window
             this.clear();
-            // Background rain now renders in separate desktop-level window
             this._renderParticles(physicsSystem);
             return;
         }
@@ -725,7 +715,6 @@ class WebGLRainRenderer {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
         gl.viewport(0, 0, this.lowResWidth, this.lowResHeight);
         this.clear();
-        // Background rain now renders in separate desktop-level window
         this._renderParticles(physicsSystem);
 
         // PASS 2: Upscale to display
@@ -740,8 +729,7 @@ class WebGLRainRenderer {
      */
     _renderBackground() {
         if (this.backgroundRain) {
-            // Pass full display resolution for correct noise scaling
-            // (low-res framebuffer provides pixelation, but pattern density needs display size)
+            // Full-res for noise scaling, low-res framebuffer for pixelation
             this.backgroundRain.render(this.canvas.width, this.canvas.height);
         }
     }

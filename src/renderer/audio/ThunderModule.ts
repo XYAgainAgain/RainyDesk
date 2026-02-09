@@ -20,9 +20,7 @@ import type {
   ThunderRumbleConfig,
 } from '../../types/audio';
 
-// ============================================================================
 // Default Configurations
-// ============================================================================
 
 const DEFAULT_TEARING_CONFIG: ThunderTearingConfig = {
   enabled: true,
@@ -76,9 +74,7 @@ const DEFAULT_THUNDER_CONFIG: ThunderModuleConfig = {
 // Speed of sound in m/s (for potential future distance-based delay calculations)
 // const SPEED_OF_SOUND = 343;
 
-// ============================================================================
 // TearingLayer - Initial high-frequency crack
-// ============================================================================
 
 class TearingLayer {
   private _config: ThunderTearingConfig;
@@ -171,9 +167,7 @@ class TearingLayer {
   }
 }
 
-// ============================================================================
 // CrackLayer - N-wave pressure spike using FM synthesis
-// ============================================================================
 
 class CrackLayer {
   private _config: ThunderCrackConfig;
@@ -282,9 +276,7 @@ class CrackLayer {
   }
 }
 
-// ============================================================================
 // BodyLayer - Main rumble with reverb
-// ============================================================================
 
 class BodyLayer {
   private _config: ThunderBodyConfig;
@@ -384,9 +376,7 @@ class BodyLayer {
   }
 }
 
-// ============================================================================
 // RumbleLayer - Sub-bass tail
-// ============================================================================
 
 class RumbleLayer {
   private _config: ThunderRumbleConfig;
@@ -492,9 +482,7 @@ class RumbleLayer {
   }
 }
 
-// ============================================================================
 // ThunderModule - Main orchestrator
-// ============================================================================
 
 export class ThunderModule {
   private _config: ThunderModuleConfig;

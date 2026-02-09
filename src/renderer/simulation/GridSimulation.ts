@@ -22,10 +22,10 @@ import {
 } from './types';
 
 export class GridSimulation {
-    // === Configuration ===
+    // Configuration:
     private config: SimulationConfig;
 
-    // === Grid scale (configurable: 0.25 = 1:4, 0.125 = 1:8) ===
+    // Grid scale (configurable: 0.25 = 1:4, 0.125 = 1:8)
     private readonly gridScale: number;
     private readonly screenScale: number; // Inverse of gridScale for converting back
     // Normalization factor for consistent screen-space visuals across grid scales
@@ -34,13 +34,13 @@ export class GridSimulation {
     // At 0.5 (Detailed): factor = 2.0 (larger logic radius → same screen size)
     private readonly scaleNormFactor: number;
 
-    // === Grid dimensions (logic space) ===
+    // Grid dimensions (logic space)
     private readonly gridWidth: number;
     private readonly gridHeight: number;
     private readonly globalOffsetX: number;
     private readonly globalOffsetY: number;
 
-    // === Grid state (Eulerian layer) ===
+    // Grid state (Eulerian layer)
     private grid: Uint8Array;
     private gridBuffer: Uint8Array;      // Double buffer for consistent reads
     private waterEnergy: Float32Array;
@@ -51,14 +51,14 @@ export class GridSimulation {
     private waterDepthBuffer: Float32Array;
     private processedThisFrame: Uint8Array;
 
-    // === Void mask & spawn/floor maps (mega-window architecture) ===
+    // Void mask & spawn/floor maps
     private voidMask: Uint8Array | null = null;        // 1 = void, 0 = usable
     private spawnMap: Int16Array | null = null;        // Per-column spawn Y (-1 = no spawn)
     private originalSpawnMap: Int16Array | null = null; // Original spawn map before dynamic void
     private floorMap: Int16Array | null = null;        // Per-column splash floor Y (work area bottom)
     private displayFloorMap: Int16Array | null = null; // Per-column puddle floor Y (display bottom)
 
-    // === Rain particles (Lagrangian layer) ===
+    // Rain particles (Lagrangian layer)
     private dropsX: Float32Array;
     private dropsY: Float32Array;
     private dropsPrevX: Float32Array;
@@ -69,7 +69,7 @@ export class GridSimulation {
     private dropsOpacity: Float32Array;
     private dropCount = 0;
 
-    // === Splash particles (visual-only) ===
+    // Splash particles
     private splashX: Float32Array;
     private splashY: Float32Array;
     private splashVelX: Float32Array;
@@ -77,22 +77,33 @@ export class GridSimulation {
     private splashLife: Float32Array;
     private splashCount = 0;
 
-    // === Timing accumulators ===
+    // Timing accumulators
     private rainAccumulator = 0;
     private puddleAccumulator = 0;
     private spawnAccumulator = 0;
 
-    // === Evaporation system ===
+    // Evaporation system
     private evaporationTimer = 0;  // Total time elapsed since simulation start
 
-    // === Splash throttling ===
+    // Splash throttling
     private splashesThisFrame = 0;
     private readonly MAX_SPLASHES_PER_FRAME = 20;
 
-    // === Audio callback ===
+    // Puddle dirty tracking (skip GPU upload when nothing changed)
+    private _puddlesDirty = true;
+
+    // Spatial hash for drop merge (pre-allocated, zero-GC)
+    private mergeHashCells: Int16Array;    // Flat bucket storage (cellCount × bucketCap)
+    private mergeHashCounts: Int16Array;   // Per-cell drop count
+    private mergeCellSize = 0;            // Grid units per hash cell
+    private mergeGridCols = 0;            // Hash grid dimensions
+    private mergeGridRows = 0;
+    private readonly MERGE_BUCKET_CAP = 16; // Max drops per cell (overflow silently skipped)
+
+    // Audio callback
     public onCollision: CollisionCallback | null = null;
 
-    // === Reusable event object (zero-GC pattern) ===
+    // Reusable event object (zero-GC pattern)
     private readonly collisionEvent: CollisionEvent = {
         velocity: 0,
         dropRadius: 0,
@@ -103,11 +114,11 @@ export class GridSimulation {
         collisionSurface: 'top',
     };
 
-    // === Audio throttling ===
+    // Audio throttling
     private lastAudioTime = 0;
     private readonly AUDIO_MIN_INTERVAL = 8; // ms
 
-    // === DEBUG: Movement bias tracking ===
+    // DEBUG: Movement bias tracking
     private debugLeftMoves = 0;
     private debugRightMoves = 0;
     private debugDownMoves = 0;
@@ -201,14 +212,22 @@ export class GridSimulation {
         this.splashVelX = new Float32Array(maxSplashes);
         this.splashVelY = new Float32Array(maxSplashes);
         this.splashLife = new Float32Array(maxSplashes);
+
+        // Spatial hash for merge: cell size = max interaction distance
+        // Max radius after merge can grow, but practical cap is ~6 at default scale.
+        // Cell must be >= 2*maxPossibleRadius + mergeThreshold so neighbors cover all pairs.
+        this.mergeCellSize = Math.ceil((this.config.radiusMax * 2 + 2.0) * this.scaleNormFactor * 2);
+        this.mergeCellSize = Math.max(this.mergeCellSize, 8); // Floor at 8 grid units
+        this.mergeGridCols = Math.ceil(this.gridWidth / this.mergeCellSize);
+        this.mergeGridRows = Math.ceil(this.gridHeight / this.mergeCellSize);
+        const cellCount = this.mergeGridCols * this.mergeGridRows;
+        this.mergeHashCells = new Int16Array(cellCount * this.MERGE_BUCKET_CAP);
+        this.mergeHashCounts = new Int16Array(cellCount);
     }
 
-    // === Public API ===
+    // Public API
 
-    /**
-     * Advance the simulation by dt seconds.
-     * Called every frame; internally uses fixed timestep accumulators.
-     */
+    /* Advance sim by delta time */
     step(dt: number): void {
         this.rainAccumulator += dt;
         this.puddleAccumulator += dt;
@@ -242,14 +261,7 @@ export class GridSimulation {
         this.stepSplashes(dt);
     }
 
-    /**
-     * Update window zones from Tauri window data.
-     * OPTION A: Dynamic void mask (true void - blocks spawn/flow)
-     * Non-destructive update: only modifies cells that actually changed.
-     * @param normalWindows Array of normal collision windows (CELL_GLASS)
-     * @param voidWindows Array of void windows (CELL_VOID, blocks spawn)
-     * @param spawnBlockWindows Array of windows that only block spawn (no grid painting)
-     */
+    /* Window zone update logic */
     updateWindowZones(normalWindows: WindowZone[], voidWindows: WindowZone[], spawnBlockWindows: WindowZone[] = []): void {
         // Build target grid state in temporary buffer (non-destructive approach)
         const targetGrid = new Uint8Array(this.grid.length);
@@ -325,9 +337,7 @@ export class GridSimulation {
         }
     }
 
-    /**
-     * Simple window rasterization - just paint cells, no displacement.
-     */
+    /* Simple window rasterization! Just cells, no displacement */
     private rasterizeWindowSimple(win: WindowZone, cellType: number, grid: Uint8Array): void {
         const scale = this.gridScale;
         const x1 = Math.floor((win.x - this.globalOffsetX) * scale);
@@ -383,8 +393,10 @@ export class GridSimulation {
      * Set rain intensity (affects spawn rate).
      */
     setIntensity(intensity: number): void {
-        // Intensity 0–1 maps to spawn rate
-        this.config.spawnRate = intensity * 200; // 0–200 drops/sec
+        // Intensity 0–1 maps to spawn rate; floor of 1% prevents silent spawn death
+        // (use a layer toggle to fully disable rain, not intensity 0)
+        const clamped = Number.isFinite(intensity) ? Math.max(0.01, intensity) : 0.01;
+        this.config.spawnRate = clamped * 200; // 2–200 drops/sec
     }
 
     /**
@@ -484,7 +496,7 @@ export class GridSimulation {
         return this.rainAccumulator / RAIN_TICK;
     }
 
-    // === Getters for renderer access ===
+    // Getters for renderer access
 
     get drops() {
         return {
@@ -508,6 +520,8 @@ export class GridSimulation {
     }
 
     get gridState() {
+        const dirty = this._puddlesDirty;
+        this._puddlesDirty = false; // Reset on read (renderer consumes it)
         return {
             data: this.grid,
             depth: this.waterDepth,
@@ -515,10 +529,11 @@ export class GridSimulation {
             height: this.gridHeight,
             floorMap: this.floorMap,
             displayFloorMap: this.displayFloorMap,
+            dirty,
         };
     }
 
-    // === Private methods ===
+    // Private methods
 
     private spawnDrop(): void {
         if (this.dropCount >= this.config.maxDrops) return;
@@ -955,50 +970,116 @@ export class GridSimulation {
 
     /**
      * Merge nearby drops that are colliding (cohesion for falling rain).
-     * Uses spatial proximity - if two drops are within touching distance, combine them.
+     * Uses spatial hashing — O(n) rebuild + O(n*k) neighbor checks instead of O(n^2).
      */
     private mergeNearbyDrops(): void {
-        // Merge threshold normalized for consistent screen-space merge distance
+        if (this.dropCount < 2) return;
+
         const mergeThreshold = 2.0 * this.scaleNormFactor;
+        const cols = this.mergeGridCols;
+        const rows = this.mergeGridRows;
+        const cellSize = this.mergeCellSize;
+        const cap = this.MERGE_BUCKET_CAP;
+        const cells = this.mergeHashCells;
+        const counts = this.mergeHashCounts;
 
-        // Simple O(n²) collision check - could optimize with spatial hashing for large counts
+        // Clear bucket counts (single typed array fill — fast)
+        counts.fill(0);
+
+        // Insert all drops into spatial hash
         for (let i = 0; i < this.dropCount; i++) {
-            const x1 = this.dropsX[i]!;
-            const y1 = this.dropsY[i]!;
-            const r1 = this.dropsRadius[i]!;
+            const cx = Math.min(((this.dropsX[i]! / cellSize) | 0), cols - 1);
+            const cy = Math.min(((this.dropsY[i]! / cellSize) | 0), rows - 1);
+            const ci = (cx < 0 ? 0 : cx) + (cy < 0 ? 0 : cy) * cols;
+            const n = counts[ci]!;
+            if (n < cap) {
+                cells[ci * cap + n] = i;
+                counts[ci] = n + 1;
+            }
+        }
 
-            for (let j = i + 1; j < this.dropCount; j++) {
-                const x2 = this.dropsX[j]!;
-                const y2 = this.dropsY[j]!;
-                const r2 = this.dropsRadius[j]!;
+        // Check each cell + its right/below/diagonal neighbors (avoids double-checking)
+        // Offsets: self, right, below-left, below, below-right
+        const neighborDx = [0, 1, -1, 0, 1];
+        const neighborDy = [0, 0,  1, 1, 1];
 
-                // Distance between centers
-                const dx = x2 - x1;
-                const dy = y2 - y1;
-                const distSq = dx * dx + dy * dy;
-                const touchDist = r1 + r2 + mergeThreshold;
+        for (let cy = 0; cy < rows; cy++) {
+            for (let cx = 0; cx < cols; cx++) {
+                const ci = cx + cy * cols;
+                const countA = counts[ci]!;
+                if (countA === 0) continue;
 
-                if (distSq < touchDist * touchDist) {
-                    // Merge: combine into larger drop (keep drop i, remove drop j)
-                    // Mass is proportional to radius³
-                    const m1 = r1 * r1 * r1;
-                    const m2 = r2 * r2 * r2;
-                    const totalMass = m1 + m2;
+                for (let ni = 0; ni < 5; ni++) {
+                    const nx = cx + neighborDx[ni]!;
+                    const ny = cy + neighborDy[ni]!;
+                    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+                    const nci = nx + ny * cols;
+                    const countB = counts[nci]!;
+                    if (countB === 0) continue;
 
-                    // New radius from combined mass
-                    this.dropsRadius[i] = Math.cbrt(totalMass);
+                    const offsetA = ci * cap;
+                    const offsetB = nci * cap;
+                    // Same cell: triangular iteration; different cells: full cross
+                    const sameCell = (ni === 0);
 
-                    // Weighted average position
-                    this.dropsX[i] = (x1 * m1 + x2 * m2) / totalMass;
-                    this.dropsY[i] = (y1 * m1 + y2 * m2) / totalMass;
+                    for (let a = 0; a < countA; a++) {
+                        const i = cells[offsetA + a]!;
+                        if (i < 0) continue; // Merged away
+                        const x1 = this.dropsX[i]!;
+                        const y1 = this.dropsY[i]!;
+                        const r1 = this.dropsRadius[i]!;
 
-                    // Weighted average velocity
-                    this.dropsVelX[i] = (this.dropsVelX[i]! * m1 + this.dropsVelX[j]! * m2) / totalMass;
-                    this.dropsVelY[i] = (this.dropsVelY[i]! * m1 + this.dropsVelY[j]! * m2) / totalMass;
+                        const bStart = sameCell ? a + 1 : 0;
+                        for (let b = bStart; b < countB; b++) {
+                            const j = cells[offsetB + b]!;
+                            if (j < 0 || j === i) continue; // Merged away or self
 
-                    // Remove drop j
-                    this.despawnDrop(j);
-                    j--; // Recheck this index since we swapped in the last drop
+                            const dx = this.dropsX[j]! - x1;
+                            const dy = this.dropsY[j]! - y1;
+                            const distSq = dx * dx + dy * dy;
+                            const touchDist = r1 + this.dropsRadius[j]! + mergeThreshold;
+
+                            if (distSq < touchDist * touchDist) {
+                                // Merge j into i (mass-weighted)
+                                const r2 = this.dropsRadius[j]!;
+                                const m1 = r1 * r1 * r1;
+                                const m2 = r2 * r2 * r2;
+                                const totalMass = m1 + m2;
+
+                                this.dropsRadius[i] = Math.cbrt(totalMass);
+                                this.dropsX[i] = (x1 * m1 + this.dropsX[j]! * m2) / totalMass;
+                                this.dropsY[i] = (y1 * m1 + this.dropsY[j]! * m2) / totalMass;
+                                this.dropsVelX[i] = (this.dropsVelX[i]! * m1 + this.dropsVelX[j]! * m2) / totalMass;
+                                this.dropsVelY[i] = (this.dropsVelY[i]! * m1 + this.dropsVelY[j]! * m2) / totalMass;
+
+                                // Mark j as merged in hash (-1 sentinel)
+                                cells[offsetB + b] = -1;
+                                this.despawnDrop(j);
+
+                                // despawnDrop swaps last drop into j's slot. If that drop is
+                                // in our hash, its index is now j instead of dropCount.
+                                // Update the hash entry so we don't miss or double-process it.
+                                const swapped = this.dropCount; // After despawn, this is the old last index
+                                if (swapped !== j) {
+                                    // Find swapped drop in hash and update its index
+                                    const scx = Math.min(((this.dropsX[j]! / cellSize) | 0), cols - 1);
+                                    const scy = Math.min(((this.dropsY[j]! / cellSize) | 0), rows - 1);
+                                    const sci = (scx < 0 ? 0 : scx) + (scy < 0 ? 0 : scy) * cols;
+                                    const sOffset = sci * cap;
+                                    const sCount = counts[sci]!;
+                                    for (let s = 0; s < sCount; s++) {
+                                        if (cells[sOffset + s] === swapped) {
+                                            cells[sOffset + s] = j;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // Refresh r1 for subsequent checks against i
+                                break; // Re-scan neighbors for i on next tick
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1054,6 +1135,10 @@ export class GridSimulation {
     }
 
     private stepPuddles(_dt: number): void {
+        // Mark puddles dirty — the CA is about to process/move water cells.
+        // If no water exists, the loop skips all cells and dirty stays false from last reset.
+        this._puddlesDirty = true;
+
         // Copy current state to buffer (double buffering for consistent reads)
         this.gridBuffer.set(this.grid);
         this.waterEnergyBuffer.set(this.waterEnergy);
@@ -1116,7 +1201,7 @@ export class GridSimulation {
                 // Per-tick momentum decay
                 this.waterMomentumXBuffer[index] = momentum * 0.97;
 
-                // === BOUNCE: If high energy, try to move against gravity ===
+                // BOUNCE: If high energy, try to move against gravity
                 if (energy > 0.4 && Math.random() < energy * 0.5) {
                     if (this.tryMoveWaterWithEnergy(index, x, x, y - gravDir, energy * 0.4)) {
                         continue;
@@ -1132,7 +1217,7 @@ export class GridSimulation {
                     }
                 }
 
-                // === MOMENTUM SLOSH: Horizontal push from accumulated momentum ===
+                // MOMENTUM SLOSH: Horizontal push from accumulated momentum
                 if (Math.abs(momentum) > 0.08 && energy > 0.10) {
                     const pushDir = momentum > 0 ? 1 : -1;
                     const pushStrength = Math.abs(momentum);
@@ -1147,11 +1232,11 @@ export class GridSimulation {
                     }
                 }
 
-                // === COHESION: Count nearby water for mass-based speed ===
+                // COHESION: Count nearby water for mass-based speed
                 const nearbyMass = this.countNearbyWater(x, y);
                 const massBonus = Math.min(4, Math.floor(nearbyMass / 2));
 
-                // === GRAVITY: Try to move in gravity direction ===
+                // GRAVITY: Try to move in gravity direction
                 // Normalized for consistent screen-space puddle flow across grid scales
                 const gravityScale = this.config.gravity / 980;
                 const baseFall = Math.floor((2 + energy * 6) * gravityScale * this.scaleNormFactor);
@@ -1165,7 +1250,7 @@ export class GridSimulation {
                 }
                 if (fell) continue;
 
-                // === DIAGONAL DOWN (wall-aware dribble) ===
+                // DIAGONAL DOWN (wall-aware dribble)
                 // Only attempt diagonal on ~50% of frames to prevent 45-degree gliding.
                 // Water should dribble/drip, not slide. Energy decays without bonus
                 // so diagonal movement naturally stops after a few cells.
@@ -1204,7 +1289,7 @@ export class GridSimulation {
                 const hasSupport = atFloor || gravTargetY < 0 || gravTargetY >= this.gridHeight ||
                     (gravTargetY >= 0 && gravTargetY < this.gridHeight && this.grid[gravTargetY * this.gridWidth + x] !== CELL_AIR);
 
-                // === VERTICAL STACKING (COHESION) ===
+                // VERTICAL STACKING (COHESION)
                 // Water WANTS to merge with other water - transfer in gravity direction
                 if (hasSupport) {
                     const belowIndex = gravTargetY * this.gridWidth + x;
@@ -1229,7 +1314,7 @@ export class GridSimulation {
                     }
                 }
 
-                // === COHESION-BASED HORIZONTAL SPREAD ===
+                // COHESION-BASED HORIZONTAL SPREAD
                 // Only spread if we have enough depth - thin water stays put and builds up
                 const currentDepth = this.waterDepth[index] || 1.0;
                 const depthThreshold = atFloor ? 2.5 : 1.5; // Lower threshold for more active spreading
@@ -1893,5 +1978,7 @@ export class GridSimulation {
         this.dropsVelX = this.dropsVelY = this.dropsRadius = this.dropsOpacity = null;
         // @ts-expect-error Intentional cleanup
         this.splashX = this.splashY = this.splashVelX = this.splashVelY = this.splashLife = null;
+        // @ts-expect-error Intentional cleanup
+        this.mergeHashCells = this.mergeHashCounts = null;
     }
 }

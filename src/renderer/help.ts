@@ -1,20 +1,8 @@
-/**
- * Help window renderer
- *
- * Features:
- * - Fetches USERHELP.md, renders with marked
- * - Theme sync from localStorage with diagonal wipe transitions
- * - UI Scale inheritance from panel
- * - Text size rocker (independent of UI scale, persisted)
- * - Matrix Mode auto-font swap (Departure for headers, JetBrains for body)
- * - Auto-generated TOC sidebar from headings
- * - Clickable settings folder path
- * - External link interception via Tauri bridge
- */
+/* Help window displays USERHELP.md + TOC via marked.js, syncs theme, has text size rocker,
+ * auto font swap per mode, has clickable settings folder path, and ignores normal UI scaler */
 
 import { marked } from 'marked';
 
-// Import the real theme system so we get Windows adaptive theme support
 import { applyTheme as applyPanelTheme } from './rainydesk-panel/themes';
 
 const BASE_FONT_SIZE = 12; // Default text size in pt
@@ -49,7 +37,7 @@ function applyFontSize(size: number): void {
   saveFontSize(size);
 }
 
-// Apply theme using the real panel theme system (handles Windows adaptive, etc.)
+// Apply theme as per panel
 async function applyThemeToWindow(themeId: string): Promise<void> {
   await applyPanelTheme(themeId);
   currentTheme = themeId;
@@ -60,22 +48,19 @@ function syncMatrixMode(): void {
   const helpWindow = document.querySelector('.help-window');
   if (!helpWindow) return;
 
-  // Check if Matrix Mode is enabled by reading visual.matrixMode from localStorage
-  // The panel stores this state in the DOM class, but across windows we check localStorage
+  // Matrix Mode font swap logic; uses localStorage
   const matrixMode = localStorage.getItem('rainscaper-matrix-mode') === 'true';
   helpWindow.classList.toggle('matrix-font-mode', matrixMode);
 }
 
-// Apply UI scale — only affects CSS zoom, window size is owned by Rust
-// Zoom goes on #help-root (not <html>) so the theme wipe overlay
-// stays outside the zoomed context and covers the full viewport
+// CSS zoom on #help-root (not <html>) so theme wipe overlay stays full-viewport
 function applyUIScale(): void {
   const scale = parseFloat(localStorage.getItem('rainscaper-ui-scale') || '1.0');
   const root = document.getElementById('help-root');
   if (root) root.style.zoom = scale !== 1.0 ? `${scale}` : '';
 }
 
-// Diagonal wipe transition (matches panel's corner wipe)
+// Fancy matchy-matchy wipe transition
 async function themeWipeTransition(newTheme: string): Promise<void> {
   const helpWindow = document.querySelector('.help-window') as HTMLElement;
   if (!helpWindow) {
@@ -179,7 +164,7 @@ function buildTOC(): void {
   headings.forEach((h) => observer.observe(h));
 }
 
-// Convert `%LOCALAPPDATA%\com.rainydesk.app\` inline code to clickable folder link
+// Convert folder path inline codes to clickable folder links
 function makeFolderPathsClickable(): void {
   const content = document.getElementById('help-content');
   if (!content) return;
@@ -187,15 +172,28 @@ function makeFolderPathsClickable(): void {
   const codeElements = content.querySelectorAll('code');
   codeElements.forEach((code) => {
     const text = code.textContent || '';
-    // Match the settings path pattern
+
+    // Rainscapes folder: Documents\RainyDesk
+    if (text.includes('Documents') && text.includes('RainyDesk')) {
+      const link = document.createElement('span');
+      link.className = 'folder-link';
+      link.textContent = text;
+      link.title = 'Click to open folder';
+      link.addEventListener('click', () => {
+        window.rainydesk?.openRainscapesFolder?.();
+      });
+      code.replaceWith(link);
+      return;
+    }
+
+    // Logs folder: %LOCALAPPDATA%\com.rainydesk.app\logs
     if (text.includes('%LOCALAPPDATA%') && text.includes('com.rainydesk.app')) {
       const link = document.createElement('span');
       link.className = 'folder-link';
       link.textContent = text;
       link.title = 'Click to open folder';
       link.addEventListener('click', () => {
-        // Use dedicated Rust command that resolves %LOCALAPPDATA% server-side
-        window.rainydesk?.openAppDataFolder?.();
+        window.rainydesk?.openLogsFolder?.();
       });
       code.replaceWith(link);
     }
@@ -217,7 +215,6 @@ function interceptLinks(): void {
   });
 }
 
-// Set up text size rocker buttons
 function setupTextSizeRocker(): void {
   const downBtn = document.getElementById('text-size-down');
   const resetBtn = document.getElementById('text-size-reset');
@@ -238,7 +235,6 @@ function setupTextSizeRocker(): void {
   });
 }
 
-// Window control button handlers
 function setupWindowControls(): void {
   document.getElementById('help-close-btn')?.addEventListener('click', () => {
     window.rainydesk?.hideHelpWindow?.();
@@ -269,10 +265,10 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Laptop / Potato',
     desc: 'Low-end hardware, integrated graphics, or battery saving.',
-    specs: 'Chunky grid, 30 FPS, light rain, no background layer',
+    specs: 'Potato grid, 30 FPS, light rain, no background layer',
     intensity: 25,
     fpsLimit: 30,
-    gridScale: 0.125,
+    gridScale: 0.0625,
     renderScale: 0.125,
     backgroundRain: false,
     masterVolume: -24,
@@ -380,7 +376,6 @@ async function applyPerformanceTier(tier: PerformanceTier, overlay: HTMLElement)
   // Grid scale change requires a physics reinit (sends the scale value)
   update('physics.resetSimulation', tier.gridScale);
 
-  // Mark onboarding as complete
   localStorage.setItem('rainydesk-onboarding-complete', 'true');
 
   // Small delay for params to propagate, then fade out
@@ -407,22 +402,19 @@ async function init(): Promise<void> {
     }, 50);
   });
 
-  // Apply initial theme (using the real panel theme system)
+  // Apply initial theme
   const initialTheme = localStorage.getItem('rainscaper-theme') || 'blue';
   await applyThemeToWindow(initialTheme);
 
   // Sync Matrix Mode font
   syncMatrixMode();
 
-  // Set up window controls and text size rocker
   setupWindowControls();
   setupTextSizeRocker();
 
-  // Apply persisted text size
   currentFontSize = loadFontSize();
   // Will apply after content loads
 
-  // Apply UI scale
   applyUIScale();
 
   // Live-sync changes from other windows via localStorage events

@@ -45,7 +45,8 @@ let renderScale = 0.25;
 const GRID_SCALE_PRESETS = {
   detailed: 0.5,
   normal: 0.25,
-  chunky: 0.125
+  chunky: 0.125,
+  potato: 0.0625
 };
 let GRID_SCALE = GRID_SCALE_PRESETS.normal; // Default to Normal (1:4)
 
@@ -156,7 +157,7 @@ class ParamOscillator {
   tick(dt, nowSec) {
     if (this._amount <= 0) return null;
 
-    // Pick new random target when timer expires
+    // OSC picks a new random target & lerps toward it smoothly
     if (nowSec >= this._nextChangeTime) {
       const oscNorm = this._amount / 100;
       const amplitude = this._minAmplitude + oscNorm * (this._maxAmplitude - this._minAmplitude);
@@ -169,7 +170,6 @@ class ParamOscillator {
       this._nextChangeTime = nowSec + interval + jitter;
     }
 
-    // Smooth lerp toward target
     const rate = this._lerpRate * dt;
     this._current += (this._target - this._current) * Math.min(1, rate);
 
@@ -285,16 +285,7 @@ function waitForTauriAPI() {
   });
 }
 
-/**
- * NOT A BUG, I PROMISE! CRUCIAL INIT FUNCTION!
- *
- * Waits for first window-data event before starting the game loop.
- * onWindowData() returns Promise<UnlistenFn> (Tauri listen() is async),
- * so we can't call the return value as a function — we resolve first,
- * then clean up the listener via .then(). A previous attempt to call
- * unsubscribe() synchronously threw TypeError and hung init forever,
- * killing ALL foreground rain and audio. Don't touch this.
- */
+/* NOT A BUG, I PROMISE! CRUCIAL INIT FUNCTION! Don't touch this! */
 function waitForFirstWindowData() {
   return new Promise((resolve) => {
     const listenerPromise = window.rainydesk.onWindowData((data) => {
@@ -389,7 +380,7 @@ function buildVoidMask(desktop, scale) {
     const my = Math.floor(monitor.y * scale);
     const mw = Math.ceil(monitor.width * scale);
     const mh = Math.ceil(monitor.height * scale);
-    window.rainydesk.log(`[VoidMask] Monitor "${monitor.name}": grid x=${mx}-${mx+mw-1}, y=${my}-${my+mh-1}`);
+    window.rainydesk.log(`[VoidMask] Monitor ${monitor.index}: grid x=${mx}-${mx+mw-1}, y=${my}-${my+mh-1}`);
   }
 
   // Debug: Check for void columns (entire column is void = gap between monitors)
@@ -480,13 +471,13 @@ function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
     }
   }
 
-  // Debug: Log floor heights at monitor boundaries to show "ledges"
+  // Log each monitor's grid bounds
   const boundaries = [];
   for (const monitor of desktop.monitors) {
     const mx = Math.floor(monitor.x * scale);
     const mw = Math.ceil(monitor.width * scale);
-    boundaries.push({ x: mx, label: `${monitor.name} left` });
-    boundaries.push({ x: mx + mw - 1, label: `${monitor.name} right` });
+    boundaries.push({ x: mx, label: `Monitor ${monitor.index} left` });
+    boundaries.push({ x: mx + mw - 1, label: `Monitor ${monitor.index} right` });
   }
   boundaries.sort((a, b) => a.x - b.x);
 
@@ -501,9 +492,6 @@ function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
   return displayFloorMap;
 }
 
-/**
- * Compare two window arrays to detect changes.
- */
 function windowsChanged(oldWindows, newWindows) {
   if (!oldWindows || !newWindows) return true;
   if (oldWindows.length !== newWindows.length) return true;
@@ -788,7 +776,7 @@ async function reinitializePhysics(newGridScale) {
   // Brief pause so "Stopped" state is visible in the panel
   await new Promise(r => setTimeout(r, 300));
 
-  // --- Preserve all state before destroying ---
+  // Preserve all state before destroying
   let preservedSettings = null;
   if (gridSimulation) {
     preservedSettings = {
@@ -817,7 +805,7 @@ async function reinitializePhysics(newGridScale) {
   window.rainydesk.log(`[Reset] Preserving: gravity=${preservedSettings?.gravity}, color=${preservedVisual?.rainColor}, gayMode=${preservedVisual?.gayMode}, masterVol=${preservedAudio?.masterVolume}, muted=${preservedAudio?.muted}, matrix=${wasMatrixMode}`);
 
   try {
-    // --- Tear down ---
+    // Tear down
     if (windowUpdateDebounceTimer) {
       clearTimeout(windowUpdateDebounceTimer);
       windowUpdateDebounceTimer = null;
@@ -853,7 +841,7 @@ async function reinitializePhysics(newGridScale) {
     // Brief pause so "Initializing" state is visible in the panel
     await new Promise(r => setTimeout(r, 300));
 
-    // --- Rebuild ---
+    // Rebuild
     GRID_SCALE = newGridScale;
     await initPixiPhysics();
 
@@ -1006,7 +994,7 @@ function gameLoop(currentTime) {
         }
       }
 
-      // Feed particle count to audio system (skip in Matrix Mode - wind is muted)
+      // Feed particle count to audio system (Skip in Matrix Mode, no wind)
       if (audioSystem && gridSimulation && !matrixMode) {
         const particleCount = gridSimulation.getActiveDropCount();
         audioSystem.setParticleCount(particleCount);
@@ -1031,7 +1019,7 @@ function gameLoop(currentTime) {
     fpsTime = currentTime;
   }
 
-  // Update debug stats more frequently (every 500ms) for responsive UI
+  // Debug stats update logic
   if (currentTime - debugStatsTime > 500) {
     if (gridSimulation) {
       const stats = gridSimulation.getStats();
@@ -1042,11 +1030,9 @@ function gameLoop(currentTime) {
         activeDrops: stats.activeDrops,
         puddleCells: stats.puddleCells,
       };
-      // Update local (for any in-window debug display)
       if (window._updateDebugStats) {
         window._updateDebugStats(statsPayload);
       }
-      // Broadcast to other windows (Rainscaper panel)
       if (window.rainydesk?.emitStats) {
         window.rainydesk.emitStats(statsPayload);
       }
@@ -1082,13 +1068,6 @@ function registerEventListeners() {
     }
   });
 
-  window.rainydesk.onSetIntensity((value) => {
-    config.intensity = value;
-    if (gridSimulation) {
-      gridSimulation.setIntensity(value / 100);
-    }
-  });
-
   window.rainydesk.onSetVolume((value) => {
     config.volume = value;
     if (audioInitialized && audioSystem) {
@@ -1113,15 +1092,19 @@ function registerEventListeners() {
   // Window data handler
   let windowDataLogged = false;
   window.rainydesk.onWindowData((data) => {
+    // Window detector sends physical pixel coordinates — convert to logical
+    // using the primary monitor's scale factor (no-op at 100% / scale=1)
+    const dpiScale = virtualDesktop?.primaryScaleFactor || window.devicePixelRatio || 1;
+
     // Filter out RainyDesk and DevTools windows
     const newWindowZones = data.windows
       .filter(w => !w.title || !w.title.startsWith('RainyDesk'))
       .filter(w => !w.title || !w.title.includes('DevTools'))
       .map(w => ({
-        x: w.bounds.x,
-        y: w.bounds.y,
-        width: w.bounds.width,
-        height: w.bounds.height,
+        x: w.bounds.x / dpiScale,
+        y: w.bounds.y / dpiScale,
+        width: w.bounds.width / dpiScale,
+        height: w.bounds.height / dpiScale,
         title: w.title,
         isMaximized: w.isMaximized || false
       }));
@@ -1138,7 +1121,7 @@ function registerEventListeners() {
     if (windowUpdateDebounceTimer) clearTimeout(windowUpdateDebounceTimer);
     const capturedZones = [...windowZones];
     windowUpdateDebounceTimer = setTimeout(() => {
-      // Log detected windows once per session
+      // Log detected windows once per session, dump on zone count change
       if (!windowDataLogged) {
         windowDataLogged = true;
         window.rainydesk.log(`[WindowDebug] Detected ${windowZones.length} windows`);
@@ -1147,7 +1130,6 @@ function registerEventListeners() {
       if (windowZones.length !== windowZoneCount) {
         window.rainydesk.log(`[WindowDebug] Zone count: ${windowZoneCount} -> ${windowZones.length}`);
         windowZoneCount = windowZones.length;
-        // Dump all detected windows for phantom investigation
         for (const win of windowZones) {
           window.rainydesk.log(`[WindowDebug]   "${win.title}" at (${win.x},${win.y}) ${win.width}x${win.height}${win.isMaximized ? ' [MAX]' : ''}`);
         }
@@ -1424,7 +1406,6 @@ function registerEventListeners() {
     } else if (path === 'audio.muted') {
       if (audioSystem) {
         audioSystem.setMuted(Boolean(value));
-        window.rainydesk.log(`Audio muted: ${value}`);
       }
     } else if (path === 'audio.rainMix' || path === 'audio.rainIntensity') {
       trackedRainIntensity = Number(value);

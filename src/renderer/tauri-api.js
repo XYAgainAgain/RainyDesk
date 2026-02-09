@@ -1,5 +1,4 @@
-// Tauri API bridge for window.rainydesk
-// Uses Tauri invoke/listen for IPC communication with Rust backend
+// Lets Tauri API talk to Rust via IPC
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
@@ -38,11 +37,6 @@ window.rainydesk = {
   // Receive audio toggle commands (pause/resume audio system)
   onToggleAudio: (callback) => {
     listen('toggle-audio', (event) => callback(event.payload));
-  },
-
-  // Receive intensity changes
-  onSetIntensity: (callback) => {
-    listen('set-intensity', (event) => callback(event.payload));
   },
 
   // Receive volume changes (from tray menu presets)
@@ -135,8 +129,11 @@ window.rainydesk = {
   // Open URL in default browser
   openUrl: (url) => invoke('open_url', { url }),
 
-  // Open app data folder in Explorer
-  openAppDataFolder: () => invoke('open_app_data_folder'),
+  // Open rainscapes folder (Documents\RainyDesk) in Explorer
+  openRainscapesFolder: () => invoke('open_rainscapes_folder'),
+
+  // Open logs folder in Explorer
+  openLogsFolder: () => invoke('open_logs_folder'),
 
   // Stats bridge (overlay → panel)
   // Emits stats from overlay window so panel can display them
@@ -153,7 +150,7 @@ window.rainydesk = {
   }
 };
 
-// Debug log storage for Rainscaper panel
+// Rainscaper panel debug log storage
 window._debugLog = [];
 window._debugLogMaxEntries = 100;
 window._debugStats = {
@@ -182,7 +179,7 @@ window._updateDebugStats = (stats) => {
   Object.assign(window._debugStats, stats, { lastUpdate: Date.now() });
 };
 
-// Intercept console.warn and console.error to pipe to Rust log
+// Intercepts console logs & sends to Rust
 const originalWarn = console.warn;
 const originalError = console.error;
 const originalLog = console.log;

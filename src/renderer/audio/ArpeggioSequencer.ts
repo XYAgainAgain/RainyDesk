@@ -9,7 +9,7 @@
  * See .dev/ARPEGGIO-SEQUENCER-DESIGN.md for full spec.
  */
 
-// --- Types ---
+// Types
 
 export type Section = 'main' | 'bridge' | 'breakdown';
 export type SectionChangeCallback = (section: Section, bar: number) => void;
@@ -25,7 +25,7 @@ interface BridgeBar {
   splitChord?: ChordData;  // Present on bars 84-86 (chord changes at beat 3)
 }
 
-// --- Timing constants (102 BPM) ---
+// Timing constants (102 BPM)
 
 const BPM = 102;
 const BEAT_MS = 60000 / BPM;             // ~588.24ms per quarter note
@@ -33,7 +33,7 @@ const BAR_MS = BEAT_MS * 4;              // ~2352.94ms per bar
 const TOTAL_BARS = 90;
 const CYCLE_MS = BAR_MS * TOTAL_BARS;    // ~211,764.7ms (~3:32)
 
-// --- Chord data ---
+// Chord data
 
 // Main Loop: 4 chords cycling every 4 bars (bars 0-63)
 // Ascending root motion (G -> A -> Bb -> C) with 3-note triads
@@ -86,7 +86,7 @@ const BRIDGE_VARIATION: BridgeBar[] = [
   { chord: { name: 'Eb', root: 'Eb1', notes: ['G3', 'Bb3', 'Eb4', 'G4', 'Bb4', 'G4', 'Eb4', 'Bb3'] } },
 ];
 
-// --- Note transposition helper ---
+// Note transposition helper
 
 // Chromatic note names (sharps and flats both mapped)
 const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -123,7 +123,7 @@ export function transposeNote(note: string, semitones: number): string {
   return (NOTE_NAMES[newNoteIdx] ?? 'C') + newOctave;
 }
 
-// --- Sequencer class ---
+// Sequencer class
 
 export class ArpeggioSequencer {
   /** Timestamp (performance.now) when the drone started - beat reference */

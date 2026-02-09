@@ -9,9 +9,7 @@
 // Re-export CollisionEvent for physics system to use when emitting events
 export type { CollisionEvent } from './audio';
 
-// ============================================================================
 // Physics Configuration
-// ============================================================================
 
 /** Physics engine configuration */
 export interface PhysicsConfig {
@@ -41,9 +39,7 @@ export interface RainParticleConfig {
   intensity: number;
 }
 
-// ============================================================================
 // Collision Surface Types
-// ============================================================================
 
 /**
  * Surface type identifiers used in Matter.js body labels.
@@ -78,9 +74,7 @@ export interface LabeledBody {
   };
 }
 
-// ============================================================================
 // Raindrop Types
-// ============================================================================
 
 /** A rain particle in the physics simulation */
 export interface RainDrop {
@@ -100,9 +94,7 @@ export interface RainDrop {
   createdAt: number;
 }
 
-// ============================================================================
 // Window Detection Types
-// ============================================================================
 
 /** A detected window's bounds for collision */
 export interface WindowBounds {
@@ -130,9 +122,7 @@ export interface CollisionZone {
   surfaceType: SurfaceType;
 }
 
-// ============================================================================
 // Physics System Interface
-// ============================================================================
 
 /** Callback for collision events */
 export type CollisionCallback = (event: import('./audio').CollisionEvent) => void;

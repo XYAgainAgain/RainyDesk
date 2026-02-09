@@ -28,7 +28,8 @@ declare global {
       centerHelpWindow: () => Promise<void>;
       toggleMaximizeHelpWindow: () => Promise<boolean>;
       openUrl: (url: string) => Promise<void>;
-      openAppDataFolder: () => Promise<void>;
+      openRainscapesFolder: () => Promise<void>;
+      openLogsFolder: () => Promise<void>;
       getDisplayInfo: () => Promise<{
         monitors: Array<{
           width: number;

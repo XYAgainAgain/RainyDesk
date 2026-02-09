@@ -30,7 +30,7 @@ export const themes: Record<string, Theme> = {
 export async function applyTheme(themeId: string): Promise<void> {
   const root = document.documentElement;
 
-  // Remove existing theme and inline styles from previous adaptive theme
+  // Theme swapping!
   root.removeAttribute('data-theme');
   clearAdaptiveStyles(root);
 
@@ -40,7 +40,7 @@ export async function applyTheme(themeId: string): Promise<void> {
   }
 
   if (themeId === 'windows') {
-    // Get Windows accent color and apply dynamically
+    // Grab Windows accent color & apply
     const accentColor = await getWindowsAccentColor();
     applyWindowsTheme(accentColor);
     root.setAttribute('data-theme', 'windows');
@@ -96,7 +96,7 @@ export async function getWindowsAccentColor(): Promise<string> {
 function applyWindowsTheme(accentColor: string): void {
   const root = document.documentElement;
 
-  // Parse the accent color
+  // Parse accent color
   const r = parseInt(accentColor.slice(1, 3), 16);
   const g = parseInt(accentColor.slice(3, 5), 16);
   const b = parseInt(accentColor.slice(5, 7), 16);
@@ -105,7 +105,7 @@ function applyWindowsTheme(accentColor: string): void {
   const darken = (v: number, amount: number) => Math.max(0, Math.floor(v * (1 - amount)));
   const lighten = (v: number, amount: number) => Math.min(255, Math.floor(v + (255 - v) * amount));
 
-  // Set CSS variables for adaptive theme
+  // Auto-set CSS vars
   root.style.setProperty('--accent-color', accentColor);
   root.style.setProperty('--accent-hover', `rgb(${lighten(r, 0.15)}, ${lighten(g, 0.15)}, ${lighten(b, 0.15)})`);
   root.style.setProperty('--accent-active', `rgb(${darken(r, 0.15)}, ${darken(g, 0.15)}, ${darken(b, 0.15)})`);
@@ -120,7 +120,7 @@ function applyWindowsTheme(accentColor: string): void {
   // Border uses a lighter version
   root.style.setProperty('--panel-border', `rgba(${lighten(r, 0.3)}, ${lighten(g, 0.3)}, ${lighten(b, 0.3)}, 0.3)`);
 
-  // Text colors - always white/light for good contrast on dark backgrounds
+  // Text colors should ALWAYS be white/light for contrast (WCAG compliance!)
   root.style.setProperty('--text-primary', '#ffffff');
   root.style.setProperty('--text-secondary', 'rgba(255, 255, 255, 0.7)');
   root.style.setProperty('--text-muted', 'rgba(255, 255, 255, 0.5)');

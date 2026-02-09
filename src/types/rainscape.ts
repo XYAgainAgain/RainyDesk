@@ -9,9 +9,7 @@ import type { RainscapeConfig, MaterialConfig, SheetLayerConfig } from './audio'
 // Re-export core config type
 export type { RainscapeConfig } from './audio';
 
-// ============================================================================
 // Persistence Types
-// ============================================================================
 
 /** Rainscape save file format */
 export interface RainscapeSaveFile {
@@ -54,9 +52,7 @@ export interface RainscapeListItem {
   filePath?: string;
 }
 
-// ============================================================================
 // Built-in Presets
-// ============================================================================
 
 /** IDs of built-in rainscape presets */
 export type BuiltInRainscapeId = 'glass_window' | 'tin_roof' | 'concrete' | 'leaves';
@@ -67,9 +63,7 @@ export type MaterialPreset = Omit<MaterialConfig, 'id' | 'name'>;
 /** Partial config for creating sheet layer presets */
 export type SheetLayerPreset = Omit<SheetLayerConfig, 'maxParticleCount' | 'rampTime'>;
 
-// ============================================================================
 // Rainscaper UI Types
-// ============================================================================
 
 /** A parameter exposed in the Rainscaper UI */
 export interface RainscaperParam {
@@ -113,9 +107,7 @@ export interface RainscaperLayout {
   sections: RainscaperSection[];
 }
 
-// ============================================================================
 // IPC Message Types
-// ============================================================================
 
 /** Parameter update message (renderer → main → all renderers) */
 export interface ParamUpdateMessage {

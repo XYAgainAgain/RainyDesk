@@ -95,15 +95,15 @@ static OVERLAY_READY: AtomicBool = AtomicBool::new(false);
 static BACKGROUND_READY: AtomicBool = AtomicBool::new(false);
 
 /// Get the rainscapes directory, creating structure if needed:
-/// rainscapes/
-/// ├── Autosave.rain      ← Always loaded first, overwritten on changes
-/// ├── Default.rain       ← Fallback if no Autosave exists
-/// └── Custom/            ← User-created presets
+/// Documents\RainyDesk\
+/// ├── Autosave.rain            ← Always loaded first, overwritten on changes
+/// ├── Default.rain             ← Fallback if no Autosave exists
+/// └── Custom Rainscapes\       ← User-created presets
 fn get_rainscapes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let app_data = app.path().app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    let rainscapes_dir = app_data.join("rainscapes");
-    let custom_dir = rainscapes_dir.join("Custom");
+    let docs_dir = dirs::document_dir()
+        .ok_or_else(|| "Failed to get Documents directory".to_string())?;
+    let rainscapes_dir = docs_dir.join("RainyDesk");
+    let custom_dir = rainscapes_dir.join("Custom Rainscapes");
 
     // Create directories if they don't exist
     if !rainscapes_dir.exists() {
@@ -129,7 +129,69 @@ fn get_rainscapes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         log::info!("Created Default.rain");
     }
 
+    // One-time migration from old AppData location
+    migrate_old_rainscapes(app, &rainscapes_dir);
+
     Ok(rainscapes_dir)
+}
+
+/// Migrate rainscape files from old AppData\Roaming location to Documents\RainyDesk.
+/// Copies files then removes the old directory. Runs once (no-ops if old dir doesn't exist).
+fn migrate_old_rainscapes(app: &tauri::AppHandle, new_dir: &PathBuf) {
+    let old_dir = match app.path().app_data_dir() {
+        Ok(d) => d.join("rainscapes"),
+        Err(_) => return,
+    };
+    if !old_dir.exists() { return; }
+
+    log::info!("[Migration] Found old rainscapes at {:?}, migrating to {:?}", old_dir, new_dir);
+
+    let mut migrated = 0u32;
+
+    // Move root-level .rain files
+    if let Ok(entries) = fs::read_dir(&old_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
+                let dest = new_dir.join(path.file_name().unwrap());
+                if !dest.exists() {
+                    if let Err(e) = fs::copy(&path, &dest) {
+                        log::error!("[Migration] Failed to copy {:?}: {}", path, e);
+                    } else {
+                        migrated += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Move files from old Custom/ subdirectory to new Custom Rainscapes/
+    let old_custom = old_dir.join("Custom");
+    let new_custom = new_dir.join("Custom Rainscapes");
+    if old_custom.exists() {
+        if let Ok(entries) = fs::read_dir(&old_custom) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
+                    let dest = new_custom.join(path.file_name().unwrap());
+                    if !dest.exists() {
+                        if let Err(e) = fs::copy(&path, &dest) {
+                            log::error!("[Migration] Failed to copy custom {:?}: {}", path, e);
+                        } else {
+                            migrated += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove old directory tree
+    if let Err(e) = fs::remove_dir_all(&old_dir) {
+        log::warn!("[Migration] Failed to remove old dir {:?}: {}", old_dir, e);
+    }
+
+    log::info!("[Migration] Complete: {} files migrated", migrated);
 }
 
 /// Create the default rainscape configuration (v2.0 schema)
@@ -666,13 +728,15 @@ struct VirtualDesktop {
     /// Bounding box origin (may be negative if monitor extends left of primary)
     origin_x: i32,
     origin_y: i32,
-    /// Total bounding box dimensions
+    /// Total bounding box dimensions (logical pixels)
     width: u32,
     height: u32,
     /// Individual monitor regions with coordinates relative to bounding box
     monitors: Vec<MonitorRegion>,
     /// Index of the primary monitor (for Rainscaper UI positioning)
     primary_index: usize,
+    /// Primary monitor's DPI scale factor (JS uses this to convert window detector coords)
+    primary_scale_factor: f64,
 }
 
 /// Single monitor region within the virtual desktop
@@ -732,11 +796,11 @@ fn save_rainscape(app: tauri::AppHandle, filename: String, data: serde_json::Val
         format!("{}.rain", filename)
     };
 
-    // Custom presets go in Custom/ subdirectory (except Autosave and Default)
+    // Custom presets go in Custom Rainscapes/ subdirectory (except Autosave and Default)
     let file_path = if filename == "Autosave.rain" || filename == "Default.rain" {
         rainscapes_dir.join(&filename)
     } else {
-        rainscapes_dir.join("Custom").join(&filename)
+        rainscapes_dir.join("Custom Rainscapes").join(&filename)
     };
 
     // Write JSON with pretty formatting
@@ -777,7 +841,7 @@ fn get_startup_rainscape_cmd(app: tauri::AppHandle) -> Result<serde_json::Value,
 #[tauri::command]
 fn load_rainscapes(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let rainscapes_dir = get_rainscapes_dir(&app)?;
-    let custom_dir = rainscapes_dir.join("Custom");
+    let custom_dir = rainscapes_dir.join("Custom Rainscapes");
 
     // Collect root-level .rain files (Default.rain, Autosave.rain)
     let root_files: Vec<String> = fs::read_dir(&rainscapes_dir)
@@ -834,9 +898,9 @@ fn read_rainscape(app: tauri::AppHandle, filename: String) -> Result<serde_json:
         format!("{}.rain", filename)
     };
 
-    // Check root first (Autosave.rain, Default.rain), then Custom/
+    // Check root first (Autosave.rain, Default.rain), then Custom Rainscapes/
     let root_path = rainscapes_dir.join(&filename);
-    let custom_path = rainscapes_dir.join("Custom").join(&filename);
+    let custom_path = rainscapes_dir.join("Custom Rainscapes").join(&filename);
 
     let file_path = if root_path.exists() {
         root_path
@@ -915,9 +979,19 @@ fn background_ready(app: tauri::AppHandle) {
 fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Result<(), String> {
     log::info!("[Rainscaper] Show requested at tray position ({}, {})", tray_x, tray_y);
 
-    // Try saved position first, fallback to tray-relative calculation
+    // Get actual panel dimensions (accounts for UI Scale) or use defaults
+    let (panel_w, panel_h) = app.get_webview_window("rainscaper")
+        .and_then(|w| {
+            let size = w.outer_size().ok()?;
+            let s = w.current_monitor().ok()??.scale_factor();
+            Some(((size.width as f64 / s) as i32, (size.height as f64 / s) as i32))
+        })
+        .unwrap_or((400, 500));
+
+    // Try saved position first (clamped to work area), fallback to tray-relative
     let (x, y) = load_panel_config(&app)
         .and_then(|c| c.x.zip(c.y))
+        .map(|(sx, sy)| clamp_panel_to_work_area(&app, sx, sy, panel_w, panel_h))
         .unwrap_or_else(|| calculate_rainscaper_position(&app, tray_x, tray_y));
 
     // Check if window exists
@@ -1084,12 +1158,12 @@ fn show_help_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Hide the Help window
+/// Destroy the Help window (frees WebView2 memory; recreated on next open)
 #[tauri::command]
 fn hide_help_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("help") {
-        window.hide().map_err(|e| format!("Failed to hide help: {}", e))?;
-        log::info!("[Help] Hidden");
+        window.destroy().map_err(|e| format!("Failed to destroy help: {}", e))?;
+        log::info!("[Help] Destroyed (WebView2 freed)");
     }
     Ok(())
 }
@@ -1181,15 +1255,15 @@ fn toggle_maximize_help_window(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(!is_maximized)
 }
 
-/// Open the app data folder in Explorer
+/// Open the rainscapes folder (Documents\RainyDesk) in Explorer
 #[tauri::command]
-fn open_app_data_folder() -> Result<(), String> {
+fn open_rainscapes_folder() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let local_app_data = std::env::var("LOCALAPPDATA")
-            .map_err(|e| format!("Failed to read LOCALAPPDATA: {}", e))?;
-        let folder = std::path::Path::new(&local_app_data).join("com.rainydesk.app");
-        log::info!("[OpenFolder] Opening: {}", folder.display());
+        let docs_dir = dirs::document_dir()
+            .ok_or_else(|| "Failed to get Documents directory".to_string())?;
+        let folder = docs_dir.join("RainyDesk");
+        log::info!("[OpenFolder] Opening rainscapes: {}", folder.display());
         std::process::Command::new("explorer")
             .arg(folder.as_os_str())
             .spawn()
@@ -1198,10 +1272,97 @@ fn open_app_data_folder() -> Result<(), String> {
     Ok(())
 }
 
-/// Open a URL in the default system browser.
-/// Uses ShellExecuteW on Windows to avoid cmd.exe command injection
-/// (cmd.exe doesn't recognize backslash-escaped quotes, so passing
-/// untrusted strings through `cmd /c start` allows shell breakout).
+/// Open the logs folder in Explorer
+#[tauri::command]
+fn open_logs_folder() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .map_err(|e| format!("Failed to read LOCALAPPDATA: {}", e))?;
+        let folder = std::path::Path::new(&local_app_data).join("com.rainydesk.app").join("logs");
+        log::info!("[OpenFolder] Opening logs: {}", folder.display());
+        std::process::Command::new("explorer")
+            .arg(folder.as_os_str())
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Reset panel position to bottom-right of the taskbar monitor's work area.
+/// Saves the new position and moves the window if it's visible.
+fn reset_panel_position(app: &tauri::AppHandle) {
+    const PANEL_WIDTH: i32 = 400;
+    const PANEL_HEIGHT: i32 = 500;
+    const MARGIN: i32 = 12;
+
+    let monitors: Vec<tauri::Monitor> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    if monitors.is_empty() { return; }
+
+    // Primary monitor is where the taskbar lives
+    let idx = get_primary_monitor_index(&monitors);
+    let mon = &monitors[idx];
+    let pos = mon.position();
+    let size = mon.size();
+    let scale = mon.scale_factor();
+    let work = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+
+    // Convert work area to logical pixels
+    let work_x = (work.x as f64 / scale) as i32;
+    let work_y = (work.y as f64 / scale) as i32;
+    let work_w = (work.width as f64 / scale) as i32;
+    let work_h = (work.height as f64 / scale) as i32;
+
+    // Bottom-right corner with margin
+    let x = work_x + work_w - PANEL_WIDTH - MARGIN;
+    let y = work_y + work_h - PANEL_HEIGHT - MARGIN;
+
+    // Save the new position
+    let mut config = load_panel_config(app).unwrap_or_default();
+    config.x = Some(x);
+    config.y = Some(y);
+    save_panel_config(app, &config);
+
+    // Reset window size to default (undo any UI Scale resize) and reposition
+    if let Some(window) = app.get_webview_window("rainscaper") {
+        window.set_resizable(true).ok();
+        window.set_size(tauri::LogicalSize::new(PANEL_WIDTH as f64, PANEL_HEIGHT as f64)).ok();
+        window.set_resizable(false).ok();
+        window.set_position(tauri::Position::Logical(
+            tauri::LogicalPosition::new(x as f64, y as f64)
+        )).ok();
+
+        // If hidden, show it so the user sees the result
+        if !RAINSCAPER_VISIBLE.load(Ordering::SeqCst) {
+            window.unminimize().ok();
+            window.show().ok();
+            window.set_ignore_cursor_events(false).ok();
+            window.set_always_on_top(true).ok();
+            window.set_focus().ok();
+            RAINSCAPER_VISIBLE.store(true, Ordering::SeqCst);
+            if let Ok(guard) = RAINSCAPER_MENU_ITEM.lock() {
+                if let Some(item) = guard.as_ref() {
+                    let _ = item.set_text("Close Rainscaper");
+                }
+            }
+        }
+    }
+
+    // Tell the panel to reset UI scale to 100%
+    let _ = app.emit("update-rainscape-param", serde_json::json!({
+        "path": "system.resetPanel",
+        "value": true
+    }));
+
+    log::info!("[Rainscaper] Panel reset: position ({}, {}), UI scale 100%", x, y);
+}
+
+// Open URL via ShellExecuteW (cmd.exe is injection-prone with untrusted strings)
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     // Reject non-HTTP(S) schemes (blocks file://, javascript:, etc.)
@@ -1262,10 +1423,10 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
 
     // Find which monitor contains the tray icon (hit-test in physical space)
     let mut scale = 1.0_f64;
-    let mut screen_x = 0;
-    let mut screen_y = 0;
-    let mut screen_width = 1920;
-    let mut screen_height = 1080;
+    let mut work_x = 0i32;
+    let mut work_y = 0i32;
+    let mut work_w = 1920i32;
+    let mut work_h = 1080i32;
     let mut taskbar_at_top = false;
 
     for monitor in &monitors {
@@ -1275,11 +1436,12 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
         if tray_x >= pos.x && tray_x < pos.x + size.width as i32 &&
            tray_y >= pos.y && tray_y < pos.y + size.height as i32 {
             scale = monitor.scale_factor();
-            // Convert physical monitor bounds to logical
-            screen_x = (pos.x as f64 / scale) as i32;
-            screen_y = (pos.y as f64 / scale) as i32;
-            screen_width = (size.width as f64 / scale) as i32;
-            screen_height = (size.height as f64 / scale) as i32;
+            // Use work area (excludes taskbar) instead of full screen bounds
+            let work = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+            work_x = (work.x as f64 / scale) as i32;
+            work_y = (work.y as f64 / scale) as i32;
+            work_w = (work.width as f64 / scale) as i32;
+            work_h = (work.height as f64 / scale) as i32;
 
             // Check if taskbar is at top (tray_y near top of screen, physical)
             taskbar_at_top = tray_y < pos.y + 100;
@@ -1299,11 +1461,49 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
         tray_ly - PANEL_HEIGHT - MARGIN  // Above taskbar
     };
 
-    // Clamp to screen bounds (all logical)
-    x = x.max(screen_x + MARGIN).min(screen_x + screen_width - PANEL_WIDTH - MARGIN);
-    y = y.max(screen_y + MARGIN).min(screen_y + screen_height - PANEL_HEIGHT - MARGIN);
+    // Clamp to work area (excludes taskbar)
+    x = x.max(work_x + MARGIN).min(work_x + work_w - PANEL_WIDTH - MARGIN);
+    y = y.max(work_y + MARGIN).min(work_y + work_h - PANEL_HEIGHT - MARGIN);
 
     (x, y)
+}
+
+/// Clamp a saved panel position to the current work area so it doesn't overlap the taskbar.
+/// panel_w/panel_h are logical dimensions (accounts for UI Scale).
+fn clamp_panel_to_work_area(app: &tauri::AppHandle, x: i32, y: i32, panel_w: i32, panel_h: i32) -> (i32, i32) {
+    const MARGIN: i32 = 8;
+
+    let monitors: Vec<tauri::Monitor> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    // Find which monitor contains the saved position
+    for monitor in &monitors {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let mon_lx = (pos.x as f64 / scale) as i32;
+        let mon_ly = (pos.y as f64 / scale) as i32;
+        let mon_lw = (size.width as f64 / scale) as i32;
+        let mon_lh = (size.height as f64 / scale) as i32;
+
+        if x >= mon_lx && x < mon_lx + mon_lw &&
+           y >= mon_ly && y < mon_ly + mon_lh {
+            let work = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+            let work_x = (work.x as f64 / scale) as i32;
+            let work_y = (work.y as f64 / scale) as i32;
+            let work_w = (work.width as f64 / scale) as i32;
+            let work_h = (work.height as f64 / scale) as i32;
+
+            let cx = x.max(work_x + MARGIN).min(work_x + work_w - panel_w - MARGIN);
+            let cy = y.max(work_y + MARGIN).min(work_y + work_h - panel_h - MARGIN);
+            return (cx, cy);
+        }
+    }
+
+    (x, y) // No matching monitor, return as-is
 }
 
 /// Create the Rainscaper popup window at specified position
@@ -1359,7 +1559,7 @@ fn create_rainscaper_window_at(app: &tauri::AppHandle, x: i32, y: i32, visible: 
 fn create_help_window(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
     log::info!("[Help] Creating window, visible={}", visible);
 
-    // Size to 75% of the primary monitor's shorter work-area dimension (square)
+    // Size to 75% of work area width in 16:9, clamped to fit
     let monitors: Vec<tauri::Monitor> = app
         .available_monitors()
         .unwrap_or_default()
@@ -1379,14 +1579,22 @@ fn create_help_window(app: &tauri::AppHandle, visible: bool) -> Result<(), Strin
         let work_h = work.height as f64 / scale;
         let work_x = work.x as f64 / scale;
         let work_y = work.y as f64 / scale;
-        let side = (work_w.min(work_h) * 0.75).round();
+
+        // Try 75% of work width at 16:9; if too tall, constrain by height
+        let mut w = (work_w * 0.75).round();
+        let mut h = (w * 9.0 / 16.0).round();
+        if h > work_h * 0.85 {
+            h = (work_h * 0.85).round();
+            w = (h * 16.0 / 9.0).round();
+        }
+
         (
-            side, side,
-            work_x + (work_w - side) / 2.0,
-            work_y + (work_h - side) / 2.0,
+            w, h,
+            work_x + (work_w - w) / 2.0,
+            work_y + (work_h - h) / 2.0,
         )
     } else {
-        (700.0, 700.0, 100.0, 100.0)
+        (1120.0, 630.0, 100.0, 100.0)
     };
 
     let window = WebviewWindowBuilder::new(
@@ -1522,61 +1730,75 @@ fn get_virtual_desktop(app: tauri::AppHandle) -> Result<VirtualDesktop, String> 
         y_max = y_max.max(pos.y + size.height as i32);
     }
 
-    let total_width = (x_max - x_min) as u32;
-    let total_height = (y_max - y_min) as u32;
+    // Get primary monitor index and its scale factor for DPI conversion
+    let primary_index = get_primary_monitor_index(&monitors);
+    let primary_scale = monitors[primary_index].scale_factor();
+
+    // Convert bounding box from physical to logical pixels using primary scale factor.
+    // This ensures Tauri's .inner_size() and .position() (which expect logical coords)
+    // receive correct values. At 100% scaling (scale=1.0) this is a no-op.
+    let to_logical = |v: i32| -> i32 { (v as f64 / primary_scale).round() as i32 };
+    let to_logical_u = |v: u32| -> u32 { (v as f64 / primary_scale).round() as u32 };
+
+    let logical_x_min = to_logical(x_min);
+    let logical_y_min = to_logical(y_min);
+    let logical_x_max = to_logical(x_max);
+    let logical_y_max = to_logical(y_max);
+    let total_width = (logical_x_max - logical_x_min) as u32;
+    let total_height = (logical_y_max - logical_y_min) as u32;
 
     log::info!(
-        "[VirtualDesktop] Bounding box: ({}, {}) {}x{}",
-        x_min, y_min, total_width, total_height
+        "[VirtualDesktop] Physical bbox: ({}, {})→({}, {}), scale={}, logical bbox: ({}, {}) {}x{}",
+        x_min, y_min, x_max, y_max, primary_scale,
+        logical_x_min, logical_y_min, total_width, total_height
     );
 
-    // Get primary monitor index
-    let primary_index = get_primary_monitor_index(&monitors);
-
-    // Build monitor regions with coordinates relative to bounding box origin
+    // Build monitor regions with coordinates relative to bounding box origin (logical pixels)
     let mut regions = Vec::new();
     for (index, monitor) in monitors.iter().enumerate() {
         let pos = monitor.position();
         let size = monitor.size();
         let scale = monitor.scale_factor();
 
-        // Get actual work area from Windows API
+        // Get actual work area from Windows API (physical pixels)
         let work_area = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
 
-        // Convert to bounding-box-relative coordinates (always positive)
-        let rel_x = (pos.x - x_min) as u32;
-        let rel_y = (pos.y - y_min) as u32;
-        let rel_work_x = (work_area.x - x_min) as u32;
-        let rel_work_y = (work_area.y - y_min) as u32;
+        // Convert to logical, then to bounding-box-relative coordinates (always positive)
+        let rel_x = (to_logical(pos.x) - logical_x_min) as u32;
+        let rel_y = (to_logical(pos.y) - logical_y_min) as u32;
+        let rel_work_x = (to_logical(work_area.x) - logical_x_min) as u32;
+        let rel_work_y = (to_logical(work_area.y) - logical_y_min) as u32;
 
         regions.push(MonitorRegion {
             index,
             x: rel_x,
             y: rel_y,
-            width: size.width,
-            height: size.height,
+            width: to_logical_u(size.width),
+            height: to_logical_u(size.height),
             work_x: rel_work_x,
             work_y: rel_work_y,
-            work_width: work_area.width,
-            work_height: work_area.height,
+            work_width: to_logical_u(work_area.width),
+            work_height: to_logical_u(work_area.height),
             scale_factor: scale,
         });
 
         log::info!(
-            "[VirtualDesktop] Monitor {}{}: rel({}, {}) {}x{} work_height={}",
+            "[VirtualDesktop] Monitor {}{}: rel({}, {}) {}x{} work_height={} (logical)",
             index,
             if index == primary_index { " (primary)" } else { "" },
-            rel_x, rel_y, size.width, size.height, work_area.height
+            rel_x, rel_y, to_logical_u(size.width), to_logical_u(size.height),
+            to_logical_u(work_area.height)
         );
     }
 
     Ok(VirtualDesktop {
-        origin_x: x_min,
-        origin_y: y_min,
+        origin_x: logical_x_min,
+        origin_y: logical_y_min,
         width: total_width,
         height: total_height,
         monitors: regions,
         primary_index,
+        primary_scale_factor: primary_scale,
     })
 }
 
@@ -1694,6 +1916,7 @@ PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies,\
 SiteEngagementService,\
 OptimizationGuideModelDownloading,OptimizationHintsFetching,\
 OptimizationTargetPrediction,OptimizationHints,\
+WidevineForMediaFoundation,SubresourceFilter,OriginTrials,\
 WebGPU \
          --disable-component-update \
          --disable-background-networking \
@@ -1703,6 +1926,7 @@ WebGPU \
          --disable-breakpad \
          --no-pings \
          --no-first-run \
+         --autoplay-policy=no-user-gesture-required \
          --disk-cache-size=1"
     );
 
@@ -1746,7 +1970,8 @@ WebGPU \
             center_help_window,
             toggle_maximize_help_window,
             open_url,
-            open_app_data_folder
+            open_rainscapes_folder,
+            open_logs_folder
         ])
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("overlay") {
@@ -1755,8 +1980,7 @@ WebGPU \
             log::info!("Second instance blocked: RainyDesk is already running");
         }))
         .plugin({
-            // Set up session-specific log file with rolling cleanup
-            // Keep 5 most recent logs, max 1 MB each
+            // Per-session log file w/ rolling cleanup; keeps 5 most recent, max 1 MB each
             let log_dir = dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("com.rainydesk.app")
@@ -1810,6 +2034,7 @@ WebGPU \
             // Use saved position if available, otherwise a default off-screen position
             let preload_pos = load_panel_config(app.handle())
                 .and_then(|c| c.x.zip(c.y))
+                .map(|(sx, sy)| clamp_panel_to_work_area(app.handle(), sx, sy, 400, 500))
                 .unwrap_or((0, 0));
             if let Err(e) = create_rainscaper_window_at(app.handle(), preload_pos.0, preload_pos.1, false) {
                 log::warn!("[Rainscaper] Failed to preload panel: {}", e);
@@ -1824,8 +2049,7 @@ WebGPU \
                 log::info!("[Help] Window preloaded hidden");
             }
 
-            // First launch: auto-open help window so new users discover it
-            // Flag is version-specific so dev builds don't suppress installed-version first launch
+            // First launch auto-opens Help window; flag is version-specific
             if let Ok(app_data) = app.handle().path().app_data_dir() {
                 let version = app.config().version.as_deref().unwrap_or("unknown");
                 let flag_name = format!("first-launch-v{}.flag", version);
@@ -1871,30 +2095,19 @@ WebGPU \
 
             log::info!("Window detection polling started");
 
-            // Listen for hide-rainscaper-request from frontend (X button)
+            // Listen for umbrella button hide request
+            // Reuses hide_rainscaper() so position is saved on umbrella close
             let app_handle_for_hide = app.handle().clone();
             app.listen("hide-rainscaper-request", move |_event| {
                 log::info!("[Rainscaper] Hide requested via event (X button)");
-                if let Some(window) = app_handle_for_hide.get_webview_window("rainscaper") {
-                    window.set_ignore_cursor_events(true).ok();
-                    if let Err(e) = window.hide() {
-                        log::error!("[Rainscaper] Failed to hide: {}", e);
-                    } else {
-                        RAINSCAPER_VISIBLE.store(false, Ordering::SeqCst);
-                        if let Ok(guard) = RAINSCAPER_MENU_ITEM.lock() {
-                            if let Some(item) = guard.as_ref() {
-                                let _ = item.set_text("Open Rainscaper");
-                            }
-                        }
-                        log::info!("[Rainscaper] Hidden via event, VISIBLE=false");
-                    }
-                }
+                let _ = hide_rainscaper(app_handle_for_hide.clone());
             });
 
             // Set up system tray
             let quit_item = MenuItem::with_id(app, "quit", "Quit RainyDesk", true, None::<&str>)?;
             let pause_item = MenuItem::with_id(app, "pause", "Pause", true, None::<&str>)?;
             let rainscaper_item = MenuItem::with_id(app, "rainscaper", "Open Rainscaper", true, None::<&str>)?;
+            let reset_pos_item = MenuItem::with_id(app, "reset_position", "Reset Panel", true, None::<&str>)?;
 
             // Store pause item globally for sync between panel and tray
             if let Ok(mut guard) = PAUSE_MENU_ITEM.lock() {
@@ -1921,6 +2134,7 @@ WebGPU \
             let menu = Menu::with_items(app, &[
                 &pause_item,
                 &rainscaper_item,
+                &reset_pos_item,
                 &volume_submenu,
                 &quit_item
             ])?;
@@ -1945,8 +2159,7 @@ WebGPU \
                             let paused = !RAIN_PAUSED.load(Ordering::Relaxed);
                             RAIN_PAUSED.store(paused, Ordering::Relaxed);
                             let _ = pause_item_clone.set_text(if paused { "Resume" } else { "Pause" });
-                            // Emit same IPC as panel's pause toggle for unified control
-                            // Must use JSON object format: { path, value } to match tauri-api.js listener
+                            // Same IPC as panel's pause toggle so they match Tauri API listener
                             let _ = app.emit("update-rainscape-param", serde_json::json!({ "path": "system.paused", "value": paused }));
                             log::info!("Rain {} via tray menu", if paused { "paused" } else { "resumed" });
                         }
@@ -1960,6 +2173,9 @@ WebGPU \
                                 let _ = show_rainscaper(app.clone(), 1800, 1040);
                             }
                             log::info!("Rainscaper toggled via menu");
+                        }
+                        "reset_position" => {
+                            reset_panel_position(app);
                         }
                         _ => {
                             // Volume presets (vol_<number>)
@@ -1979,7 +2195,7 @@ WebGPU \
                         let tray_x = position.x as i32;
                         let tray_y = position.y as i32;
 
-                        // Toggle Rainscaper window directly (no longer through overlay)
+                        // Toggle Rainscaper window
                         let visible = RAINSCAPER_VISIBLE.load(Ordering::SeqCst);
                         log::info!("[Tray] Left-click, RAINSCAPER_VISIBLE={}", visible);
                         if visible {

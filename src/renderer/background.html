@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RainyDesk Background</title>
   <link rel="stylesheet" href="styles.css">
-  <!-- Matrix font preload (Matrix Code for katakana/digits, Nimbus Mono Bold for Latin) -->
+  <!-- Matrix font preload just like index.html -->
   <style>
     @font-face {
       font-family: 'Matrix Code';
@@ -26,7 +26,7 @@
       pointer-events: none;
     }
   </style>
-  <!-- Import map for ES module resolution (needed by simulation.bundle.js for Matrix Mode) -->
+  <!-- Import map for ES module res (Matrix Mode needs simulation.bundle.js) -->
   <script type="importmap">
     {
       "imports": {
@@ -36,7 +36,7 @@
   </script>
 </head>
 <body>
-  <!-- Font preload for Matrix Mode (katakana char triggers Matrix Code font load) -->
+  <!-- Matrix font preload just like index.html -->
   <span class="matrix-font-preload">&#x30A2;</span>
   <canvas id="rain-canvas"></canvas>
   <!-- Tauri API (required for IPC) -->

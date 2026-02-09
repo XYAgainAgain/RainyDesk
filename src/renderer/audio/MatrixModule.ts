@@ -15,9 +15,7 @@ import type {
   MatrixGlitchConfig,
 } from '../../types/audio';
 
-// ============================================================================
 // Default Configurations
-// ============================================================================
 
 const DEFAULT_DROP_CONFIG: MatrixDropConfig = {
   enabled: true,
@@ -54,9 +52,7 @@ const DEFAULT_MATRIX_CONFIG: MatrixModuleConfig = {
   glitch: DEFAULT_GLITCH_CONFIG,
 };
 
-// ============================================================================
 // FM Voice for Matrix Drops
-// ============================================================================
 
 interface FMVoice {
   id: number;
@@ -69,9 +65,7 @@ interface FMVoice {
   releaseTime: number;
 }
 
-// ============================================================================
 // MatrixDropPool - FM synthesis voice pool
-// ============================================================================
 
 class MatrixDropPool {
   private _config: MatrixDropConfig;
@@ -255,9 +249,7 @@ class MatrixDropPool {
   }
 }
 
-// ============================================================================
 // MatrixDrone - Binaural beat background
-// ============================================================================
 
 class MatrixDrone {
   private _config: MatrixDroneConfig;
@@ -368,9 +360,7 @@ class MatrixDrone {
   }
 }
 
-// ============================================================================
 // MatrixGlitchProcessor - BitCrusher and sample rate reduction
-// ============================================================================
 
 class MatrixGlitchProcessor {
   private _config: MatrixGlitchConfig;
@@ -501,9 +491,7 @@ class MatrixGlitchProcessor {
   }
 }
 
-// ============================================================================
 // MatrixModule - Main orchestrator
-// ============================================================================
 
 export class MatrixModule {
   private _config: MatrixModuleConfig;

@@ -1,15 +1,3 @@
-/**
- * MatrixPixiRenderer - Digital Rain with RainyDesk features
- *
- * - BitmapFont rendering (texture atlas for performance)
- * - Object pooling for ~2000+ glyphs
- * - Per-stream Gaytrix coloring (Gay Mode + Matrix Mode)
- * - Collision detection with window zones
- * - Glitch effect on collision (scramble + fade)
- *
- * See .dev/MATRIX-MODE.md for full spec.
- */
-
 import { Application, Container, BitmapText, BitmapFont } from 'pixi.js';
 import { GlowFilter, CRTFilter } from 'pixi-filters';
 
@@ -17,22 +5,21 @@ import { GlowFilter, CRTFilter } from 'pixi-filters';
 export const MATRIX_CONFIG = {
   FONT_SIZE: 20,
   COLUMN_SPACING: 20,
-  // Phosphor color palette (authentic Matrix look)
-  COLOR_TRACE: 0x003B00,   // Fading tail
-  COLOR_BODY: 0x008F11,    // Main stream ("Islam Green")
-  COLOR_LEAD: 0xE0FFD4,    // Head glyph (almost white, phosphor-hot)
-  COLOR_GLOW: 0x00FF41,    // Bloom tint (for future filter)
-  COLOR_FLASH: 0xFFFFFF,   // Collision flash (on-beat only)
+  // Phosphor palette (authentic Matrix look)
+  COLOR_TRACE: 0x003B00,   // Tail
+  COLOR_BODY: 0x008F11,    // "Islam Green"
+  COLOR_LEAD: 0xE0FFD4,    // Phosphor-hot head
+  COLOR_GLOW: 0x00FF41,    // Bloom
+  COLOR_FLASH: 0xFFFFFF,   // On-beat flash
   MIN_SPEED: 12,
   MAX_SPEED: 24,
   MUTATION_CHANCE: 0.02,
   MIN_TAIL: 8,
   MAX_TAIL: 24,
   X_JITTER: 2,
-  // Collision glitch effect
   GLITCH_DURATION: 0.35,
-  GLITCH_SCRAMBLE_RATE: 25,  // Faster scramble (was 10)
-  GLITCH_FLASH_DURATION: 0.05, // Brief white flash on collision
+  GLITCH_SCRAMBLE_RATE: 25,
+  GLITCH_FLASH_DURATION: 0.05,
   FIZZLE_HEIGHT_RATIO: 0.75,
   FIZZLE_CHANCE: 0.001,
 };
@@ -46,7 +33,6 @@ const DIGITS = '012345789'; // No 6, per film spec
 const EXTRA = '日*+:';
 const GLYPHS = KATAKANA + LATIN + DIGITS + EXTRA;
 
-/** Window zone for collision detection */
 interface WindowZone {
   left: number;
   top: number;
@@ -54,23 +40,21 @@ interface WindowZone {
   bottom: number;
 }
 
-/** Internal column state */
 interface MatrixColumn {
   x: number;
-  headY: number;        // Grid Y position of stream head
-  speed: number;        // Cells per second
-  length: number;       // Tail length in cells
-  active: boolean;      // Currently streaming
-  glyphs: BitmapText[]; // Active glyph sprites
-  spawnTimer: number;   // Delay before next stream
-  hue: number;          // For Gaytrix mode
-  glitching: boolean;   // Collision glitch state
-  glitchTimer: number;  // Remaining glitch time
-  glitchAlpha: number;  // Current alpha during glitch
-  flashTimer: number;   // Brief white flash on collision
+  headY: number;
+  speed: number;
+  length: number;
+  active: boolean;
+  glyphs: BitmapText[];
+  spawnTimer: number;
+  hue: number;
+  glitching: boolean;
+  glitchTimer: number;
+  glitchAlpha: number;
+  flashTimer: number;
 }
 
-/** Renderer configuration */
 export interface MatrixRendererConfig {
   canvas: HTMLCanvasElement;
   width: number;

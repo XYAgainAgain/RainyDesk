@@ -434,6 +434,9 @@ html, body {
   flex: 1;
   text-align: center;
   letter-spacing: 0.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-close {
