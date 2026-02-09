@@ -779,6 +779,7 @@ export class GridSimulation {
                                 }
                                 this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
                                 this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
+                                this._puddlesDirty = true;
                             }
                         }
 
@@ -936,6 +937,7 @@ export class GridSimulation {
                                 }
                                 this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
                                 this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
+                                this._puddlesDirty = true;
 
                                 // Large drops spread horizontally (radius > 1.0)
                                 const spreadRadius = Math.min(3, Math.floor(dropRadius));
@@ -1135,10 +1137,6 @@ export class GridSimulation {
     }
 
     private stepPuddles(_dt: number): void {
-        // Mark puddles dirty — the CA is about to process/move water cells.
-        // If no water exists, the loop skips all cells and dirty stays false from last reset.
-        this._puddlesDirty = true;
-
         // Copy current state to buffer (double buffering for consistent reads)
         this.gridBuffer.set(this.grid);
         this.waterEnergyBuffer.set(this.waterEnergy);
@@ -1171,6 +1169,9 @@ export class GridSimulation {
             for (let x = startX; x !== endX; x += stepX) {
                 const index = y * this.gridWidth + x;
                 if (this.grid[index] !== CELL_WATER) continue;
+
+                // Water exists, so the puddle grid needs a GPU re-upload
+                this._puddlesDirty = true;
 
                 // Skip cells already processed this frame (prevents cascade bugs)
                 if (this.processedThisFrame[index]) continue;

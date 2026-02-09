@@ -147,16 +147,19 @@ fn migrate_old_rainscapes(app: &tauri::AppHandle, new_dir: &PathBuf) {
     log::info!("[Migration] Found old rainscapes at {:?}, migrating to {:?}", old_dir, new_dir);
 
     let mut migrated = 0u32;
+    let mut failed = 0u32;
 
-    // Move root-level .rain files
+    // Copy root-level .rain files
     if let Ok(entries) = fs::read_dir(&old_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
-                let dest = new_dir.join(path.file_name().unwrap());
+                let Some(name) = path.file_name() else { continue };
+                let dest = new_dir.join(name);
                 if !dest.exists() {
                     if let Err(e) = fs::copy(&path, &dest) {
                         log::error!("[Migration] Failed to copy {:?}: {}", path, e);
+                        failed += 1;
                     } else {
                         migrated += 1;
                     }
@@ -165,7 +168,7 @@ fn migrate_old_rainscapes(app: &tauri::AppHandle, new_dir: &PathBuf) {
         }
     }
 
-    // Move files from old Custom/ subdirectory to new Custom Rainscapes/
+    // Copy files from old Custom/ subdirectory to new Custom Rainscapes/
     let old_custom = old_dir.join("Custom");
     let new_custom = new_dir.join("Custom Rainscapes");
     if old_custom.exists() {
@@ -173,10 +176,12 @@ fn migrate_old_rainscapes(app: &tauri::AppHandle, new_dir: &PathBuf) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_file() && path.extension().map(|ext| ext == "rain").unwrap_or(false) {
-                    let dest = new_custom.join(path.file_name().unwrap());
+                    let Some(name) = path.file_name() else { continue };
+                    let dest = new_custom.join(name);
                     if !dest.exists() {
                         if let Err(e) = fs::copy(&path, &dest) {
                             log::error!("[Migration] Failed to copy custom {:?}: {}", path, e);
+                            failed += 1;
                         } else {
                             migrated += 1;
                         }
@@ -186,12 +191,16 @@ fn migrate_old_rainscapes(app: &tauri::AppHandle, new_dir: &PathBuf) {
         }
     }
 
-    // Remove old directory tree
-    if let Err(e) = fs::remove_dir_all(&old_dir) {
-        log::warn!("[Migration] Failed to remove old dir {:?}: {}", old_dir, e);
+    // Only remove old directory if every copy succeeded
+    if failed == 0 {
+        if let Err(e) = fs::remove_dir_all(&old_dir) {
+            log::warn!("[Migration] Failed to remove old dir {:?}: {}", old_dir, e);
+        }
+    } else {
+        log::warn!("[Migration] {} copies failed, keeping old dir {:?} as backup", failed, old_dir);
     }
 
-    log::info!("[Migration] Complete: {} files migrated", migrated);
+    log::info!("[Migration] Complete: {} migrated, {} failed", migrated, failed);
 }
 
 /// Create the default rainscape configuration (v2.0 schema)
@@ -681,18 +690,18 @@ struct PanelConfig {
     ui_scale: Option<f32>,
 }
 
-fn get_panel_config_path(app: &tauri::AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap().join("panel-config.json")
+fn get_panel_config_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("panel-config.json"))
 }
 
 fn load_panel_config(app: &tauri::AppHandle) -> Option<PanelConfig> {
-    let path = get_panel_config_path(app);
+    let path = get_panel_config_path(app)?;
     std::fs::read_to_string(&path).ok()
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
 fn save_panel_config(app: &tauri::AppHandle, config: &PanelConfig) {
-    let path = get_panel_config_path(app);
+    let Some(path) = get_panel_config_path(app) else { return };
     // Ensure app data directory exists
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1219,8 +1228,8 @@ fn center_help_window(app: tauri::AppHandle) -> Result<(), String> {
 
     // Clamp to work area with margin so it doesn't spill off-screen
     const MARGIN: f64 = 16.0;
-    let max_w = work_w - MARGIN * 2.0;
-    let max_h = work_h - MARGIN * 2.0;
+    let max_w = (work_w - MARGIN * 2.0).max(200.0);
+    let max_h = (work_h - MARGIN * 2.0).max(150.0);
     let needs_resize = win_w > max_w || win_h > max_h;
     if needs_resize {
         win_w = win_w.min(max_w);
@@ -1461,9 +1470,11 @@ fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i3
         tray_ly - PANEL_HEIGHT - MARGIN  // Above taskbar
     };
 
-    // Clamp to work area (excludes taskbar)
-    x = x.max(work_x + MARGIN).min(work_x + work_w - PANEL_WIDTH - MARGIN);
-    y = y.max(work_y + MARGIN).min(work_y + work_h - PANEL_HEIGHT - MARGIN);
+    // Clamp to work area (excludes taskbar). If panel exceeds area, pin to top-left margin.
+    let x_min = work_x + MARGIN;
+    let y_min = work_y + MARGIN;
+    x = x.max(x_min).min((work_x + work_w - PANEL_WIDTH - MARGIN).max(x_min));
+    y = y.max(y_min).min((work_y + work_h - PANEL_HEIGHT - MARGIN).max(y_min));
 
     (x, y)
 }
@@ -1497,8 +1508,13 @@ fn clamp_panel_to_work_area(app: &tauri::AppHandle, x: i32, y: i32, panel_w: i32
             let work_w = (work.width as f64 / scale) as i32;
             let work_h = (work.height as f64 / scale) as i32;
 
-            let cx = x.max(work_x + MARGIN).min(work_x + work_w - panel_w - MARGIN);
-            let cy = y.max(work_y + MARGIN).min(work_y + work_h - panel_h - MARGIN);
+            // If panel exceeds work area, pin to top-left margin instead of going off-screen
+            let x_min = work_x + MARGIN;
+            let y_min = work_y + MARGIN;
+            let x_max = (work_x + work_w - panel_w - MARGIN).max(x_min);
+            let y_max = (work_y + work_h - panel_h - MARGIN).max(y_min);
+            let cx = x.max(x_min).min(x_max);
+            let cy = y.max(y_min).min(y_max);
             return (cx, cy);
         }
     }

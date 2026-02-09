@@ -97,7 +97,9 @@ async function themeWipeTransition(newTheme: string): Promise<void> {
   // Animate the wipe
   requestAnimationFrame(() => {
     overlay.style.clipPath = wipe[1]!;
-    overlay.addEventListener('transitionend', () => overlay.remove());
+    overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+    // Fallback: remove overlay if transitionend never fires (reduced motion, etc.)
+    setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 700);
   });
 }
 

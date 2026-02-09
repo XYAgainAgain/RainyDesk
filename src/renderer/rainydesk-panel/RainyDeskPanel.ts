@@ -999,7 +999,9 @@ export class RainyDeskPanel {
           // Trigger the wipe animation
           requestAnimationFrame(() => {
             overlay.style.clipPath = wipe[1]!;
-            overlay.addEventListener('transitionend', () => overlay.remove());
+            overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+            // Fallback: remove overlay if transitionend never fires (reduced motion, etc.)
+            setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 700);
           });
         }
       };

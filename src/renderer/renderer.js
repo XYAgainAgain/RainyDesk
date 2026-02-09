@@ -502,7 +502,7 @@ function windowsChanged(oldWindows, newWindows) {
     if (!a || !b) return true;
     if (a.x !== b.x || a.y !== b.y ||
         a.width !== b.width || a.height !== b.height ||
-        a.title !== b.title) {
+        a.isMaximized !== b.isMaximized) {
       return true;
     }
   }
@@ -949,12 +949,12 @@ function gameLoop(currentTime) {
   // Schedule next frame FIRST — uncaught errors must never kill the loop
   requestAnimationFrame(gameLoop);
 
-  // FPS limiting
+  // FPS limiting (reset if stale from backgrounding to prevent frame flood)
   if (config.fpsLimit > 0) {
     const minFrameTime = 1000 / config.fpsLimit;
-    if (currentTime - lastFrameTime < minFrameTime) {
-      return;
-    }
+    const elapsed = currentTime - lastFrameTime;
+    if (elapsed > 1000) lastFrameTime = currentTime;
+    else if (elapsed < minFrameTime) return;
     lastFrameTime = currentTime;
   }
 
