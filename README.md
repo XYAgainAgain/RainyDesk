@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/icons/RainyDeskIconWhite.png" alt="RainyDesk logo" width="128">
 <h1>🌧️ RainyDesk 💻</h1>
- <sup>v0.9.1-alpha</sup>
+ <sup>v0.9.2-alpha</sup>
 </div>
 
 

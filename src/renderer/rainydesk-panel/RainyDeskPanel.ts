@@ -2369,10 +2369,10 @@ export class RainyDeskPanel {
       window.rainydesk.getVersion().then((v: string) => {
         versionBtn.textContent = `v${v}`;
       }).catch(() => {
-        versionBtn.textContent = 'v0.9.1-alpha';
+        versionBtn.textContent = 'v0.9.2-alpha';
       });
     } else {
-      versionBtn.textContent = 'v0.9.1-alpha';
+      versionBtn.textContent = 'v0.9.2-alpha';
     }
 
     // Build the popup menu (reused across toggles)
