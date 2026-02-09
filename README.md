@@ -28,6 +28,7 @@ Download the installer from [Releases](https://github.com/XYAgainAgain/RainyDesk
 Once running, RainyDesk sits in your system tray. Left-click the tray icon to open the Rainscaper panel or right-click to open a small context menu:
 - Pause/Resume
 - Open Rainscaper
+- Reset Panel (in case it gets stuck)
 - Volume Presets (there's a bunch)
 - Quit RainyDesk
 
