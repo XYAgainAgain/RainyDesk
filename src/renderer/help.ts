@@ -260,41 +260,57 @@ interface PerformanceTier {
   gridScale: number;
   renderScale: number;
   backgroundRain: boolean;
+  windowCollision: boolean;
   masterVolume: number; // dB
 }
 
 const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
-    name: 'Laptop / Potato',
-    desc: 'Low-end hardware, integrated graphics, or battery saving.',
-    specs: 'Potato grid, 30 FPS, light rain, no background layer',
-    intensity: 25,
+    name: 'Potato',
+    desc: 'Integrated graphics, old hardware, or battery saving.',
+    specs: 'Potato grid, Lo-Fi render, 30 FPS, no background, no collision',
+    intensity: 15,
     fpsLimit: 30,
     gridScale: 0.0625,
     renderScale: 0.125,
     backgroundRain: false,
-    masterVolume: -24,
+    windowCollision: false,
+    masterVolume: -30,
   },
   {
-    name: 'Desktop / Gaming Laptop',
-    desc: 'Mid-range dedicated GPU. The balanced default.',
-    specs: 'Normal grid, 60 FPS, moderate rain, background layer on',
+    name: 'Light',
+    desc: 'Entry-level dedicated GPU or a capable laptop.',
+    specs: 'Chunky grid, Pixel render, 60 FPS, no background',
+    intensity: 30,
+    fpsLimit: 60,
+    gridScale: 0.125,
+    renderScale: 0.25,
+    backgroundRain: false,
+    windowCollision: true,
+    masterVolume: -18,
+  },
+  {
+    name: 'Balanced',
+    desc: 'Mid-range GPU. The recommended default.',
+    specs: 'Normal grid, Pixel render, 60 FPS, background on',
     intensity: 50,
     fpsLimit: 60,
     gridScale: 0.25,
     renderScale: 0.25,
     backgroundRain: true,
+    windowCollision: true,
     masterVolume: -6,
   },
   {
-    name: 'Ferrari with GPU',
+    name: 'Cranked',
     desc: 'High-end GPU with headroom to spare. Go all out.',
-    specs: 'Detailed grid, uncapped FPS, heavy rain, background layer on',
-    intensity: 65,
+    specs: 'Detailed grid, Clean render, uncapped FPS, background on',
+    intensity: 70,
     fpsLimit: 0,
     gridScale: 0.5,
     renderScale: 0.5,
     backgroundRain: true,
+    windowCollision: true,
     masterVolume: -6,
   },
 ];
@@ -368,12 +384,13 @@ async function applyPerformanceTier(tier: PerformanceTier, overlay: HTMLElement)
   const update = window.rainydesk?.updateRainscapeParam;
   if (!update) return;
 
-  // Send params in sequence — each goes through Rust IPC to all windows
+  // Send params in sequence -- each goes through Rust IPC to all windows
   update('physics.intensity', tier.intensity);
   update('physics.fpsLimit', tier.fpsLimit);
   update('physics.renderScale', tier.renderScale);
   update('effects.masterVolume', tier.masterVolume);
   update('backgroundRain.enabled', tier.backgroundRain);
+  update('system.windowCollision', tier.windowCollision);
 
   // Grid scale change requires a physics reinit (sends the scale value)
   update('physics.resetSimulation', tier.gridScale);

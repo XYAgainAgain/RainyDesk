@@ -1,15 +1,11 @@
-/**
- * RainyDeskPanel - Main panel class
- *
- * Manages the standalone Rainscaper window UI.
- */
+/* Main panel class — standalone Rainscaper window UI */
 
 import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, updateSliderValue } from './components';
 import { applyTheme } from './themes';
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 
 // Tab definitions
-type TabId = 'basic' | 'physics' | 'audio' | 'visual' | 'debug';
+type TabId = 'basic' | 'physics' | 'audio' | 'visual' | 'system';
 
 interface TabDef {
   id: TabId;
@@ -17,11 +13,11 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: 'basic', label: 'Basic' },
+  { id: 'basic', label: 'Basics' },
   { id: 'physics', label: 'Physics' },
   { id: 'audio', label: 'Audio' },
-  { id: 'visual', label: 'Visual' },
-  { id: 'debug', label: 'Stats' },
+  { id: 'visual', label: 'Visuals' },
+  { id: 'system', label: 'System' },
 ];
 
 // Default colors for different modes
@@ -108,11 +104,15 @@ interface PanelState {
   matrixDensity: number;
   crtIntensity: number;
   uiScale: number;
+  rainbowSpeed: number;
   // Trans Mode easter egg
   transMode: boolean;
   transScrollDirection: 'left' | 'off' | 'right';
   // FPS Limiter
   fpsLimit: number;
+  // Impact pitch
+  impactPitch: number;
+  impactPitchOsc: number;
   // Oscillation knobs
   windOsc: number;
   intensityOsc: number;
@@ -126,6 +126,16 @@ interface PanelState {
   reverseGravity: boolean;
   gridScale: number;
   gridScalePending: number;
+  renderScale: number;
+  renderScalePending: number;
+  // System behavior toggles
+  rainOverMaximized: boolean;
+  maximizedMuffling: boolean;
+  rainOverFullscreen: boolean;
+  audioMuffling: boolean;
+  windowCollision: boolean;
+  // Help window state
+  helpWindowOpen: boolean;
   // App status
   appStatus: 'raining' | 'paused' | 'stopped' | 'initializing';
   // Debug
@@ -167,10 +177,11 @@ export class RainyDeskPanel {
   private reinitCooldownEnd: number = 0; // timestamp when cooldown expires
   private appStartTime: number = Date.now();
   // Document-level listeners (stored for cleanup on re-render)
+  private previousTab: TabId = 'basic';
   private docClickListener: (() => void) | null = null;
   private docKeyListener: ((e: KeyboardEvent) => void) | null = null;
 
-  /** Get saved UI Scale, or auto-fit to screen on first launch */
+  /* Get saved UI Scale, or auto-fit to screen on first launch */
   private static getInitialUIScale(): number {
     const saved = localStorage.getItem('rainscaper-ui-scale');
     if (saved) return parseFloat(saved);
@@ -204,7 +215,12 @@ export class RainyDeskPanel {
 
   private getDefaultState(): PanelState {
     // Restore tab from sessionStorage if available
-    const savedTab = sessionStorage.getItem('rainscaper-tab') as TabId | null;
+    let savedTab = sessionStorage.getItem('rainscaper-tab') as TabId | null;
+    // Migrate old 'debug' tab ID to 'system'
+    if (savedTab === 'debug' as string) {
+      savedTab = 'system';
+      sessionStorage.setItem('rainscaper-tab', 'system');
+    }
 
     return {
       activeTab: savedTab || 'basic',
@@ -244,11 +260,15 @@ export class RainyDeskPanel {
       matrixDensity: 28,
       crtIntensity: 0,
       uiScale: RainyDeskPanel.getInitialUIScale(),
+      rainbowSpeed: 1,
       // Trans Mode easter egg
       transMode: false,
       transScrollDirection: 'off',
       // FPS Limiter
       fpsLimit: 0,
+      // Impact pitch
+      impactPitch: 50,
+      impactPitchOsc: 0,
       // Oscillation knobs
       windOsc: 0,
       intensityOsc: 0,
@@ -262,6 +282,16 @@ export class RainyDeskPanel {
       reverseGravity: false,
       gridScale: 0.25,
       gridScalePending: 0.25,
+      renderScale: 0.25,
+      renderScalePending: 0.25,
+      // System behavior toggles
+      rainOverMaximized: false,
+      maximizedMuffling: true,
+      rainOverFullscreen: false,
+      audioMuffling: true,
+      windowCollision: true,
+      // Help window state
+      helpWindowOpen: false,
       // App status
       appStatus: 'raining',
       // Debug
@@ -432,6 +462,14 @@ export class RainyDeskPanel {
         this.state.rainIntensity = audio.rainIntensity;
       }
 
+      // Impact pitch center + OSC
+      if (typeof audio.impactPitch === 'number') {
+        this.state.impactPitch = audio.impactPitch;
+      }
+      if (typeof audio.impactPitchOsc === 'number') {
+        this.state.impactPitchOsc = audio.impactPitchOsc;
+      }
+
       // Thunder toggle
       if (typeof audio.thunderEnabled === 'boolean') {
         this.state.thunderEnabled = audio.thunderEnabled;
@@ -531,6 +569,37 @@ export class RainyDeskPanel {
       if (typeof visual.backgroundLayers === 'number') {
         this.state.backgroundLayers = visual.backgroundLayers;
       }
+      if (typeof visual.rainbowSpeed === 'number') {
+        this.state.rainbowSpeed = visual.rainbowSpeed;
+      }
+    }
+
+    // System settings (behavior toggles + render scale)
+    if (data.system && typeof data.system === 'object') {
+      const sys = data.system as Record<string, unknown>;
+      // Saved files use detection=true (suppress rain), panel uses rainOver=true (show rain)
+      if (typeof sys.maximizedDetection === 'boolean') {
+        this.state.rainOverMaximized = !sys.maximizedDetection;
+      }
+      if (typeof sys.maximizedMuffling === 'boolean') {
+        this.state.maximizedMuffling = sys.maximizedMuffling;
+      }
+      if (typeof sys.fullscreenDetection === 'boolean') {
+        this.state.rainOverFullscreen = !sys.fullscreenDetection;
+      }
+      if (typeof sys.audioMuffling === 'boolean') {
+        this.state.audioMuffling = sys.audioMuffling;
+      }
+      if (typeof sys.windowCollision === 'boolean') {
+        this.state.windowCollision = sys.windowCollision;
+      }
+      if (typeof sys.renderScale === 'number') {
+        this.state.renderScale = sys.renderScale;
+        this.state.renderScalePending = sys.renderScale;
+      }
+      if (typeof sys.backgroundShaderEnabled === 'boolean') {
+        this.state.backgroundShaderEnabled = sys.backgroundShaderEnabled;
+      }
     }
 
   }
@@ -550,6 +619,9 @@ export class RainyDeskPanel {
       this.state.splashSize = value;
       // Convert 0.5-2.0 → 0-100% for slider display
       updateSliderValue(this.root, 'splashSize', Math.round(((value - 0.5) / 1.5) * 100));
+    } else if (path === 'audio.impactPitch' && typeof value === 'number') {
+      this.state.impactPitch = value;
+      updateSliderValue(this.root, 'impactPitch', value);
     } else if (path === 'audio.sheetVolume' && typeof value === 'number') {
       this.state.sheetVolume = value;
       updateSliderValue(this.root, 'sheetVolume', value);
@@ -672,6 +744,25 @@ export class RainyDeskPanel {
     title.textContent = 'RainyDesk Rainscaper';
     this.titleElement = title; // Store reference for Gay Mode color sync
 
+    const helpBtn = document.createElement('button');
+    helpBtn.className = 'panel-help';
+    helpBtn.textContent = '?';
+    helpBtn.title = 'Help';
+    helpBtn.onclick = () => {
+      if (this.state.helpWindowOpen) {
+        window.rainydesk.hideHelpWindow();
+        this.state.helpWindowOpen = false;
+      } else {
+        window.rainydesk.showHelpWindow();
+        this.state.helpWindowOpen = true;
+      }
+    };
+
+    // Listen for help window close (X button or Rust-side hide)
+    window.rainydesk.onHelpWindowHidden(() => {
+      this.state.helpWindowOpen = false;
+    });
+
     // Close button — folded umbrella icon
     const closeBtn = document.createElement('button');
     closeBtn.className = 'panel-close';
@@ -686,12 +777,13 @@ export class RainyDeskPanel {
 
     header.appendChild(logo);
     header.appendChild(title);
+    header.appendChild(helpBtn);
     header.appendChild(closeBtn);
 
     return header;
   }
 
-  /** Flash autosave state through the footer status dot */
+  /* Flash autosave state through the footer status dot */
   private flashAutosaveIndicator(): void {
     // Clear any pending timers
     if (this.autosaveIndicatorTimer) clearTimeout(this.autosaveIndicatorTimer);
@@ -727,43 +819,75 @@ export class RainyDeskPanel {
       btn.onclick = () => {
         this.state.activeTab = tab.id;
         sessionStorage.setItem('rainscaper-tab', tab.id);
-        this.switchTab(tab.id);  // Targeted swap instead of full render()
+        this.switchTab(tab.id);
       };
       tabBar.appendChild(btn);
     }
 
+    // Position gradient glow after layout settles
+    requestAnimationFrame(() => this.updateTabGlow(tabBar));
+
     return tabBar;
   }
 
-  /**
-   * Switch tab content without rebuilding entire panel (smoother UX)
-   */
+  /* Position the gradient overlay to match the active tab's bounds */
+  private updateTabGlow(tabBar: HTMLElement, animate = false): void {
+    const activeBtn = tabBar.querySelector('.tab-button.active') as HTMLElement;
+    if (!activeBtn) return;
+    const setPosition = () => {
+      // getBoundingClientRect for sub-pixel precision, scaled back to local coords
+      const barRect = tabBar.getBoundingClientRect();
+      const btnRect = activeBtn.getBoundingClientRect();
+      const scale = barRect.width / (tabBar.offsetWidth || barRect.width);
+      const left = (btnRect.left - barRect.left) / scale;
+      const width = btnRect.width / scale;
+      tabBar.style.setProperty('--tab-glow-left', `${left}px`);
+      tabBar.style.setProperty('--tab-glow-width', `${width}px`);
+    };
+    if (!animate) { setPosition(); return; }
+    // Fade out → snap position → fade in
+    tabBar.style.setProperty('--tab-glow-opacity', '0');
+    setTimeout(() => {
+      setPosition();
+      requestAnimationFrame(() => tabBar.style.setProperty('--tab-glow-opacity', '1'));
+    }, 100);
+  }
+
+  /* Switch tab content without rebuilding entire panel */
   private switchTab(tabId: TabId): void {
-    // Update tab button states
-    const tabBar = this.root.querySelector('.tab-bar');
+    // Determine slide direction from tab index change
+    const prevIdx = TABS.findIndex(t => t.id === this.previousTab);
+    const nextIdx = TABS.findIndex(t => t.id === tabId);
+    const slideDir = nextIdx > prevIdx ? 'slide-left' : 'slide-right';
+    this.previousTab = tabId;
+
+    const tabBar = this.root.querySelector('.tab-bar') as HTMLElement;
     if (tabBar) {
       tabBar.querySelectorAll('.tab-button').forEach((btn, i) => {
         btn.classList.toggle('active', TABS[i]?.id === tabId);
       });
+      this.updateTabGlow(tabBar, true);
     }
 
-    // Stop debug interval if leaving debug tab
-    if (this.debugUpdateInterval && tabId !== 'debug') {
+    // Stop debug interval if leaving system tab
+    if (this.debugUpdateInterval && tabId !== 'system') {
       clearInterval(this.debugUpdateInterval);
       this.debugUpdateInterval = null;
     }
 
-    // Replace content only
-    const content = this.root.querySelector('.panel-content');
+    // Replace content with directional slide animation
+    const content = this.root.querySelector('.panel-content') as HTMLElement;
     if (content) {
       content.innerHTML = '';
-      content.appendChild(this.createTabContent(tabId));
+      const newContent = this.createTabContent(tabId);
+      newContent.classList.add(slideDir);
+      content.appendChild(newContent);
     }
   }
 
   private createTabContent(tabId: TabId): HTMLElement {
-    // Stop debug updates when leaving debug tab
-    if (this.debugUpdateInterval && tabId !== 'debug') {
+    // Stop debug updates when leaving system tab
+    if (this.debugUpdateInterval && tabId !== 'system') {
       clearInterval(this.debugUpdateInterval);
       this.debugUpdateInterval = null;
     }
@@ -777,8 +901,8 @@ export class RainyDeskPanel {
         return this.createAudioTab();
       case 'visual':
         return this.createVisualTab();
-      case 'debug':
-        return this.createDebugTab();
+      case 'system':
+        return this.createSystemTab();
     }
   }
 
@@ -833,7 +957,7 @@ export class RainyDeskPanel {
     container.appendChild(
       Slider({
         id: 'wind',
-        label: 'Wind',
+        label: 'Wind Strength',
         value: this.state.wind,
         min: -100,
         max: 100,
@@ -1154,106 +1278,7 @@ export class RainyDeskPanel {
     reverseToggle.dataset.matrixLabel = 'Reverse Engineer';
     container.appendChild(reverseToggle);
 
-    // --- Performance section divider ---
-    const perfDivider = document.createElement('hr');
-    perfDivider.className = 'panel-separator';
-    container.appendChild(perfDivider);
-
-    // FPS Limiter (stepped: 15/30/60/90/120/144/165/240/360/Uncapped)
-    const fpsSteps = [15, 30, 60, 90, 120, 144, 165, 240, 360, 0]; // 0 = uncapped
-    const fpsLabels = ['15', '30', '60', '90', '120', '144', '165', '240', '360', 'Max'];
-    const currentFpsIdx = fpsSteps.indexOf(this.state.fpsLimit);
-    const safeFpsIdx = currentFpsIdx >= 0 ? currentFpsIdx : fpsSteps.length - 1;
-
-    container.appendChild(
-      Slider({
-        id: 'fpsLimit',
-        label: 'FPS Limit',
-        value: safeFpsIdx,
-        min: 0,
-        max: fpsSteps.length - 1,
-        step: 1,
-        unit: '',
-        formatValue: (v: number) => fpsLabels[Math.round(v)] || 'Max',
-        onChange: (v) => {
-          const idx = Math.round(v);
-          const fps = fpsSteps[idx] ?? 0;
-          this.state.fpsLimit = fps;
-          window.rainydesk.updateRainscapeParam('physics.fpsLimit', fps);
-        },
-      })
-    );
-
-    // Grid Scale section
-    const gridScaleSection = document.createElement('div');
-    gridScaleSection.className = 'slider-with-button';
-
-    // Grid Scale slider (4 discrete steps: Potato/Chunky/Normal/Detailed)
-    const gridScaleSteps = [0.0625, 0.125, 0.25, 0.375]; // Potato, Chunky, Normal, Detailed
-    const gridScaleLabels = ['Potato', 'Chunky', 'Normal', 'Detailed'];
-    const currentIndex = gridScaleSteps.findIndex(s => Math.abs(s - this.state.gridScalePending) < 0.01);
-    const safeIndex = currentIndex >= 0 ? currentIndex : 2; // Default to Normal
-
-    gridScaleSection.appendChild(
-      Slider({
-        id: 'gridScale',
-        label: 'Grid Scale',
-        value: safeIndex,
-        min: 0,
-        max: 3,
-        step: 1,
-        unit: '',
-        formatValue: (v: number) => gridScaleLabels[Math.round(v)] || 'Normal',
-        onChange: (v) => {
-          const idx = Math.round(v);
-          this.state.gridScalePending = gridScaleSteps[idx] ?? 0.25;
-          this.updateResetButtonVisibility();
-        },
-      })
-    );
-
-    // Apply Changes button (only visible when scale changed)
-    this.resetRainButton = document.createElement('button');
-    this.resetRainButton.className = 'reset-rain-button';
-    this.resetRainButton.textContent = 'Apply Changes';
-    this.resetRainButton.style.display = 'none';
-    this.resetRainButton.addEventListener('click', () => this.handleResetRain());
-    gridScaleSection.appendChild(this.resetRainButton);
-
-    container.appendChild(gridScaleSection);
-
-    // Data Density (Matrix Mode only — adjusts column spacing, font stays 28px)
-    const densitySteps = [42, 28, 20, 14]; // Noob → Neo
-    const densityLabels = ['Noob', 'Normie', 'Nerd', 'Neo'];
-    const currentDensityIdx = densitySteps.findIndex(s => s === this.state.matrixDensity);
-    const safeDensityIdx = currentDensityIdx >= 0 ? currentDensityIdx : 1; // Default to Normie
-
-    const densitySlider = Slider({
-      id: 'matrixDensity',
-      label: 'Data Density',
-      value: safeDensityIdx,
-      min: 0,
-      max: 3,
-      step: 1,
-      unit: '',
-      formatValue: (v: number) => densityLabels[Math.round(v)] || 'Normie',
-      onChange: (v) => {
-        const idx = Math.round(v);
-        const spacing = densitySteps[idx] ?? 20;
-        this.state.matrixDensity = spacing;
-        window.rainydesk.updateRainscapeParam('visual.matrixDensity', spacing);
-      },
-    });
-    // Only show when Matrix Mode is on
-    densitySlider.style.display = this.state.matrixMode ? '' : 'none';
-    densitySlider.dataset.matrixOnly = 'true';
-    container.appendChild(densitySlider);
-
-    // Update button visibility per state
-    this.updateResetButtonVisibility();
-
     // Apply Matrix Mode state to slider labels and disabled states
-    // (deferred to next frame so DOM is ready)
     requestAnimationFrame(() => this.updateMatrixModeSliders());
 
     return container;
@@ -1261,18 +1286,43 @@ export class RainyDeskPanel {
 
   private updateResetButtonVisibility(): void {
     if (!this.resetRainButton) return;
-    const changed = Math.abs(this.state.gridScalePending - this.state.gridScale) > 0.01;
-    this.resetRainButton.style.display = changed ? 'block' : 'none';
+    // Don't hide when showing "Resume?" — let the resume flow handle it
+    if (this.resetRainButton.textContent === 'Resume?') return;
+    const gridChanged = Math.abs(this.state.gridScalePending - this.state.gridScale) > 0.01;
+    const renderChanged = Math.abs(this.state.renderScalePending - this.state.renderScale) > 0.01;
+    this.resetRainButton.style.display = (gridChanged || renderChanged) ? 'block' : 'none';
   }
 
   private handleResetRain(): void {
-    if (this.resetRainButton) {
-      this.resetRainButton.style.display = 'none';
-    }
+    const wasPaused = this.state.paused;
+
     this.state.appStatus = 'stopped';
     this.updateFooterStatus();
-    window.rainydesk.updateRainscapeParam('physics.resetSimulation', this.state.gridScalePending);
+    window.rainydesk.updateRainscapeParam('physics.resetSimulation', {
+      gridScale: this.state.gridScalePending,
+      renderScale: this.state.renderScalePending,
+    });
     this.state.gridScale = this.state.gridScalePending;
+    this.state.renderScale = this.state.renderScalePending;
+
+    if (wasPaused && this.resetRainButton) {
+      // Reinit while paused: offer to resume
+      this.resetRainButton.textContent = 'Resume?';
+      this.resetRainButton.style.display = 'block';
+      this.resetRainButton.onclick = () => {
+        this.state.paused = false;
+        window.rainydesk.updateRainscapeParam('system.paused', false);
+        this.updatePauseToggle();
+        if (this.resetRainButton) {
+          this.resetRainButton.textContent = 'Apply Changes';
+          this.resetRainButton.style.display = 'none';
+          this.resetRainButton.onclick = null;
+          this.resetRainButton.addEventListener('click', () => this.handleResetRain());
+        }
+      };
+    } else if (this.resetRainButton) {
+      this.resetRainButton.style.display = 'none';
+    }
   }
 
   private createAudioTab(): HTMLElement {
@@ -1316,6 +1366,37 @@ export class RainyDeskPanel {
         onChange: (v) => {
           this.state.rainIntensity = v;
           window.rainydesk.updateRainscapeParam('audio.rainIntensity', v);
+        },
+      })
+    );
+
+    // Impact pitch OSC knob (inline with Impact Pitch slider)
+    const impactPitchOscKnob = RotaryKnob({
+      value: this.state.impactPitchOsc,
+      min: 0,
+      max: 100,
+      id: 'impactPitchOsc',
+      description: 'Per-drop pitch variation (randomizes each raindrop)',
+      onChange: (v) => {
+        this.state.impactPitchOsc = v;
+        window.rainydesk.updateRainscapeParam('audio.impactPitchOsc', v);
+      },
+    });
+
+    // Impact pitch (filter center frequency — Rain Mode only)
+    container.appendChild(
+      Slider({
+        id: 'impactPitch',
+        label: 'Impact Pitch',
+        value: this.state.impactPitch,
+        min: 0,
+        max: 100,
+        unit: '%',
+        defaultValue: 50,
+        extraElement: impactPitchOscKnob,
+        onChange: (v) => {
+          this.state.impactPitch = v;
+          window.rainydesk.updateRainscapeParam('audio.impactPitch', v);
         },
       })
     );
@@ -1505,18 +1586,6 @@ export class RainyDeskPanel {
   private createVisualTab(): HTMLElement {
     const container = document.createElement('div');
 
-    // Background shader toggle
-    container.appendChild(
-      Toggle({
-        label: 'Background Shader',
-        checked: this.state.backgroundShaderEnabled,
-        onChange: (v) => {
-          this.state.backgroundShaderEnabled = v;
-          window.rainydesk.updateRainscapeParam('backgroundRain.enabled', v);
-        },
-      })
-    );
-
     // Background intensity
     container.appendChild(
       Slider({
@@ -1579,11 +1648,32 @@ export class RainyDeskPanel {
           } else {
             this.stopGayModeAnimation();
           }
+          if (rainbowSpeedSlider) {
+            rainbowSpeedSlider.style.display = v ? '' : 'none';
+          }
           // Update Gaytrix hint visibility
           this.updateGaytrixHint();
         },
       })
     );
+
+    // Only visible when Gay Mode is on
+    const rainbowSpeedSlider = Slider({
+      id: 'rainbowSpeed',
+      label: 'Rainbow Speed',
+      value: this.state.rainbowSpeed,
+      min: 1,
+      max: 10,
+      step: 1,
+      unit: '\u00d7',
+      defaultValue: 1,
+      onChange: (v) => {
+        this.state.rainbowSpeed = v;
+        window.rainydesk.updateRainscapeParam('visual.rainbowSpeed', v);
+      },
+    });
+    rainbowSpeedSlider.style.display = this.state.gayMode ? '' : 'none';
+    container.appendChild(rainbowSpeedSlider);
 
     // Matrix Mode toggle (digital rain)
     container.appendChild(
@@ -1623,7 +1713,7 @@ export class RainyDeskPanel {
       const overlay = document.createElement('div');
       overlay.className = 'gaytrix-wipe-overlay';
       overlay.style.background = oldBg;
-      overlay.style.clipPath = 'polygon(0 0, 100% 0, 100% 100%, 0 100%)';
+      overlay.style.clipPath = 'polygon(0% -20%, 110% -20%, 110% 120%, -35% 120%)';
       gaytrixHint.appendChild(overlay);
 
       // Apply new state underneath overlay
@@ -1639,10 +1729,12 @@ export class RainyDeskPanel {
       }
 
       // Animate wipe (left-to-right angled reveal synced with sword gleam)
+      gaytrixHint.classList.remove('gleam-click');
+      void gaytrixHint.offsetWidth; // Force reflow to restart animation
       gaytrixHint.classList.add('gleam-click');
       requestAnimationFrame(() => {
         // Angled wipe at ~15 deg matching the gleam sweep direction
-        overlay.style.clipPath = 'polygon(120% -20%, 140% -20%, 140% 120%, 120% 120%)';
+        overlay.style.clipPath = 'polygon(135% -20%, 170% -20%, 170% 120%, 100% 120%)';
         overlay.addEventListener('transitionend', () => overlay.remove());
         // Fallback: remove overlay after 700ms even if transitionend doesn't fire
         setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 700);
@@ -1683,43 +1775,303 @@ export class RainyDeskPanel {
     return container;
   }
 
-  private createDebugTab(): HTMLElement {
+  private createSystemTab(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'debug-tab';
 
-    // Stats section
-    const statsSection = document.createElement('div');
-    statsSection.className = 'section';
+    // Helper: create a collapsible section (title + content wrapper)
+    const makeCollapsible = (name: string, startCollapsed = true) => {
+      const title = document.createElement('div');
+      title.className = 'section-title collapsible';
+      title.innerHTML = `<span class="collapse-arrow">${startCollapsed ? '&#9654;' : '&#9660;'}</span> ${name}`;
 
-    const statsTitle = document.createElement('div');
-    statsTitle.className = 'section-title';
-    statsTitle.textContent = 'Real-time Stats';
-    statsSection.appendChild(statsTitle);
+      const content = document.createElement('div');
+      content.className = 'collapsible-section';
+      if (startCollapsed) content.classList.add('collapsed');
+
+      title.addEventListener('click', () => {
+        const isCollapsed = content.classList.toggle('collapsed');
+        const arrow = title.querySelector('.collapse-arrow');
+        if (arrow) arrow.innerHTML = isCollapsed ? '&#9654;' : '&#9660;';
+      });
+
+      return { title, content };
+    };
+
+    // Performance section
+    const perf = makeCollapsible('Performance');
+    container.appendChild(perf.title);
+
+    // FPS Limiter (stepped: 15/30/60/90/120/144/165/240/360/Uncapped)
+    const fpsSteps = [15, 30, 60, 90, 120, 144, 165, 240, 360, 0];
+    const fpsLabels = ['15', '30', '60', '90', '120', '144', '165', '240', '360', 'Max'];
+    const currentFpsIdx = fpsSteps.indexOf(this.state.fpsLimit);
+    const safeFpsIdx = currentFpsIdx >= 0 ? currentFpsIdx : fpsSteps.length - 1;
+
+    perf.content.appendChild(
+      Slider({
+        id: 'fpsLimit',
+        label: 'FPS Limit',
+        sublabel: 'Frame rate cap',
+        value: safeFpsIdx,
+        min: 0,
+        max: fpsSteps.length - 1,
+        step: 1,
+        unit: '',
+        formatValue: (v: number) => fpsLabels[Math.round(v)] || 'Max',
+        onChange: (v) => {
+          const idx = Math.round(v);
+          const fps = fpsSteps[idx] ?? 0;
+          this.state.fpsLimit = fps;
+          window.rainydesk.updateRainscapeParam('physics.fpsLimit', fps);
+        },
+      })
+    );
+
+    // Grid Scale + Render Scale share an Apply button
+    const scaleSection = document.createElement('div');
+    scaleSection.className = 'slider-with-button';
+
+    // Grid Scale slider (4 discrete steps)
+    const gridScaleSteps = [0.0625, 0.125, 0.25, 0.375];
+    const gridScaleLabels = ['Potato', 'Chunky', 'Normal', 'Detailed'];
+    const currentGridIdx = gridScaleSteps.findIndex(s => Math.abs(s - this.state.gridScalePending) < 0.01);
+    const safeGridIdx = currentGridIdx >= 0 ? currentGridIdx : 2;
+
+    scaleSection.appendChild(
+      Slider({
+        id: 'gridScale',
+        label: 'Grid Scale',
+        sublabel: 'Collision accuracy',
+        value: safeGridIdx,
+        min: 0,
+        max: 3,
+        step: 1,
+        unit: '',
+        formatValue: (v: number) => gridScaleLabels[Math.round(v)] || 'Normal',
+        onChange: (v) => {
+          const idx = Math.round(v);
+          this.state.gridScalePending = gridScaleSteps[idx] ?? 0.25;
+          this.updateResetButtonVisibility();
+        },
+      })
+    );
+
+    // Render Scale slider (4 discrete steps)
+    const renderScaleSteps = [0.125, 0.25, 0.5, 1.0];
+    const renderScaleLabels = ['Lo-Fi', 'Pixel', 'Clean', 'Full'];
+    const currentRenderIdx = renderScaleSteps.findIndex(s => Math.abs(s - this.state.renderScalePending) < 0.01);
+    const safeRenderIdx = currentRenderIdx >= 0 ? currentRenderIdx : 1;
+
+    scaleSection.appendChild(
+      Slider({
+        id: 'renderScale',
+        label: 'Render Scale',
+        sublabel: 'Visual smoothness',
+        value: safeRenderIdx,
+        min: 0,
+        max: 3,
+        step: 1,
+        unit: '',
+        formatValue: (v: number) => renderScaleLabels[Math.round(v)] || 'Pixel',
+        onChange: (v) => {
+          const idx = Math.round(v);
+          this.state.renderScalePending = renderScaleSteps[idx] ?? 0.25;
+          this.updateResetButtonVisibility();
+        },
+      })
+    );
+
+    // Shared Apply Changes button (visible when grid OR render scale changed)
+    this.resetRainButton = document.createElement('button');
+    this.resetRainButton.className = 'reset-rain-button';
+    this.resetRainButton.textContent = 'Apply Changes';
+    this.resetRainButton.style.display = 'none';
+    this.resetRainButton.addEventListener('click', () => this.handleResetRain());
+    scaleSection.appendChild(this.resetRainButton);
+
+    perf.content.appendChild(scaleSection);
+
+    // Data Density (Matrix Mode only)
+    const densitySteps = [42, 28, 20, 14];
+    const densityLabels = ['Noob', 'Normie', 'Nerd', 'Neo'];
+    const currentDensityIdx = densitySteps.findIndex(s => s === this.state.matrixDensity);
+    const safeDensityIdx = currentDensityIdx >= 0 ? currentDensityIdx : 1;
+
+    const densitySlider = Slider({
+      id: 'matrixDensity',
+      label: 'Data Density',
+      value: safeDensityIdx,
+      min: 0,
+      max: 3,
+      step: 1,
+      unit: '',
+      formatValue: (v: number) => densityLabels[Math.round(v)] || 'Normie',
+      onChange: (v) => {
+        const idx = Math.round(v);
+        const spacing = densitySteps[idx] ?? 20;
+        this.state.matrixDensity = spacing;
+        window.rainydesk.updateRainscapeParam('visual.matrixDensity', spacing);
+      },
+    });
+    densitySlider.style.display = this.state.matrixMode ? '' : 'none';
+    densitySlider.dataset.matrixOnly = 'true';
+    perf.content.appendChild(densitySlider);
+
+    container.appendChild(perf.content);
+
+    // Update button visibility per state
+    this.updateResetButtonVisibility();
+
+    // Behavior section
+    const behavior = makeCollapsible('Behavior');
+    container.appendChild(behavior.title);
+
+    // Window Collision (broadest — affects all rain-window interactions)
+    behavior.content.appendChild(
+      Toggle({
+        label: 'Window Collision',
+        sublabel: 'Rain interacts with app windows',
+        checked: this.state.windowCollision,
+        onChange: (v) => {
+          this.state.windowCollision = v;
+          window.rainydesk.updateRainscapeParam('system.windowCollision', v);
+        },
+      })
+    );
+
+    // Rain Over Fullscreen (inverted: ON = rain shows, OFF = rain suppressed)
+    behavior.content.appendChild(
+      Toggle({
+        label: 'Rain Over Fullscreen',
+        sublabel: 'Show rain over fullscreen apps',
+        checked: this.state.rainOverFullscreen,
+        onChange: (v) => {
+          this.state.rainOverFullscreen = v;
+          window.rainydesk.updateRainscapeParam('system.fullscreenDetection', !v);
+          this.updateFullscreenMufflingVisibility();
+        },
+      })
+    );
+
+    // Fullscreen muffling sub-toggle (hidden when Rain Over Fullscreen is ON)
+    const fsMuffleToggle = Toggle({
+      label: 'Audio Muffling',
+      sublabel: 'Lower volume behind fullscreen apps',
+      checked: this.state.audioMuffling,
+      onChange: (v) => {
+        this.state.audioMuffling = v;
+        window.rainydesk.updateRainscapeParam('system.audioMuffling', v);
+      },
+    });
+    fsMuffleToggle.classList.add('sub-toggle');
+    fsMuffleToggle.dataset.fsMuffleToggle = 'true';
+    if (!this.state.rainOverFullscreen) fsMuffleToggle.style.display = 'none';
+    behavior.content.appendChild(fsMuffleToggle);
+
+    // Rain Over Maximized (inverted: ON = rain shows, OFF = rain suppressed)
+    behavior.content.appendChild(
+      Toggle({
+        label: 'Rain Over Maximized',
+        sublabel: 'Show rain over maximized apps',
+        checked: this.state.rainOverMaximized,
+        onChange: (v) => {
+          this.state.rainOverMaximized = v;
+          window.rainydesk.updateRainscapeParam('system.maximizedDetection', !v);
+          this.updateMaximizedMufflingVisibility();
+        },
+      })
+    );
+
+    // Maximized muffling sub-toggle (hidden when Rain Over Maximized is ON)
+    const maxMuffleToggle = Toggle({
+      label: 'Audio Muffling',
+      sublabel: 'Lower volume behind maximized apps',
+      checked: this.state.maximizedMuffling,
+      onChange: (v) => {
+        this.state.maximizedMuffling = v;
+        window.rainydesk.updateRainscapeParam('system.maximizedMuffling', v);
+      },
+    });
+    maxMuffleToggle.classList.add('sub-toggle');
+    maxMuffleToggle.dataset.maxMuffleToggle = 'true';
+    if (!this.state.rainOverMaximized) maxMuffleToggle.style.display = 'none';
+    behavior.content.appendChild(maxMuffleToggle);
+
+    // Background Shader
+    behavior.content.appendChild(
+      Toggle({
+        label: 'Background Shader',
+        sublabel: 'Rain effect behind all windows',
+        checked: this.state.backgroundShaderEnabled,
+        onChange: (v) => {
+          this.state.backgroundShaderEnabled = v;
+          window.rainydesk.updateRainscapeParam('backgroundRain.enabled', v);
+        },
+      })
+    );
+
+    // Start with Windows
+    const autostartToggle = Toggle({
+      label: 'Start with Windows',
+      checked: false,
+      onChange: async (v) => {
+        try {
+          if (v) {
+            await enableAutostart();
+          } else {
+            await disableAutostart();
+          }
+        } catch (err) {
+          window.rainydesk.log(`[Autostart] Toggle failed: ${err}`);
+        }
+      },
+    });
+    behavior.content.appendChild(autostartToggle);
+
+    isAutostartEnabled().then((enabled) => {
+      const checkbox = autostartToggle.querySelector('input[type="checkbox"]') as HTMLInputElement;
+      if (checkbox) checkbox.checked = enabled;
+    }).catch(() => {});
+
+    container.appendChild(behavior.content);
+
+    // Stats & System Info (single collapsible section)
+    const diag = makeCollapsible('Stats & System Info');
+    container.appendChild(diag.title);
 
     const statsGrid = document.createElement('div');
     statsGrid.className = 'debug-stats-grid';
     this.debugStatsElement = statsGrid;
-
-    // Initial stats render
     this.updateDebugStats(statsGrid);
-    statsSection.appendChild(statsGrid);
-    container.appendChild(statsSection);
+    diag.content.appendChild(statsGrid);
 
-    // Start real-time updates
     this.debugUpdateInterval = setInterval(() => {
       if (this.debugStatsElement) {
         this.updateDebugStats(this.debugStatsElement);
       }
     }, 500);
 
-    // Reinitialize button with 30s cooldown (persists across tab switches)
-    const reinitSection = document.createElement('div');
-    reinitSection.className = 'section';
+    const sysContent = document.createElement('div');
+    sysContent.className = 'debug-sys-info';
+    sysContent.textContent = 'Loading...';
+    diag.content.appendChild(sysContent);
+
+    this.loadSystemInfo(sysContent);
+
+    container.appendChild(diag.content);
+
+    // Actions section (expanded by default for quick access)
+    const actions = makeCollapsible('Actions', false);
+    container.appendChild(actions.title);
 
     const reinitBtn = document.createElement('button');
     reinitBtn.className = 'reinit-button';
 
-    // Helper: start a countdown timer that updates THIS button instance
+    const svgA = 'width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"';
+    const resetIcon = `<svg ${svgA}><path d="M12 21V11M12 11L9 14M12 11L15 14M7 16.8184C4.69636 16.2074 3 14.1246 3 11.6493C3 9.20008 4.8 6.9375 7.5 6.5C8.34694 4.48637 10.3514 3 12.6893 3C15.684 3 18.1317 5.32251 18.3 8.25C19.8893 8.94488 21 10.6503 21 12.4969C21 14.8148 19.25 16.7236 17 16.9725" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    const resetLabel = `${resetIcon}Reset RainyDesk`;
+
     const startCooldownTimer = () => {
       if (this.reinitCooldownTimer) clearInterval(this.reinitCooldownTimer);
       this.reinitCooldownTimer = setInterval(() => {
@@ -1728,67 +2080,114 @@ export class RainyDeskPanel {
           if (this.reinitCooldownTimer) clearInterval(this.reinitCooldownTimer);
           this.reinitCooldownTimer = null;
           reinitBtn.disabled = false;
-          reinitBtn.textContent = 'Reset RainyDesk';
+          reinitBtn.innerHTML = resetLabel;
         } else {
           reinitBtn.textContent = `Cooldown (${remaining}s)`;
         }
       }, 1000);
     };
 
-    // Restore cooldown state if still active from a previous tab visit
     const now = Date.now();
     const cooldownRemaining = Math.ceil((this.reinitCooldownEnd - now) / 1000);
     if (cooldownRemaining > 0) {
       reinitBtn.disabled = true;
       reinitBtn.textContent = `Cooldown (${cooldownRemaining}s)`;
-      startCooldownTimer(); // Attach timer to THIS button, replacing the old one
+      startCooldownTimer();
     } else {
-      reinitBtn.textContent = 'Reset RainyDesk';
+      reinitBtn.innerHTML = resetLabel;
     }
 
     reinitBtn.addEventListener('click', () => {
       if (reinitBtn.disabled) return;
       this.state.appStatus = 'stopped';
       this.updateFooterStatus();
-      window.rainydesk.updateRainscapeParam('physics.resetSimulation', this.state.gridScale);
+      window.rainydesk.updateRainscapeParam('physics.resetSimulation', {
+        gridScale: this.state.gridScale,
+        renderScale: this.state.renderScale,
+      });
 
-      // Start 30s cooldown
       this.reinitCooldownEnd = Date.now() + 30000;
       reinitBtn.disabled = true;
       reinitBtn.textContent = 'Cooldown (30s)';
       startCooldownTimer();
     });
 
-    reinitSection.appendChild(reinitBtn);
-    container.appendChild(reinitSection);
+    // Performance Presets heading
+    const presetHeading = document.createElement('div');
+    presetHeading.className = 'preset-heading';
+    presetHeading.innerHTML = '<span class="preset-heading-title">Performance Presets</span><span class="preset-heading-subtitle">Quick-apply performance profiles</span>';
+    actions.content.appendChild(presetHeading);
 
-    // Collapsible system info section
-    const sysSection = document.createElement('div');
-    sysSection.className = 'section';
+    const presetGrid = document.createElement('div');
+    presetGrid.className = 'preset-button-grid';
 
-    const sysHeader = document.createElement('div');
-    sysHeader.className = 'section-title collapsible';
-    sysHeader.innerHTML = '<span class="collapse-arrow">&#9654;</span> System Info';
-    sysSection.appendChild(sysHeader);
+    // Inline SVG icons for preset buttons (currentColor inherits theme)
+    const svgAttr = 'width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"';
+    const presetIcons: Record<string, string> = {
+      Potato: `<svg ${svgAttr}><path d="M21 14.7C21 18.1794 19.0438 21 15.5 21C11.9562 21 10 18.1794 10 14.7C10 11.2206 15.5 3 15.5 3C15.5 3 21 11.2206 21 14.7Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8.2C8 9.7464 7.11083 11 5.5 11C3.88917 11 3 9.7464 3 8.2C3 6.6536 5.5 3 5.5 3C5.5 3 8 6.6536 8 8.2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+      Light: `<svg ${svgAttr}><path d="M10.5 21L12 18M14.5 21L16 18M6.5 21L8 18M8.8 15C6.14903 15 4 12.9466 4 10.4137C4 8.31435 5.6 6.375 8 6C8.75283 4.27403 10.5346 3 12.6127 3C15.2747 3 17.4504 4.99072 17.6 7.5C19.0127 8.09561 20 9.55741 20 11.1402C20 13.2719 18.2091 15 16 15L8.8 15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+      Balanced: `<svg ${svgAttr}><path d="M16 13V20M4 14.7519C3.37037 13.8768 3 12.8059 3 11.6493C3 9.20008 4.8 6.9375 7.5 6.5C8.34694 4.48637 10.3514 3 12.6893 3C15.684 3 18.1317 5.32251 18.3 8.25C19.8893 8.94488 21 10.6503 21 12.4969C21 13.4232 20.7205 14.2842 20.2413 15M12 14V21M8 13V20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+      Cranked: `<svg ${svgAttr}><path d="M19.3278 16C20.3478 15.1745 21 13.9119 21 12.4969C21 10.6503 19.8893 8.94488 18.3 8.25C18.1317 5.32251 15.684 3 12.6893 3C10.3514 3 8.34694 4.48637 7.5 6.5C4.8 6.9375 3 9.20008 3 11.6493C3 13.1613 3.63296 14.5269 4.65065 15.5M8 18V20M8 12V14M12 19V21M16 18V20M16 12V14M12 13V15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+      Reset: `<svg ${svgAttr}><path d="M12 21V11M12 11L9 14M12 11L15 14M7 16.8184C4.69636 16.2074 3 14.1246 3 11.6493C3 9.20008 4.8 6.9375 7.5 6.5C8.34694 4.48637 10.3514 3 12.6893 3C15.684 3 18.1317 5.32251 18.3 8.25C19.8893 8.94488 21 10.6503 21 12.4969C21 14.8148 19.25 16.7236 17 16.9725" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    };
 
-    const sysContent = document.createElement('div');
-    sysContent.className = 'debug-sys-info collapsed';
-    sysContent.textContent = 'Loading...';
-    sysSection.appendChild(sysContent);
+    const presets = [
+      { name: 'Potato',    gridScale: 0.0625, renderScale: 0.125, fps: 30, intensity: 15, bg: false, collision: false, volume: -30 },
+      { name: 'Light',     gridScale: 0.125,  renderScale: 0.25,  fps: 60, intensity: 30, bg: false, collision: true,  volume: -18 },
+      { name: 'Balanced',  gridScale: 0.25,   renderScale: 0.25,  fps: 60, intensity: 50, bg: true,  collision: true,  volume: -6 },
+      { name: 'Cranked',   gridScale: 0.5,    renderScale: 0.5,   fps: 0,  intensity: 70, bg: true,  collision: true,  volume: -6 },
+    ];
 
-    // Toggle collapse
-    sysHeader.addEventListener('click', () => {
-      const isCollapsed = sysContent.classList.toggle('collapsed');
-      const arrow = sysHeader.querySelector('.collapse-arrow');
-      if (arrow) arrow.innerHTML = isCollapsed ? '&#9654;' : '&#9660;';
-    });
+    for (const preset of presets) {
+      const btn = document.createElement('button');
+      btn.className = 'preset-button';
+      btn.innerHTML = `${presetIcons[preset.name] || ''}${preset.name}`;
+      btn.addEventListener('click', () => {
+        const update = window.rainydesk.updateRainscapeParam;
+        update('physics.intensity', preset.intensity);
+        update('physics.fpsLimit', preset.fps);
+        update('physics.renderScale', preset.renderScale);
+        update('effects.masterVolume', preset.volume);
+        update('backgroundRain.enabled', preset.bg);
+        update('system.windowCollision', preset.collision);
+        update('physics.resetSimulation', { gridScale: preset.gridScale, renderScale: preset.renderScale });
 
-    // Load system info
-    this.loadSystemInfo(sysContent);
+        // Update local panel state
+        this.state.intensity = preset.intensity;
+        this.state.fpsLimit = preset.fps;
+        this.state.renderScalePending = preset.renderScale;
+        this.state.renderScale = preset.renderScale;
+        this.state.gridScalePending = preset.gridScale;
+        this.state.gridScale = preset.gridScale;
+        this.state.backgroundShaderEnabled = preset.bg;
+        this.state.windowCollision = preset.collision;
+        const volPct = Math.round(Math.max(0, Math.min(100, ((preset.volume + 60) / 60) * 100)));
+        this.state.masterVolume = volPct;
+        this.state.volume = volPct;
 
-    container.appendChild(sysSection);
+        this.render();
+      });
+      presetGrid.appendChild(btn);
+    }
+
+    actions.content.appendChild(presetGrid);
+    actions.content.appendChild(reinitBtn);
+    container.appendChild(actions.content);
+
+    // Apply Matrix Mode state to relevant sliders
+    requestAnimationFrame(() => this.updateMatrixModeSliders());
 
     return container;
+  }
+
+  private updateFullscreenMufflingVisibility(): void {
+    const el = this.root.querySelector('[data-fs-muffle-toggle="true"]') as HTMLElement;
+    if (el) el.style.display = this.state.rainOverFullscreen ? '' : 'none';
+  }
+
+  private updateMaximizedMufflingVisibility(): void {
+    const el = this.root.querySelector('[data-max-muffle-toggle="true"]') as HTMLElement;
+    if (el) el.style.display = this.state.rainOverMaximized ? '' : 'none';
   }
 
   private updateDebugStats(element: HTMLElement): void {
@@ -1865,11 +2264,38 @@ export class RainyDeskPanel {
         if (!mon) continue;
         const label = mon.index === primaryIndex ? 'Primary' : `Display ${mon.index + 1}`;
         const dims = `${mon.width}\u00D7${mon.height}`;
+        const hz = mon.refreshRate ? ` @ ${mon.refreshRate} Hz` : '';
         const scale = mon.scaleFactor !== 1 ? ` @${Math.round(mon.scaleFactor * 100)}%` : '';
         html += `
           <div class="debug-sys-item debug-sys-monitor">
             <span class="debug-sys-label">${label}</span>
-            <span class="debug-sys-value">${dims}${scale}</span>
+            <span class="debug-sys-value">${dims}${hz}${scale}</span>
+          </div>
+        `;
+      }
+
+      // System specs (CPU, GPU, RAM)
+      try {
+        const specs = await window.rainydesk.getSystemSpecs();
+        html += `
+          <div class="debug-sys-item">
+            <span class="debug-sys-label">CPU</span>
+            <span class="debug-sys-value">${specs.cpuModel}</span>
+          </div>
+          <div class="debug-sys-item">
+            <span class="debug-sys-label">GPU</span>
+            <span class="debug-sys-value">${specs.gpuModel}</span>
+          </div>
+          <div class="debug-sys-item">
+            <span class="debug-sys-label">RAM</span>
+            <span class="debug-sys-value">${specs.totalRamGb} GB</span>
+          </div>
+        `;
+      } catch {
+        html += `
+          <div class="debug-sys-item">
+            <span class="debug-sys-label">System</span>
+            <span class="debug-sys-value">Unavailable</span>
           </div>
         `;
       }
@@ -1944,7 +2370,7 @@ export class RainyDeskPanel {
     }
   }
 
-  /** Apply CSS transform only — used by render() to restore scale without moving the window */
+  /* CSS-only scale — avoids resizing the Tauri window */
   private applyUIScaleCSS(scale: number): void {
     const panel = this.root.querySelector('.rainscaper-panel') as HTMLElement;
     if (panel) {
@@ -1955,7 +2381,7 @@ export class RainyDeskPanel {
     }
   }
 
-  /** Full UI scale: resize Tauri window + apply CSS transform */
+  /* Full UI scale: resize Tauri window + apply CSS transform */
   private applyUIScale(scale: number): void {
     const newWidth = Math.round(400 * scale);
     const newHeight = Math.round(500 * scale);
@@ -1963,7 +2389,7 @@ export class RainyDeskPanel {
     this.applyUIScaleCSS(scale);
   }
 
-  /** Start rainbow color cycling on the title bar + logo (synced with rain Gay Mode) */
+  /* Start rainbow cycling on title bar + logo */
   private startGayModeAnimation(): void {
     if (this.gayModeInterval) return; // Already running
 
@@ -2014,7 +2440,8 @@ export class RainyDeskPanel {
         this.titleElement.style.backgroundImage = '';
         this.titleElement.style.backgroundClip = '';
         (this.titleElement.style as unknown as Record<string, string>)['-webkit-background-clip'] = '';
-        const hue = ((performance.now() / 60000) % 1.0) * 360;
+        const speed = this.state.rainbowSpeed || 1;
+        const hue = ((performance.now() / (60000 / speed)) % 1.0) * 360;
         this.titleElement.style.color = `hsl(${hue}, 80%, 70%)`;
         // Logo: same rainbow hue, tear down trans gradient if it was active
         if (this.logoElement) {
@@ -2029,7 +2456,7 @@ export class RainyDeskPanel {
     }, 50); // 50ms updates for smooth animation
   }
 
-  /** Stop rainbow color cycling and reset title + logo color */
+  /* Stop rainbow cycling, reset title + logo color */
   private stopGayModeAnimation(): void {
     if (this.gayModeInterval) {
       clearInterval(this.gayModeInterval);
@@ -2052,7 +2479,7 @@ export class RainyDeskPanel {
     }
   }
 
-  /** Easter egg: logo spin sequence on click */
+  /* Easter egg: logo spin sequence on click */
   private handleLogoClick(): void {
     const now = Date.now();
     const svg = this.logoElement?.querySelector('.panel-logo') as SVGElement | null;
@@ -2093,7 +2520,7 @@ export class RainyDeskPanel {
     }, 3000);
   }
 
-  /** Spin the logo SVG and optionally emit particles */
+  /* Spin the logo SVG and optionally emit particles */
   private doLogoSpin(svg: SVGElement, spins: number, duration: number, particles: boolean): void {
     this.logoTotalRotation += spins * 360;
     // Bouncy overshoot for gentle spins, smooth deceleration for rapid
@@ -2114,7 +2541,7 @@ export class RainyDeskPanel {
     }
   }
 
-  /** Emit burst of particles from the logo center */
+  /* Emit burst of particles from the logo center */
   private emitLogoParticles(): void {
     const logo = this.logoElement;
     if (!logo) return;
@@ -2163,7 +2590,7 @@ export class RainyDeskPanel {
         color = transColors[Math.floor(Math.random() * 3)]!;
       } else if (this.state.gayMode) {
         // Match rainbow hue cycle, spread slightly per particle
-        const baseHue = ((performance.now() / 60000) % 1.0) * 360;
+        const baseHue = ((performance.now() / (60000 / (this.state.rainbowSpeed || 1))) % 1.0) * 360;
         color = `hsl(${baseHue + i * 8}, 80%, 70%)`;
       } else {
         // If color is still at either mode's default, use the current mode's default.
@@ -2204,7 +2631,7 @@ export class RainyDeskPanel {
     }
   }
 
-  /** Wrap each character in a span with staggered sine wave animation delay */
+  /* Wrap each character in a span with staggered sine wave delay */
   private waveText(text: string): string {
     return text.split('').map((ch, i) => {
       if (ch === ' ') return ' ';
@@ -2213,7 +2640,7 @@ export class RainyDeskPanel {
     }).join('');
   }
 
-  /** Update Gaytrix hint visibility (shown when both Gay Mode + Matrix Mode are on) */
+  /* Update Gaytrix hint visibility (shown when both Gay + Matrix are on) */
   private updateGaytrixHint(): void {
     const visible = this.state.gayMode && this.state.matrixMode;
     const hint = this.root.querySelector('#gaytrix-hint') as HTMLElement;
@@ -2242,12 +2669,7 @@ export class RainyDeskPanel {
   }
 
 
-  /**
-   * Update sliders for Matrix Mode (Physics + Audio tabs).
-   * - Swap labels between normal/matrix versions
-   * - Disable splashSize and puddleDrain (no puddles/splashes in Matrix)
-   * - Update toggle labels (Reverse Gravity → Reverse Engineer)
-   */
+  /* Update slider labels, disabled states, and toggle labels for Matrix Mode */
   private updateMatrixModeSliders(): void {
     const isMatrix = this.state.matrixMode;
 
@@ -2272,6 +2694,7 @@ export class RainyDeskPanel {
       'puddleDrain',  // No puddles
       'gridScale',    // Matrix uses own grid, not physics grid
       'impactSound',  // Rain impact sounds (Rain Mode only)
+      'impactPitch',  // Impact filter pitch (Rain Mode only)
       'sheetVolume',  // Rain sheet noise (Rain Mode only)
       'windSound',    // Wind ambient (Rain Mode only, Matrix has Drone slider)
     ];
@@ -2282,9 +2705,9 @@ export class RainyDeskPanel {
       }
     }
 
-    // Disable OSC knobs that have no effect in Matrix Mode (wind + splash)
-    // Intensity + Turbulence knobs stay active (map to stream density + glitchiness)
-    for (const knobId of ['windOsc', 'splashOsc', 'sheetOsc']) {
+    // Disable OSC knobs on non-disabled tabs (Basic + Physics)
+    // sheetOsc/impactPitchOsc are on Audio tab rows that already get matrix-disabled
+    for (const knobId of ['windOsc', 'splashOsc']) {
       const knob = this.root.querySelector(`[data-knob-id="${knobId}"]`) as HTMLElement;
       if (knob) {
         knob.style.opacity = isMatrix ? '0.4' : '';
@@ -2369,10 +2792,10 @@ export class RainyDeskPanel {
       window.rainydesk.getVersion().then((v: string) => {
         versionBtn.textContent = `v${v}`;
       }).catch(() => {
-        versionBtn.textContent = 'v0.9.2-alpha';
+        versionBtn.textContent = 'v0.9.3-alpha';
       });
     } else {
-      versionBtn.textContent = 'v0.9.2-alpha';
+      versionBtn.textContent = 'v0.9.3-alpha';
     }
 
     // Build the popup menu (reused across toggles)

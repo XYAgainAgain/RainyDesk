@@ -51,6 +51,8 @@ declare global {
       // Reinitialization status events
       emitReinitStatus: (status: 'stopped' | 'initializing' | 'raining') => void;
       onReinitStatus: (callback: (status: 'stopped' | 'initializing' | 'raining') => void) => void;
+      // Help window hidden event
+      onHelpWindowHidden: (callback: () => void) => void;
       // Virtual desktop info (all monitors + bounding box)
       getVirtualDesktop: () => Promise<{
         width: number;
@@ -69,7 +71,13 @@ declare global {
           workWidth: number;
           workHeight: number;
           scaleFactor: number;
+          refreshRate: number;
         }>;
+      }>;
+      getSystemSpecs: () => Promise<{
+        cpuModel: string;
+        gpuModel: string;
+        totalRamGb: number;
       }>;
     };
   }

@@ -17,6 +17,8 @@ export interface ImpactSynthConfig {
   filterFreqMin: number;
   filterFreqMax: number;
   filterQ: number;
+  pitchCenter: number;    // 0-100: slider position (0 = 500 Hz fat splats, 100 = 6 kHz thin ticks)
+  pitchOscAmount: number; // 0-100: per-drop random spread (100 = +/- 2 octaves)
 }
 
 const DEFAULT_IMPACT_CONFIG: ImpactSynthConfig = {
@@ -27,6 +29,8 @@ const DEFAULT_IMPACT_CONFIG: ImpactSynthConfig = {
   filterFreqMin: 2000,
   filterFreqMax: 8000,
   filterQ: 1,
+  pitchCenter: 50,
+  pitchOscAmount: 0,
 };
 
 /**
@@ -104,10 +108,26 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     voice.synth.envelope.decay = decay;
 
     if (filter) {
-      const filterFreq = config.filterFreqMin +
-        (config.filterFreqMax - config.filterFreqMin) *
-        Math.min(1, params.filterFreq / 8000);
-      filter.frequency.value = filterFreq;
+      // Logarithmic mapping: pitchCenter 0-100 -> 500-6000 Hz
+      // 0% = 500 Hz (fat splats), 50% = ~1730 Hz (geometric midpoint), 100% = 6000 Hz (thin ticks)
+      const t = config.pitchCenter / 100;
+      let freq = 500 * Math.pow(6000 / 500, t);
+
+      // Per-drop random offset when OSC amount > 0
+      if (config.pitchOscAmount > 0) {
+        const maxOctaves = 2 * (config.pitchOscAmount / 100);
+        const octaveOffset = (Math.random() * 2 - 1) * maxOctaves;
+        freq *= Math.pow(2, octaveOffset);
+      }
+
+      // Clamp to audible range
+      freq = Math.max(200, Math.min(12000, freq));
+      filter.frequency.value = freq;
+
+      // Boost Q at lower frequencies for more resonant body character
+      // ~1 at 6 kHz, ~4 at 500 Hz (inverse log relationship)
+      const qScale = Math.max(1, 4 * (1 - Math.log(freq / 500) / Math.log(6000 / 500)));
+      filter.Q.value = qScale;
     }
 
     // Apply stereo pan
@@ -137,6 +157,14 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
 
   get output(): Tone.Gain {
     return this._output;
+  }
+
+  setPitchCenter(value: number): void {
+    this._synthConfig.pitchCenter = Math.max(0, Math.min(100, value));
+  }
+
+  setPitchOscAmount(value: number): void {
+    this._synthConfig.pitchOscAmount = Math.max(0, Math.min(100, value));
   }
 
   updateConfig(config: Partial<ImpactSynthConfig>): void {

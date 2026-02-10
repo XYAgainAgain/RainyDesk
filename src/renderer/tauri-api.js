@@ -18,6 +18,7 @@ window.rainydesk = {
 
   // Get virtual desktop info (bounding box + monitor regions)
   getVirtualDesktop: () => invoke('get_virtual_desktop'),
+  getSystemSpecs: () => invoke('get_system_specs'),
 
   // Receive virtual desktop info from main process (event-based)
   onVirtualDesktop: (callback) => {
@@ -147,6 +148,17 @@ window.rainydesk = {
   emitReinitStatus: (status) => emit('reinit-status', status),
   onReinitStatus: (callback) => {
     listen('reinit-status', (event) => callback(event.payload));
+  },
+
+  // Per-monitor fullscreen state (overlay -> background)
+  emitFullscreenMonitors: (indices) => emit('fullscreen-monitors', indices),
+  onFullscreenMonitors: (callback) => {
+    listen('fullscreen-monitors', (event) => callback(event.payload));
+  },
+
+  // Help window hidden event (Rust -> panel)
+  onHelpWindowHidden: (callback) => {
+    listen('help-window-hidden', () => callback());
   }
 };
 

@@ -640,6 +640,55 @@ fn get_monitor_work_area(x: i32, y: i32, width: u32, height: u32) -> Bounds {
     }
 }
 
+/// Query actual refresh rate for the monitor at given position
+#[cfg(target_os = "windows")]
+fn get_monitor_refresh_rate(x: i32, y: i32, width: u32, height: u32) -> u32 {
+    use windows::Win32::Graphics::Gdi::{
+        MonitorFromPoint, GetMonitorInfoW, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+        EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS,
+    };
+
+    unsafe {
+        let center_x = x + (width as i32 / 2);
+        let center_y = y + (height as i32 / 2);
+        let point = POINT { x: center_x, y: center_y };
+        let hmonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+
+        let mut info = MONITORINFOEXW {
+            monitorInfo: MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        if !GetMonitorInfoW(hmonitor, &mut info.monitorInfo).as_bool() {
+            return 60;
+        }
+
+        let mut devmode = DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+
+        if EnumDisplaySettingsW(
+            windows::core::PCWSTR(info.szDevice.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &mut devmode,
+        ).as_bool() {
+            let hz = devmode.dmDisplayFrequency;
+            if hz > 0 { hz } else { 60 }
+        } else {
+            60
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_monitor_refresh_rate(_x: i32, _y: i32, _width: u32, _height: u32) -> u32 {
+    60
+}
+
 /// Find which monitor is the primary (contains point 0,0)
 #[cfg(target_os = "windows")]
 fn get_primary_monitor_index(monitors: &[tauri::Monitor]) -> usize {
@@ -730,6 +779,14 @@ struct Bounds {
     height: u32,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemSpecs {
+    cpu_model: String,
+    gpu_model: String,
+    total_ram_gb: f64,
+}
+
 /// Virtual desktop info: bounding box of all monitors + individual regions
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -764,6 +821,7 @@ struct MonitorRegion {
     work_width: u32,
     work_height: u32,
     scale_factor: f64,
+    refresh_rate: u32,
 }
 
 // Tauri commands (invoked from renderer via window.__TAURI__.core.invoke)
@@ -1167,13 +1225,14 @@ fn show_help_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Destroy the Help window (frees WebView2 memory; recreated on next open)
+/// Hide the Help window (kept alive for instant reopen; destroy caused zombie WebView2)
 #[tauri::command]
 fn hide_help_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("help") {
-        window.destroy().map_err(|e| format!("Failed to destroy help: {}", e))?;
-        log::info!("[Help] Destroyed (WebView2 freed)");
+        window.hide().map_err(|e| format!("Failed to hide help: {}", e))?;
+        log::info!("[Help] Hidden");
     }
+    app.emit("help-window-hidden", ()).ok();
     Ok(())
 }
 
@@ -1677,7 +1736,7 @@ fn get_display_info(window: tauri::Window) -> Result<DisplayInfo, String> {
             },
             work_area,
             scale_factor: scale,
-            refresh_rate: 60,
+            refresh_rate: get_monitor_refresh_rate(pos.x, pos.y, size.width, size.height),
         })
     } else {
         Err("Could not get monitor info".to_string())
@@ -1710,12 +1769,52 @@ fn get_all_displays(app: tauri::AppHandle) -> Result<Vec<DisplayInfo>, String> {
             },
             work_area,
             scale_factor: scale,
-            refresh_rate: 60,
+            refresh_rate: get_monitor_refresh_rate(pos.x, pos.y, size.width, size.height),
         });
     }
 
     log::info!("[get_all_displays] Found {} monitors", displays.len());
     Ok(displays)
+}
+
+#[tauri::command]
+fn get_system_specs() -> SystemSpecs {
+    use sysinfo::System;
+
+    let mut sys = System::new_all();
+
+    let cpu_model = sys.cpus().first()
+        .map(|c| c.brand().trim().to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let total_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
+
+    // GPU name via wmic (falls back to "Unknown")
+    let gpu_model = get_gpu_name().unwrap_or_else(|| "Unknown".to_string());
+
+    SystemSpecs {
+        cpu_model,
+        gpu_model,
+        total_ram_gb: (total_ram_gb * 10.0).round() / 10.0,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_gpu_name() -> Option<String> {
+    let output = std::process::Command::new("wmic")
+        .args(["path", "win32_VideoController", "get", "name"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .skip(1)
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_gpu_name() -> Option<String> {
+    None
 }
 
 #[tauri::command]
@@ -1796,6 +1895,7 @@ fn get_virtual_desktop(app: tauri::AppHandle) -> Result<VirtualDesktop, String> 
             work_width: to_logical_u(work_area.width),
             work_height: to_logical_u(work_area.height),
             scale_factor: scale,
+            refresh_rate: get_monitor_refresh_rate(pos.x, pos.y, size.width, size.height),
         });
 
         log::info!(
@@ -1901,6 +2001,21 @@ fn create_mega_overlay(
     // Enable click-through
     window.set_ignore_cursor_events(true)?;
 
+    // Prevent overlay from blocking taskbar auto-hide
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+        };
+        let hwnd = window.hwnd()?;
+        unsafe {
+            let style = GetWindowLongW(HWND(hwnd.0), GWL_EXSTYLE);
+            SetWindowLongW(HWND(hwnd.0), GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as i32);
+        }
+        log::info!("Added WS_EX_NOACTIVATE to overlay window");
+    }
+
     // Open DevTools in dev mode
     #[cfg(debug_assertions)]
     {
@@ -1964,6 +2079,7 @@ WebGPU \
             get_display_info,
             get_all_displays,
             get_virtual_desktop,
+            get_system_specs,
             set_rainscape,
             set_ignore_mouse_events,
             save_rainscape,

@@ -102,10 +102,20 @@ let audioInitialized = false;
 let windowZones = [];
 let windowZoneCount = 0;
 
-// Fullscreen detection
-let isFullscreenActive = false;
-let fullscreenDebounceTimer = null;
-let pendingFullscreenState = false;
+// Per-monitor fullscreen tracking with asymmetric debounce
+const fullscreenMonitors = new Set();
+const lastFullscreenSeenTime = new Map();    // monitorIndex -> timestamp
+const fullscreenEnterTimers = new Map();     // monitorIndex -> setTimeout ID
+const fullscreenExitTimers = new Map();      // monitorIndex -> setTimeout ID
+let allMonitorsFullscreen = false;
+let lastMuffleAmount = 0;
+
+// Per-monitor maximized tracking (mirrors fullscreen pattern)
+const maximizedMonitors = new Set();
+const lastMaximizedSeenTime = new Map();
+const maximizedEnterTimers = new Map();
+const maximizedExitTimers = new Map();
+let allMonitorsMaximized = false;
 
 // Pause state (from Rainscaper panel)
 let isPaused = false;
@@ -117,11 +127,16 @@ let trackedThunderEnabled = false;   // audio.thunder.enabled
 let trackedBgEnabled = true;         // backgroundRain.enabled
 let trackedBgIntensity = 50;         // backgroundRain.intensity (0-100)
 let trackedBgLayers = 3;             // backgroundRain.layers (1-5)
+let trackedRainbowSpeed = 1;         // visual.rainbowSpeed (1-10)
 
-/**
- * ParamOscillator - Reusable oscillation controller for any parameter.
- * Wobbles a value around a user-set center point. Shared by all OSC knobs.
- */
+// System behavior toggles (controlled from System tab, persisted in rainscapes)
+let enableFullscreenDetection = true;
+let enableMaximizedDetection = true;
+let enableWindowCollision = true;
+let enableAudioMuffling = true;
+let enableMaximizedMuffling = true;
+
+/* Wobbles a value around a user-set center point — shared by all OSC knobs */
 class ParamOscillator {
   constructor({ min, max, lerpRate = 1.5, minAmplitude = 20, maxAmplitude = 100,
                 minChangesPerMin = 5, maxChangesPerMin = 10, jitter = 0.3,
@@ -153,7 +168,7 @@ class ParamOscillator {
   get userCenter() { return this._userCenter; }
   get amount() { return this._amount; }
 
-  /** Advance one frame. Returns new output value, or null if inactive. */
+  /* Advance one frame. Returns new output value, or null if inactive. */
   tick(dt, nowSec) {
     if (this._amount <= 0) return null;
 
@@ -176,14 +191,14 @@ class ParamOscillator {
     return this.current;
   }
 
-  /** Reset to user center (when knob set to 0). Returns center value. */
+  /* Reset to user center (when knob set to 0). Returns center value. */
   snapToCenter() {
     this._current = this._userCenter;
     this._target = this._userCenter;
     return this._roundOutput ? Math.round(this._userCenter) : this._userCenter;
   }
 
-  /** 250ms throttle + value-change dedup. Returns value to broadcast, or null. */
+  /* 250ms throttle + value-change dedup. Returns value to broadcast, or null. */
   shouldBroadcast(nowMs) {
     if (this._amount <= 0) return null;
     const val = this.current;
@@ -199,7 +214,7 @@ class ParamOscillator {
 // Oscillator instances
 const windOsc = new ParamOscillator({
   min: -100, max: 100, lerpRate: 1.5,
-  minAmplitude: 20, maxAmplitude: 100, roundOutput: true
+  minAmplitude: 20, maxAmplitude: 50, roundOutput: true
 });
 const intensityOsc = new ParamOscillator({
   min: 1, max: 100, lerpRate: 2.0,
@@ -252,7 +267,7 @@ function applySheet(val) {
 // Sheet volume oscillator (oscillates the percentage, not dB)
 const sheetOsc = new ParamOscillator({
   min: 0, max: 100, lerpRate: 0.6,
-  minAmplitude: 5, maxAmplitude: 30, roundOutput: true,
+  minAmplitude: 2, maxAmplitude: 30, roundOutput: true,
   minChangesPerMin: 2, maxChangesPerMin: 6
 });
 
@@ -270,9 +285,124 @@ let windowUpdateDebounceTimer = null;
 let lastWindowData = null;
 let lastWindowZonesForReinit = null;
 
-/**
- * Wait for Tauri API to be available
- */
+/* Re-classify stored window data when a behavior toggle changes.
+   Reclassifies from raw windowZones so toggle state affects void/normal split. */
+function reprocessWindowState() {
+  if (!virtualDesktop || !virtualDesktop.monitors) return;
+
+  // Re-classify from raw window data (respects current toggle state)
+  const voidWins = [];
+  const normal = [];
+  const spawn = [];
+  const detectedFullscreenMonitors = new Set();
+  const detectedMaximizedMonitors = new Set();
+
+  if (windowZones && windowZones.length > 0) {
+    for (const win of windowZones) {
+      let classified = false;
+      for (const mon of virtualDesktop.monitors) {
+        const classification = classifyWindow(win, mon, virtualDesktop);
+        if (classification === 'work-area') {
+          detectedMaximizedMonitors.add(mon.index);
+          if (!classified) {
+            if (enableMaximizedDetection) voidWins.push(win);
+            else normal.push(win);
+            classified = true;
+          }
+        } else if (classification === 'full-resolution') {
+          detectedFullscreenMonitors.add(mon.index);
+          if (!classified) {
+            if (enableFullscreenDetection) voidWins.push(win);
+            else normal.push(win);
+            classified = true;
+          }
+        } else if (classification === 'snapped') {
+          if (!classified) {
+            normal.push(win);
+            spawn.push(win);
+            classified = true;
+          }
+        }
+      }
+      if (!classified) normal.push(win);
+    }
+  }
+
+  // Update cached classification
+  lastWindowZonesForReinit = { normal, void: voidWins, spawn };
+
+  // Apply collision zones
+  if (gridSimulation) {
+    if (enableWindowCollision) {
+      gridSimulation.updateWindowZones(normal, voidWins, spawn);
+    } else {
+      gridSimulation.updateWindowZones([], [], []);
+    }
+    suppressFullscreenColumns();
+    suppressMaximizedColumns();
+  }
+
+  if (matrixRenderer) {
+    const originX = virtualDesktop.originX || 0;
+    const originY = virtualDesktop.originY || 0;
+    if (enableWindowCollision) {
+      const allWindows = [...normal, ...voidWins];
+      matrixRenderer.updateWindowZones(allWindows.map(w => ({
+        left: w.x - originX,
+        top: w.y - originY,
+        right: w.x + w.width - originX,
+        bottom: w.y + w.height - originY,
+      })));
+    } else {
+      matrixRenderer.updateWindowZones([]);
+    }
+  }
+
+  // Apply detection state (skip debounce for immediate response)
+  if (enableFullscreenDetection) {
+    for (const idx of detectedFullscreenMonitors) {
+      if (!fullscreenMonitors.has(idx)) fullscreenMonitors.add(idx);
+    }
+    updateFullscreenState();
+  }
+
+  if (enableMaximizedDetection) {
+    for (const idx of detectedMaximizedMonitors) {
+      if (!maximizedMonitors.has(idx)) maximizedMonitors.add(idx);
+    }
+    updateMaximizedState();
+  }
+
+  // Re-evaluate muffling (independent of rain suppression)
+  const anyMufflingEnabled = enableAudioMuffling || enableMaximizedMuffling;
+  if (anyMufflingEnabled && audioSystem) {
+    let coveredWidth = 0;
+    const totalWidth = virtualDesktop.width;
+    const muffledMonitorIndices = new Set();
+
+    if (enableMaximizedMuffling) {
+      for (const idx of detectedMaximizedMonitors) muffledMonitorIndices.add(idx);
+    }
+    if (enableAudioMuffling) {
+      for (const idx of detectedFullscreenMonitors) muffledMonitorIndices.add(idx);
+    }
+
+    for (const mon of virtualDesktop.monitors) {
+      if (muffledMonitorIndices.has(mon.index)) coveredWidth += mon.width;
+    }
+
+    const muffleAmount = totalWidth > 0 ? (coveredWidth / totalWidth) * 0.7 : 0;
+    if (Math.abs(muffleAmount - lastMuffleAmount) > 0.01) {
+      audioSystem.setMuffleAmount(muffleAmount);
+      lastMuffleAmount = muffleAmount;
+    }
+  } else if (audioSystem && lastMuffleAmount !== 0) {
+    audioSystem.setMuffleAmount(0);
+    lastMuffleAmount = 0;
+  }
+}
+
+/* Wait for Tauri API to be available */
 function waitForTauriAPI() {
   return new Promise((resolve) => {
     if (window.rainydesk) return resolve();
@@ -295,9 +425,7 @@ function waitForFirstWindowData() {
   });
 }
 
-/**
- * Classify a window based on its coverage of a monitor.
- */
+/* Classify a window based on its coverage of a monitor */
 function classifyWindow(win, mon, desktop) {
   const winRelX = win.x - desktop.originX;
   const winRelY = win.y - desktop.originY;
@@ -347,10 +475,92 @@ function classifyWindow(win, mon, desktop) {
   return 'normal';
 }
 
-/**
- * Build void mask from virtual desktop monitor regions.
- * Void mask: 1 = void (gap between monitors), 0 = usable
- */
+/* Called when fullscreenMonitors set changes. Updates derived state and notifies background. */
+function updateFullscreenState() {
+  if (!enableFullscreenDetection) {
+    fullscreenMonitors.clear();
+    allMonitorsFullscreen = false;
+    if (audioSystem && lastMuffleAmount !== 0) {
+      audioSystem.setMuffleAmount(0);
+      lastMuffleAmount = 0;
+    }
+    if (window.rainydesk.emitFullscreenMonitors) {
+      window.rainydesk.emitFullscreenMonitors([]);
+    }
+    return;
+  }
+
+  const monitorCount = virtualDesktop?.monitors?.length || 1;
+  allMonitorsFullscreen = fullscreenMonitors.size >= monitorCount;
+
+  suppressFullscreenColumns();
+
+  // Prevent stale frozen drops left mid-flight when monitors entered fullscreen
+  if (gridSimulation && fullscreenMonitors.size > 0) {
+    gridSimulation.clearAllDrops();
+  }
+
+  if (window.rainydesk.emitFullscreenMonitors) {
+    window.rainydesk.emitFullscreenMonitors(Array.from(fullscreenMonitors));
+  }
+
+  window.rainydesk.log(`[Fullscreen] Active monitors: [${Array.from(fullscreenMonitors)}], all=${allMonitorsFullscreen}`);
+}
+
+/* Sets spawnMap columns within fullscreen monitor bounds to -1 (no spawn).
+   Must run AFTER updateWindowZones since that restores spawnMap from originalSpawnMap. */
+function suppressFullscreenColumns() {
+  if (!enableFullscreenDetection) return;
+  if (!gridSimulation || !virtualDesktop || fullscreenMonitors.size === 0) return;
+
+  const scale = GRID_SCALE;
+  for (const idx of fullscreenMonitors) {
+    const mon = virtualDesktop.monitors.find(m => m.index === idx);
+    if (!mon) continue;
+
+    const startCol = Math.floor(mon.x * scale);
+    const endCol = Math.ceil((mon.x + mon.width) * scale);
+    gridSimulation.suppressSpawnColumns(startCol, endCol);
+  }
+}
+
+/* Mirrors updateFullscreenState() for maximized windows */
+function updateMaximizedState() {
+  if (!enableMaximizedDetection) {
+    maximizedMonitors.clear();
+    allMonitorsMaximized = false;
+    return;
+  }
+
+  const monitorCount = virtualDesktop?.monitors?.length || 1;
+  allMonitorsMaximized = maximizedMonitors.size >= monitorCount;
+
+  suppressMaximizedColumns();
+
+  if (gridSimulation && maximizedMonitors.size > 0) {
+    gridSimulation.clearAllDrops();
+  }
+
+  window.rainydesk.log(`[Maximized] Active monitors: [${Array.from(maximizedMonitors)}], all=${allMonitorsMaximized}`);
+}
+
+/* Suppress spawn columns within maximized monitor bounds */
+function suppressMaximizedColumns() {
+  if (!enableMaximizedDetection) return;
+  if (!gridSimulation || !virtualDesktop || maximizedMonitors.size === 0) return;
+
+  const scale = GRID_SCALE;
+  for (const idx of maximizedMonitors) {
+    const mon = virtualDesktop.monitors.find(m => m.index === idx);
+    if (!mon) continue;
+
+    const startCol = Math.floor(mon.x * scale);
+    const endCol = Math.ceil((mon.x + mon.width) * scale);
+    gridSimulation.suppressSpawnColumns(startCol, endCol);
+  }
+}
+
+/* Build void mask: 1 = gap between monitors, 0 = usable */
 function buildVoidMask(desktop, scale) {
   const gridWidth = Math.ceil(desktop.width * scale);
   const gridHeight = Math.ceil(desktop.height * scale);
@@ -415,9 +625,7 @@ function buildVoidMask(desktop, scale) {
   return voidMask;
 }
 
-/**
- * Compute spawn map (per-column topmost non-void Y).
- */
+/* Compute spawn map (per-column topmost non-void Y) */
 function computeSpawnMap(voidMask, gridWidth, gridHeight) {
   const spawnMap = new Int16Array(gridWidth);
   spawnMap.fill(-1);
@@ -434,9 +642,7 @@ function computeSpawnMap(voidMask, gridWidth, gridHeight) {
   return spawnMap;
 }
 
-/**
- * Compute splash floor map (per-column bottom of work area).
- */
+/* Compute splash floor map (per-column bottom of work area) */
 function computeFloorMap(desktop, scale, gridWidth, gridHeight) {
   const floorMap = new Int16Array(gridWidth);
   floorMap.fill(gridHeight);
@@ -454,9 +660,7 @@ function computeFloorMap(desktop, scale, gridWidth, gridHeight) {
   return floorMap;
 }
 
-/**
- * Compute display floor map (per-column bottom of actual display).
- */
+/* Compute display floor map (per-column bottom of actual display) */
 function computeDisplayFloorMap(desktop, scale, gridWidth, gridHeight) {
   const displayFloorMap = new Int16Array(gridWidth);
   displayFloorMap.fill(gridHeight);
@@ -510,9 +714,7 @@ function windowsChanged(oldWindows, newWindows) {
   return false;
 }
 
-/**
- * Initialize audio system with gentle fade-in
- */
+/* Initialize audio system with gentle fade-in */
 async function initAudio() {
   if (audioInitialized) return;
 
@@ -544,9 +746,7 @@ async function initAudio() {
   }
 }
 
-/**
- * Gather current settings into a preset object (for autosave)
- */
+/* Gather current settings into a preset object for autosave */
 function gatherPresetData() {
   return {
     name: 'Autosave',
@@ -574,6 +774,8 @@ function gatherPresetData() {
       muted: audioSystem?.isMuted ?? false,
       masterVolume: audioSystem?.getMasterVolume?.() ?? -12,
       rainIntensity: trackedRainIntensity,
+      impactPitch: audioSystem?.getImpactPool()?.getSynthConfig()?.pitchCenter ?? 50,
+      impactPitchOsc: audioSystem?.getImpactPool()?.getSynthConfig()?.pitchOscAmount ?? 0,
       windMasterGain: trackedWindGainDb,
       thunderEnabled: trackedThunderEnabled,
       matrixBass: glitchSynth?.getBassVolume?.() ?? -12,
@@ -582,6 +784,7 @@ function gatherPresetData() {
     },
     visual: {
       gayMode: pixiRenderer?.isGayMode?.() ?? false,
+      rainbowSpeed: trackedRainbowSpeed,
       rainColor: pixiRenderer?.getRainColor?.() ?? '#4a9eff',
       matrixMode: matrixMode,
       matrixDensity: matrixRenderer?.getDensity?.() ?? 20,
@@ -592,12 +795,19 @@ function gatherPresetData() {
       backgroundIntensity: trackedBgIntensity,
       backgroundLayers: trackedBgLayers,
     },
+    system: {
+      renderScale: renderScale,
+      maximizedDetection: enableMaximizedDetection,
+      maximizedMuffling: enableMaximizedMuffling,
+      fullscreenDetection: enableFullscreenDetection,
+      audioMuffling: enableAudioMuffling,
+      windowCollision: enableWindowCollision,
+      backgroundShaderEnabled: trackedBgEnabled,
+    },
   };
 }
 
-/**
- * Apply rainscape settings from autosave data
- */
+/* Apply rainscape settings from autosave data */
 function applyRainscapeData(data) {
   if (!data) return;
   window.rainydesk.log(`[Autosave] Applying settings...`);
@@ -680,6 +890,12 @@ function applyRainscapeData(data) {
       trackedThunderEnabled = data.audio.thunderEnabled;
       window.rainydesk.updateRainscapeParam('audio.thunder.enabled', data.audio.thunderEnabled);
     }
+    if (data.audio.impactPitch !== undefined) {
+      window.rainydesk.updateRainscapeParam('audio.impactPitch', data.audio.impactPitch);
+    }
+    if (data.audio.impactPitchOsc !== undefined) {
+      window.rainydesk.updateRainscapeParam('audio.impactPitchOsc', data.audio.impactPitchOsc);
+    }
   }
 
   // Visual settings
@@ -703,6 +919,9 @@ function applyRainscapeData(data) {
     }
     if (data.visual.transScrollDirection !== undefined) {
       window.rainydesk.updateRainscapeParam('visual.transScrollDirection', data.visual.transScrollDirection);
+    }
+    if (data.visual.rainbowSpeed !== undefined) {
+      window.rainydesk.updateRainscapeParam('visual.rainbowSpeed', data.visual.rainbowSpeed);
     }
     if (data.visual.matrixMode !== undefined) {
       // Trigger via param update path to handle full init/destroy cycle
@@ -758,11 +977,42 @@ function applyRainscapeData(data) {
       window.rainydesk.updateRainscapeParam('audio.sheetOsc', data.rain.sheetOsc);
     }
   }
+
+  // System settings (behavior toggles + render scale)
+  if (data.system) {
+    if (typeof data.system.maximizedDetection === 'boolean') {
+      enableMaximizedDetection = data.system.maximizedDetection;
+      window.rainydesk.updateRainscapeParam('system.maximizedDetection', data.system.maximizedDetection);
+    }
+    if (typeof data.system.maximizedMuffling === 'boolean') {
+      enableMaximizedMuffling = data.system.maximizedMuffling;
+      window.rainydesk.updateRainscapeParam('system.maximizedMuffling', data.system.maximizedMuffling);
+    }
+    if (typeof data.system.fullscreenDetection === 'boolean') {
+      enableFullscreenDetection = data.system.fullscreenDetection;
+      window.rainydesk.updateRainscapeParam('system.fullscreenDetection', data.system.fullscreenDetection);
+    }
+    if (typeof data.system.audioMuffling === 'boolean') {
+      enableAudioMuffling = data.system.audioMuffling;
+      window.rainydesk.updateRainscapeParam('system.audioMuffling', data.system.audioMuffling);
+    }
+    if (typeof data.system.windowCollision === 'boolean') {
+      enableWindowCollision = data.system.windowCollision;
+      window.rainydesk.updateRainscapeParam('system.windowCollision', data.system.windowCollision);
+    }
+    if (typeof data.system.renderScale === 'number') {
+      renderScale = Math.max(0.125, Math.min(1.0, data.system.renderScale));
+      window.rainydesk.updateRainscapeParam('physics.renderScale', renderScale);
+    }
+    // backgroundShaderEnabled is also in visual section (backward compat)
+    if (typeof data.system.backgroundShaderEnabled === 'boolean') {
+      trackedBgEnabled = data.system.backgroundShaderEnabled;
+      window.rainydesk.updateRainscapeParam('backgroundRain.enabled', data.system.backgroundShaderEnabled);
+    }
+  }
 }
 
-/**
- * Reinitialize physics system with new grid scale
- */
+/* Reinitialize physics system with new grid scale */
 async function reinitializePhysics(newGridScale) {
   if (reinitInProgress) {
     window.rainydesk.log('[Reset] Already in progress');
@@ -792,6 +1042,7 @@ async function reinitializePhysics(newGridScale) {
     preservedVisual = {
       rainColor: pixiRenderer.getRainColor?.() ?? '#8aa8c0',
       gayMode: pixiRenderer.isGayMode?.() ?? false,
+      rainbowSpeed: trackedRainbowSpeed,
     };
   }
   let preservedAudio = null;
@@ -870,6 +1121,12 @@ async function reinitializePhysics(newGridScale) {
     if (preservedVisual && pixiRenderer) {
       pixiRenderer.setRainColor?.(preservedVisual.rainColor);
       pixiRenderer.setGayMode?.(preservedVisual.gayMode);
+      if (preservedVisual.rainbowSpeed !== undefined) {
+        pixiRenderer.setRainbowSpeed(preservedVisual.rainbowSpeed);
+      }
+    }
+    if (preservedVisual?.rainbowSpeed !== undefined) {
+      trackedRainbowSpeed = preservedVisual.rainbowSpeed;
     }
     // Restore audio settings after fade-in completes (5s default)
     // Applying volume immediately would cut the fade-in ramp short
@@ -899,9 +1156,7 @@ async function reinitializePhysics(newGridScale) {
   }
 }
 
-/**
- * Resize canvas to match display
- */
+/* Resize canvas to match display */
 function resizeCanvas() {
   const width = window.innerWidth;
   const height = window.innerHeight;
@@ -912,12 +1167,10 @@ function resizeCanvas() {
   canvas.width = width;
   canvas.height = height;
 
-  window.rainydesk.log(`[Resize] Canvas: ${width}x${height}`);
+  window.rainydesk.log(`[Resize] Canvas: ${width}x${height}, dpr=${window.devicePixelRatio}, screen=${window.screen.width}x${window.screen.height}`);
 }
 
-/**
- * Update simulation
- */
+/* Update simulation */
 function update(dt) {
   if (matrixMode && matrixRenderer) {
     // Matrix mode: update digital rain + arpeggio sequencer
@@ -929,9 +1182,7 @@ function update(dt) {
   }
 }
 
-/**
- * Render simulation
- */
+/* Render simulation */
 function render() {
   if (matrixMode && matrixRenderer) {
     // Matrix mode: render digital rain
@@ -942,20 +1193,25 @@ function render() {
   }
 }
 
-/**
- * Main game loop with delta time and optional FPS limiting
- */
+/* Main game loop with delta time and optional FPS limiting */
 function gameLoop(currentTime) {
   // Schedule next frame FIRST — uncaught errors must never kill the loop
   requestAnimationFrame(gameLoop);
 
-  // FPS limiting (reset if stale from backgrounding to prevent frame flood)
+  // FPS limiting via ideal-time accumulation
   if (config.fpsLimit > 0) {
     const minFrameTime = 1000 / config.fpsLimit;
     const elapsed = currentTime - lastFrameTime;
-    if (elapsed > 1000) lastFrameTime = currentTime;
-    else if (elapsed < minFrameTime) return;
-    lastFrameTime = currentTime;
+    if (elapsed > 1000) {
+      lastFrameTime = currentTime;
+    } else if (elapsed < minFrameTime * 0.97) {
+      return;
+    } else {
+      lastFrameTime += minFrameTime;
+      if (currentTime - lastFrameTime > minFrameTime) {
+        lastFrameTime = currentTime;
+      }
+    }
   }
 
   const dt = Math.min((currentTime - lastTime) / 1000, 0.1); // Cap at 100ms (10 FPS min)
@@ -965,8 +1221,8 @@ function gameLoop(currentTime) {
   if (reinitInProgress) return;
 
   try {
-    // Skip everything when fullscreen (app hidden behind fullscreen window)
-    if (isFullscreenActive) {
+    // Skip everything when ALL monitors are fullscreen
+    if (allMonitorsFullscreen) {
       if (audioSystem) {
         audioSystem.setParticleCount(0);
       }
@@ -1011,7 +1267,8 @@ function gameLoop(currentTime) {
     const fps = Math.round(fpsCounter / 5);
     const particles = gridSimulation ? gridSimulation.getActiveDropCount() : 0;
     const statusFlags = [
-      isFullscreenActive ? 'FULLSCREEN' : null,
+      fullscreenMonitors.size > 0 ? `FS:${fullscreenMonitors.size}/${virtualDesktop?.monitors?.length || '?'}` : null,
+      allMonitorsFullscreen ? 'ALL-FS' : null,
       isPaused ? 'PAUSED' : null
     ].filter(Boolean).join(', ');
     window.rainydesk.log(`FPS: ${fps}, Particles: ${particles}, Windows: ${windowZoneCount}${statusFlags ? ', ' + statusFlags : ''}`);
@@ -1041,9 +1298,7 @@ function gameLoop(currentTime) {
   }
 }
 
-/**
- * Register all event listeners
- */
+/* Register all event listeners */
 function registerEventListeners() {
   window.rainydesk.onToggleRain((enabled) => {
     config.enabled = enabled;
@@ -1136,14 +1391,15 @@ function registerEventListeners() {
       }
 
       // Classify windows
+      // Detection toggles affect classification: when detection is OFF
+      // (Rain Over X is ON), those windows become normal collision surfaces
       const voidWindows = [];
       const normalWindows = [];
       const spawnBlockWindows = [];
-      let hasPrimaryFullResolution = false;
+      const detectedFullscreenMonitors = new Set();
+      const detectedMaximizedMonitors = new Set();
 
       if (virtualDesktop && virtualDesktop.monitors) {
-        const primaryIndex = virtualDesktop.primaryIndex || 0;
-
         for (const win of windowZones) {
           let classified = false;
 
@@ -1151,14 +1407,24 @@ function registerEventListeners() {
             const classification = classifyWindow(win, mon, virtualDesktop);
 
             if (classification === 'work-area') {
+              detectedMaximizedMonitors.add(mon.index);
               if (!classified) {
-                voidWindows.push(win);
+                // Void only when detection active; normal collision otherwise
+                if (enableMaximizedDetection) {
+                  voidWindows.push(win);
+                } else {
+                  normalWindows.push(win);
+                }
                 classified = true;
               }
-            } else if (classification === 'full-resolution' && mon.index === primaryIndex) {
+            } else if (classification === 'full-resolution') {
+              detectedFullscreenMonitors.add(mon.index);
               if (!classified) {
-                hasPrimaryFullResolution = true;
-                normalWindows.push(win);
+                if (enableFullscreenDetection) {
+                  voidWindows.push(win);
+                } else {
+                  normalWindows.push(win);
+                }
                 classified = true;
               }
             } else if (classification === 'snapped') {
@@ -1175,54 +1441,134 @@ function registerEventListeners() {
           }
         }
 
-        // Handle fullscreen state with debounce
-        const newFullscreenState = hasPrimaryFullResolution;
-        if (newFullscreenState !== pendingFullscreenState) {
-          pendingFullscreenState = newFullscreenState;
-          if (fullscreenDebounceTimer) clearTimeout(fullscreenDebounceTimer);
-          fullscreenDebounceTimer = setTimeout(() => {
-            if (pendingFullscreenState !== isFullscreenActive) {
-              const wasFullscreen = isFullscreenActive;
-              isFullscreenActive = pendingFullscreenState;
+        // Fullscreen debounce (quick enter, slow exit with hysteresis)
+        if (enableFullscreenDetection && virtualDesktop && virtualDesktop.monitors) {
+          const now = Date.now();
 
-              if (isFullscreenActive && !wasFullscreen) {
-                window.rainydesk.log('[Fullscreen] Primary monitor fullscreen - hiding overlay');
-                canvas.style.opacity = '0';
-              } else if (!isFullscreenActive && wasFullscreen) {
-                window.rainydesk.log('[Fullscreen] Primary monitor clear - showing overlay');
-                canvas.style.opacity = '1';
-              }
-            }
-          }, 200);
-        }
-      }
-
-      // Update audio muffling
-      if (audioSystem && virtualDesktop && virtualDesktop.monitors) {
-        let coveredWidth = 0;
-        const totalWidth = virtualDesktop.width;
-
-        const fullscreenMonitorIndices = new Set();
-        for (const win of voidWindows) {
           for (const mon of virtualDesktop.monitors) {
-            const classification = classifyWindow(win, mon, virtualDesktop);
-            if (classification === 'work-area') {
-              fullscreenMonitorIndices.add(mon.index);
+            const idx = mon.index;
+            if (detectedFullscreenMonitors.has(idx)) {
+              lastFullscreenSeenTime.set(idx, now);
+
+              if (fullscreenExitTimers.has(idx)) {
+                clearTimeout(fullscreenExitTimers.get(idx));
+                fullscreenExitTimers.delete(idx);
+              }
+
+              if (!fullscreenMonitors.has(idx) && !fullscreenEnterTimers.has(idx)) {
+                fullscreenEnterTimers.set(idx, setTimeout(() => {
+                  fullscreenEnterTimers.delete(idx);
+                  if (!fullscreenMonitors.has(idx)) {
+                    fullscreenMonitors.add(idx);
+                    window.rainydesk.log(`[Fullscreen] Monitor ${idx} entered fullscreen`);
+                    updateFullscreenState();
+                  }
+                }, 200));
+              }
+            } else {
+              if (fullscreenEnterTimers.has(idx)) {
+                clearTimeout(fullscreenEnterTimers.get(idx));
+                fullscreenEnterTimers.delete(idx);
+              }
+
+              if (fullscreenMonitors.has(idx) && !fullscreenExitTimers.has(idx)) {
+                fullscreenExitTimers.set(idx, setTimeout(() => {
+                  fullscreenExitTimers.delete(idx);
+                  // Only exit if no fullscreen seen recently (hysteresis check)
+                  const lastSeen = lastFullscreenSeenTime.get(idx) || 0;
+                  if (Date.now() - lastSeen >= 1400) {
+                    fullscreenMonitors.delete(idx);
+                    window.rainydesk.log(`[Fullscreen] Monitor ${idx} exited fullscreen`);
+                    updateFullscreenState();
+                  }
+                }, 1500));
+              }
             }
           }
         }
 
+        // Maximized debounce (mirrors fullscreen pattern)
+        if (enableMaximizedDetection && virtualDesktop && virtualDesktop.monitors) {
+          const now2 = Date.now();
+
+          for (const mon of virtualDesktop.monitors) {
+            const idx = mon.index;
+            if (detectedMaximizedMonitors.has(idx)) {
+              lastMaximizedSeenTime.set(idx, now2);
+
+              if (maximizedExitTimers.has(idx)) {
+                clearTimeout(maximizedExitTimers.get(idx));
+                maximizedExitTimers.delete(idx);
+              }
+
+              if (!maximizedMonitors.has(idx) && !maximizedEnterTimers.has(idx)) {
+                maximizedEnterTimers.set(idx, setTimeout(() => {
+                  maximizedEnterTimers.delete(idx);
+                  if (!maximizedMonitors.has(idx)) {
+                    maximizedMonitors.add(idx);
+                    window.rainydesk.log(`[Maximized] Monitor ${idx} entered maximized`);
+                    updateMaximizedState();
+                  }
+                }, 200));
+              }
+            } else {
+              if (maximizedEnterTimers.has(idx)) {
+                clearTimeout(maximizedEnterTimers.get(idx));
+                maximizedEnterTimers.delete(idx);
+              }
+
+              if (maximizedMonitors.has(idx) && !maximizedExitTimers.has(idx)) {
+                maximizedExitTimers.set(idx, setTimeout(() => {
+                  maximizedExitTimers.delete(idx);
+                  const lastSeen = lastMaximizedSeenTime.get(idx) || 0;
+                  if (Date.now() - lastSeen >= 1400) {
+                    maximizedMonitors.delete(idx);
+                    window.rainydesk.log(`[Maximized] Monitor ${idx} exited maximized`);
+                    updateMaximizedState();
+                  }
+                }, 1500));
+              }
+            }
+          }
+        }
+      }
+
+      // Audio muffling (independent of rain suppression)
+      const anyMufflingEnabled = enableAudioMuffling || enableMaximizedMuffling;
+
+      if (anyMufflingEnabled && audioSystem && virtualDesktop && virtualDesktop.monitors) {
+        let coveredWidth = 0;
+        const totalWidth = virtualDesktop.width;
+
+        const muffledMonitorIndices = new Set();
+
+        if (enableMaximizedMuffling) {
+          for (const idx of detectedMaximizedMonitors) {
+            muffledMonitorIndices.add(idx);
+          }
+        }
+
+        if (enableAudioMuffling) {
+          for (const idx of detectedFullscreenMonitors) {
+            muffledMonitorIndices.add(idx);
+          }
+        }
+
         for (const mon of virtualDesktop.monitors) {
-          if (fullscreenMonitorIndices.has(mon.index)) {
+          if (muffledMonitorIndices.has(mon.index)) {
             coveredWidth += mon.width;
           }
         }
 
         const coverageRatio = totalWidth > 0 ? coveredWidth / totalWidth : 0;
         const muffleAmount = coverageRatio * 0.7;
-        audioSystem.setMuffleAmount(muffleAmount);
-      } else if (audioSystem) {
+        if (Math.abs(muffleAmount - lastMuffleAmount) > 0.01) {
+          audioSystem.setMuffleAmount(muffleAmount);
+          lastMuffleAmount = muffleAmount;
+        }
+      } else if (audioSystem && lastMuffleAmount !== 0) {
         audioSystem.setMuffleAmount(0);
+        lastMuffleAmount = 0;
       }
 
       // Store window zones for reinit
@@ -1234,7 +1580,12 @@ function registerEventListeners() {
 
       // Update physics with classified windows
       if (gridSimulation) {
-        gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
+        if (enableWindowCollision) {
+          gridSimulation.updateWindowZones(normalWindows, voidWindows, spawnBlockWindows);
+        } else {
+          gridSimulation.updateWindowZones([], [], []);
+        }
+        suppressFullscreenColumns();
       }
 
       // Update Matrix renderer window zones (adjust for VD origin)
@@ -1242,14 +1593,18 @@ function registerEventListeners() {
       if (matrixRenderer && virtualDesktop) {
         const originX = virtualDesktop.originX || 0;
         const originY = virtualDesktop.originY || 0;
-        // Combine all window types - Matrix streams should collide with everything
-        const allWindows = [...normalWindows, ...voidWindows];
-        matrixRenderer.updateWindowZones(allWindows.map(w => ({
-          left: w.x - originX,
-          top: w.y - originY,
-          right: w.x + w.width - originX,
-          bottom: w.y + w.height - originY,
-        })));
+        if (enableWindowCollision) {
+          // Combine all window types - Matrix streams should collide with everything
+          const allWindows = [...normalWindows, ...voidWindows];
+          matrixRenderer.updateWindowZones(allWindows.map(w => ({
+            left: w.x - originX,
+            top: w.y - originY,
+            right: w.x + w.width - originX,
+            bottom: w.y + w.height - originY,
+          })));
+        } else {
+          matrixRenderer.updateWindowZones([]);
+        }
 
         // Compute blanked regions: monitors covered by maximized or fullscreen windows
         // Tracks which monitor indices have work-area or full-resolution windows
@@ -1358,8 +1713,17 @@ function registerEventListeners() {
         }
       }
       if (param === 'resetSimulation') {
-        const newScale = Math.max(0.125, Math.min(0.5, value));
-        reinitializePhysics(newScale);
+        // Accept either a number (backward compat) or { gridScale, renderScale } object
+        if (typeof value === 'object' && value !== null) {
+          const newGridScale = Math.max(0.0625, Math.min(0.5, value.gridScale ?? GRID_SCALE));
+          if (typeof value.renderScale === 'number') {
+            renderScale = Math.max(0.125, Math.min(1.0, value.renderScale));
+          }
+          reinitializePhysics(newGridScale);
+        } else {
+          const newScale = Math.max(0.0625, Math.min(0.5, value));
+          reinitializePhysics(newScale);
+        }
       }
       if (param === 'fpsLimit') {
         config.fpsLimit = Number(value);
@@ -1434,6 +1798,16 @@ function registerEventListeners() {
         const center = sheetOsc.snapToCenter();
         applySheet(center);
       }
+    } else if (path === 'audio.impactPitch') {
+      // Impact filter center frequency (0-100)
+      if (audioSystem) {
+        audioSystem.setImpactPitch(Number(value));
+      }
+    } else if (path === 'audio.impactPitchOsc') {
+      // Impact per-drop pitch randomization amount (0-100)
+      if (audioSystem) {
+        audioSystem.setImpactPitchOsc(Number(value));
+      }
     } else if (path === 'audio.wind.masterGain') {
       // Wind sound volume (dB)
       trackedWindGainDb = Number(value);
@@ -1495,6 +1869,10 @@ function registerEventListeners() {
       if (matrixRenderer) {
         matrixRenderer.setGaytrixMode(Boolean(value));
       }
+    } else if (path === 'visual.rainbowSpeed') {
+      const speed = Number(value) || 1;
+      trackedRainbowSpeed = speed;
+      if (pixiRenderer) pixiRenderer.setRainbowSpeed(speed);
     } else if (path === 'visual.matrixMode') {
       const newMatrixMode = Boolean(value);
       if (newMatrixMode === matrixMode) return; // No change
@@ -1563,6 +1941,39 @@ function registerEventListeners() {
           audioSystem.start(true, true);
         }
       }
+    } else if (path === 'system.maximizedDetection') {
+      enableMaximizedDetection = Boolean(value);
+      // Clear stale debounce timers so they don't corrupt new state
+      for (const id of maximizedEnterTimers.values()) clearTimeout(id);
+      for (const id of maximizedExitTimers.values()) clearTimeout(id);
+      maximizedEnterTimers.clear();
+      maximizedExitTimers.clear();
+      if (!enableMaximizedDetection) updateMaximizedState();
+      reprocessWindowState();
+    } else if (path === 'system.maximizedMuffling') {
+      enableMaximizedMuffling = Boolean(value);
+      reprocessWindowState();
+    } else if (path === 'system.fullscreenDetection') {
+      enableFullscreenDetection = Boolean(value);
+      for (const id of fullscreenEnterTimers.values()) clearTimeout(id);
+      for (const id of fullscreenExitTimers.values()) clearTimeout(id);
+      fullscreenEnterTimers.clear();
+      fullscreenExitTimers.clear();
+      if (!enableFullscreenDetection) updateFullscreenState();
+      reprocessWindowState();
+    } else if (path === 'system.audioMuffling') {
+      enableAudioMuffling = Boolean(value);
+      if (!enableAudioMuffling && audioSystem && lastMuffleAmount !== 0) {
+        audioSystem.setMuffleAmount(0);
+        lastMuffleAmount = 0;
+      } else {
+        reprocessWindowState();
+      }
+    } else if (path === 'system.windowCollision') {
+      enableWindowCollision = Boolean(value);
+      reprocessWindowState();
+    } else if (path === 'system.renderScale') {
+      renderScale = Math.max(0.125, Math.min(1.0, Number(value)));
     } else if (path === 'visual.crtIntensity') {
       // CRT Filter intensity (Matrix Mode only, 0-1)
       if (matrixRenderer) {
@@ -1604,9 +2015,7 @@ function registerEventListeners() {
   window.addEventListener('resize', resizeCanvas);
 }
 
-/**
- * Initialize Pixi hybrid physics system
- */
+/* Initialize Pixi hybrid physics system */
 async function initPixiPhysics() {
   window.rainydesk.log('[Pixi] Initializing hybrid physics...');
 
@@ -1616,11 +2025,14 @@ async function initPixiPhysics() {
   const logicWidth = Math.ceil(virtualDesktop.width * scale);
   const logicHeight = Math.ceil(virtualDesktop.height * scale);
 
-  // Build void mask, spawn map, floor maps
+  // Build void mask, spawn map, floor maps (yield between heavy ops to avoid UI freeze)
   const voidMask = buildVoidMask(virtualDesktop, scale);
+  await new Promise(r => setTimeout(r, 0));
+
   const spawnMap = computeSpawnMap(voidMask, logicWidth, logicHeight);
   const floorMap = computeFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
   const displayFloorMap = computeDisplayFloorMap(virtualDesktop, scale, logicWidth, logicHeight);
+  await new Promise(r => setTimeout(r, 0));
 
   globalGridBounds = {
     minX: virtualDesktop.originX,
@@ -1647,6 +2059,7 @@ async function initPixiPhysics() {
     displayFloorMap,
     scale // Pass grid scale for coordinate conversion
   );
+  await new Promise(r => setTimeout(r, 0));
 
   gridSimulation.onDebugLog = (msg) => window.rainydesk.log(msg);
   gridSimulation.setIntensity(config.intensity / 100);
@@ -1668,7 +2081,8 @@ async function initPixiPhysics() {
     localOffsetY: 0,
     backgroundColor: 0x000000,
     preferWebGPU: true,
-    gridScale: scale
+    gridScale: scale,
+    renderScale: renderScale
   });
 
   await pixiRenderer.init();
@@ -1676,14 +2090,14 @@ async function initPixiPhysics() {
   window.rainydesk.log('[Pixi] Hybrid physics ready!');
 }
 
-/**
- * Initialize Matrix Mode renderer
- */
+/* Initialize Matrix Mode renderer */
 async function initMatrixRenderer() {
   if (matrixRenderer || !matrixCanvas) return;
 
   const { MatrixPixiRenderer } = await import('./simulation.bundle.js');
+  if (!matrixMode || !matrixCanvas) return; // Cancelled during import
   const { GlitchSynth } = await import('./audio.bundle.js');
+  if (!matrixMode || !matrixCanvas) return; // Cancelled during import
 
   matrixRenderer = new MatrixPixiRenderer({
     canvas: matrixCanvas, // Use separate canvas to avoid WebGL context conflicts
@@ -1692,6 +2106,11 @@ async function initMatrixRenderer() {
     collisionEnabled: true,
   });
   await matrixRenderer.init();
+  if (!matrixMode) {
+    matrixRenderer.destroy();
+    matrixRenderer = null;
+    return;
+  }
 
   // Coordinate adjustment: window bounds are absolute, canvas is relative to VD origin
   const originX = virtualDesktop?.originX || 0;
@@ -1812,6 +2231,13 @@ async function initMatrixRenderer() {
   // See tauri.conf.json "resources" and .gitignore for sounds/ exclusion.
   try {
     await glitchSynth.startDrone('./sounds/SawLoopG.ogg', 5);
+    if (!matrixMode) {
+      glitchSynth.dispose();
+      glitchSynth = null;
+      matrixRenderer.destroy();
+      matrixRenderer = null;
+      return;
+    }
     window.rainydesk.log('[Matrix] Drone audio started');
   } catch (err) {
     window.rainydesk.log(`[Matrix] Drone audio failed: ${err}`);
@@ -1832,9 +2258,7 @@ async function initMatrixRenderer() {
   window.rainydesk.log('[Matrix] Renderer initialized');
 }
 
-/**
- * Destroy Matrix Mode renderer
- */
+/* Destroy Matrix Mode renderer */
 function destroyMatrixRenderer() {
   if (matrixRenderer) {
     matrixRenderer.destroy();
@@ -1852,9 +2276,7 @@ function destroyMatrixRenderer() {
   window.rainydesk.log('[Matrix] Renderer destroyed');
 }
 
-/**
- * Periodically save state to Autosave.rain
- */
+/* Periodically save state to Autosave.rain */
 function startAutosave() {
   setInterval(async () => {
     if (audioInitialized) {
@@ -1864,9 +2286,7 @@ function startAutosave() {
   }, 30000);
 }
 
-/**
- * Main initialization - SINGLE SEQUENTIAL FLOW
- */
+/* Main initialization */
 async function init() {
   // PHASE 2: Wait for Tauri API
   await waitForTauriAPI();

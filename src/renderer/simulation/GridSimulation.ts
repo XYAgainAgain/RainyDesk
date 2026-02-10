@@ -381,6 +381,22 @@ export class GridSimulation {
         }
     }
 
+    /* Clear all in-flight drops and splashes (used on fullscreen state change). */
+    clearAllDrops(): void {
+        this.dropCount = 0;
+        this.splashCount = 0;
+    }
+
+    /* Suppress spawning for a range of columns (used by per-monitor fullscreen). */
+    suppressSpawnColumns(startCol: number, endCol: number): void {
+        if (!this.spawnMap) return;
+        const start = Math.max(0, startCol);
+        const end = Math.min(this.gridWidth, endCol);
+        for (let x = start; x < end; x++) {
+            this.spawnMap[x] = -1;
+        }
+    }
+
     // OPTION B: Visual masking only (commented out for future testing)
     // This would keep physics but mask rendering:
     // setVisualMaskZones(maskZones: WindowZone[]): void {

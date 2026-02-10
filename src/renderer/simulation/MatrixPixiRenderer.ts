@@ -918,14 +918,13 @@ export class MatrixPixiRenderer {
 
         // Color flicker at high glitchiness (throttled to mutation ticks)
         if (doMutations && this.glitchiness > 0.5 && Math.random() < (this.glitchiness - 0.5) * 0.1) {
-          // Random bright flash: shift green channel or add cyan/white flicker
           const flickerType = Math.random();
           if (flickerType < 0.4) {
-            tint = 0x00FFFF; // Cyan flash
+            tint = 0x00FFFF;
           } else if (flickerType < 0.7) {
-            tint = 0xFFFFFF; // White flash
-          } else {
-            tint = 0x40FF40; // Bright green flash
+            tint = 0xFFFFFF;
+          } else if (!this.transMode && !this.gaytrixMode) {
+            tint = 0x40FF40; // Green flash only in default Matrix mode
           }
         }
 

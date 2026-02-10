@@ -1,15 +1,10 @@
-/**
- * RainyDesk Panel - UI Components
- *
- * Reusable slider and toggle components.
- */
+/* Reusable slider, toggle, and knob components */
 
 export interface SliderConfig {
-  /** Unique ID for the slider (used for dynamic updates) */
   id?: string;
   label: string;
-  /** Alternative label shown when Matrix Mode is active */
   matrixLabel?: string;
+  sublabel?: string;
   value: number;
   min: number;
   max: number;
@@ -18,14 +13,12 @@ export interface SliderConfig {
   formatValue?: (v: number) => string;
   defaultValue?: number;
   onChange: (value: number) => void;
-  /** When true, onChange only fires on mouse release (not during drag) */
-  lazy?: boolean;
-  /** Optional extra element appended to the label container (e.g. a RotaryKnob) */
+  lazy?: boolean; // onChange only fires on mouse release, not during drag
   extraElement?: HTMLElement;
 }
 
 export function Slider(config: SliderConfig): HTMLElement {
-  const { id, label, matrixLabel, value, min, max, step = 1, unit, formatValue, defaultValue, onChange, lazy = false, extraElement } = config;
+  const { id, label, matrixLabel, sublabel, value, min, max, step = 1, unit, formatValue, defaultValue, onChange, lazy = false, extraElement } = config;
 
   const row = document.createElement('div');
   row.className = 'control-row';
@@ -47,6 +40,14 @@ export function Slider(config: SliderConfig): HTMLElement {
   labelEl.className = 'control-label';
   labelEl.textContent = label;
   labelContainer.appendChild(labelEl);
+
+  if (sublabel) {
+    const sublabelEl = document.createElement('span');
+    sublabelEl.className = 'control-sublabel';
+    sublabelEl.textContent = sublabel;
+    labelContainer.appendChild(sublabelEl);
+    labelContainer.classList.add('has-sublabel');
+  }
 
   // Add reset button next to label if defaultValue is provided
   if (defaultValue !== undefined) {
@@ -113,17 +114,12 @@ export function Slider(config: SliderConfig): HTMLElement {
   return row;
 }
 
-/** Slider row with optional attached formatter (for external updates) */
+/* Slider row with attached formatter for external value updates */
 export interface SliderRow extends HTMLElement {
   _formatValue?: (v: number) => string;
 }
 
-/**
- * Update a Slider's visual state externally (e.g. from OSC knob sync).
- * Finds the slider by its data-slider-id within the given container.
- * Updates both the range input position and the display value text.
- * Does NOT fire onChange (to avoid feedback loops).
- */
+/* Update a slider's visual state externally without firing onChange (avoids feedback loops) */
 export function updateSliderValue(container: HTMLElement, sliderId: string, value: number): void {
   const row = container.querySelector(`[data-slider-id="${sliderId}"]`) as SliderRow | null;
   if (!row) return;
@@ -213,13 +209,12 @@ export interface ColorPickerConfig {
   label: string;
   value: string;
   presets?: string[];
-  /** Default value for reset button. Can be a static string or a function that returns the current default. */
-  defaultValue?: string | (() => string);
+  defaultValue?: string | (() => string); // Static or dynamic default for reset button
   onChange: (color: string) => void;
 }
 
 export function ColorPicker(config: ColorPickerConfig): HTMLElement {
-  const { label, value, presets = ['#4a9eff', '#ff6b6b', '#6bff6b', '#ffff6b', '#ff6bff', '#6bffff', '#ffffff', '#888888'], defaultValue, onChange } = config;
+  const { label, value, presets = ['#4a9eff', '#ff6b6b', '#6bff6b', '#ffff6b', '#ff6bff', '#6bffff', '#ff7300', '#ffffff', '#888888'], defaultValue, onChange } = config;
 
   const row = document.createElement('div');
   row.className = 'control-row color-picker-row';
@@ -374,8 +369,7 @@ export interface RotaryKnobConfig {
   max: number;
   onChange: (value: number) => void;
   id?: string;
-  /** Short description shown in tooltip (e.g. "Wind oscillation") */
-  description?: string;
+  description?: string; // Tooltip text
 }
 
 export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
@@ -404,6 +398,16 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
 
     const arcDeg = t * 270; // 0deg to 270deg
     knob.style.setProperty('--glow-arc-deg', `${arcDeg}deg`);
+
+    // Toggle osc-active on parent .control-row so the paired slider shows feedback
+    // Use requestAnimationFrame so this also works during initial construction
+    // (knob might not be in DOM yet when updateVisual first runs)
+    requestAnimationFrame(() => {
+      const controlRow = knob.closest('.control-row');
+      if (controlRow) {
+        controlRow.classList.toggle('osc-active', t > 0.01);
+      }
+    });
   };
 
   updateVisual();
@@ -449,6 +453,15 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
   };
 
   knob.addEventListener('mousedown', onMouseDown);
+
+  // Double-click to zero
+  knob.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    currentValue = min;
+    updateVisual();
+    onChange(min);
+  });
 
   // Enables slider Reset buttons & similar
   (knob as unknown as { setValue: (v: number) => void }).setValue = (v: number) => {

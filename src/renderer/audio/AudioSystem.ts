@@ -486,6 +486,16 @@ export class AudioSystem {
     }
   }
 
+  /** Set impact pitch center (0-100: 0 = fat splats, 100 = thin ticks) */
+  setImpactPitch(value: number): void {
+    this._impactPool?.setPitchCenter(value);
+  }
+
+  /** Set impact pitch OSC amount (0-100: per-drop random spread) */
+  setImpactPitchOsc(value: number): void {
+    this._impactPool?.setPitchOscAmount(value);
+  }
+
   /**
    * Set combined rain audio intensity (sheet + impacts + bubbles).
    * @param intensity 0-100 percentage

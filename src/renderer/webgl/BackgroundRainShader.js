@@ -34,6 +34,7 @@ uniform float u_layerCount;   // 1.0 - 5.0
 uniform float u_speed;        // Speed multiplier
 uniform vec3 u_colorTint;     // Rain color tint (RGB 0-1)
 uniform float u_rainbowMode;  // 1.0 = rainbow cycling, 0.0 = use tint
+uniform float u_rainbowSpeed; // Rainbow cycle speed multiplier (1.0-10.0)
 uniform float u_reverseGravity; // 1.0 = rain falls upward, 0.0 = normal
 
 in vec2 v_uv;
@@ -138,7 +139,7 @@ void main() {
     vec3 rainColor;
     if (u_rainbowMode > 0.5) {
         // Rainbow: cycle hue over 60 seconds (uses absoluteTime for sync with physics)
-        float hue = mod(u_absoluteTime / 60.0, 1.0);
+        float hue = mod(u_absoluteTime * u_rainbowSpeed / 60.0, 1.0);
         rainColor = hsv2rgb(vec3(hue, 0.7, 0.95));
     } else {
         rainColor = u_colorTint;
@@ -180,6 +181,7 @@ class BackgroundRainShader {
             speed: null,
             colorTint: null,
             rainbowMode: null,
+            rainbowSpeed: null,
             reverseGravity: null
         };
 
@@ -192,6 +194,7 @@ class BackgroundRainShader {
             enabled: true,
             colorTint: [0.54, 0.66, 0.75],  // #8aa8c0 default
             rainbowMode: false,
+            rainbowSpeed: 1.0,
             reverseGravity: false
         };
 
@@ -234,6 +237,7 @@ class BackgroundRainShader {
         this.uniforms.speed = gl.getUniformLocation(this.program, 'u_speed');
         this.uniforms.colorTint = gl.getUniformLocation(this.program, 'u_colorTint');
         this.uniforms.rainbowMode = gl.getUniformLocation(this.program, 'u_rainbowMode');
+        this.uniforms.rainbowSpeed = gl.getUniformLocation(this.program, 'u_rainbowSpeed');
         this.uniforms.reverseGravity = gl.getUniformLocation(this.program, 'u_reverseGravity');
 
         // Create VAO and fullscreen quad
@@ -315,6 +319,7 @@ class BackgroundRainShader {
         gl.uniform1f(this.uniforms.speed, this.config.speed);
         gl.uniform3fv(this.uniforms.colorTint, this.config.colorTint);
         gl.uniform1f(this.uniforms.rainbowMode, this.config.rainbowMode ? 1.0 : 0.0);
+        gl.uniform1f(this.uniforms.rainbowSpeed, this.config.rainbowSpeed);
         gl.uniform1f(this.uniforms.reverseGravity, this.config.reverseGravity ? 1.0 : 0.0);
 
         // Draw fullscreen quad
@@ -347,6 +352,9 @@ class BackgroundRainShader {
         }
         if (config.rainbowMode !== undefined) {
             this.config.rainbowMode = Boolean(config.rainbowMode);
+        }
+        if (config.rainbowSpeed !== undefined) {
+            this.config.rainbowSpeed = Math.max(1, Math.min(10, Number(config.rainbowSpeed)));
         }
         if (config.reverseGravity !== undefined) {
             this.config.reverseGravity = Boolean(config.reverseGravity);

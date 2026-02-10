@@ -36,15 +36,15 @@ let virtualDesktop = null;
 let isPaused = false;
 let isFullscreenActive = false;
 let lastTime = performance.now();
+let fpsLimit = 0;
+let lastFrameTime = 0;
 
 // Matrix Mode (background layer)
 let matrixMode = false;
 let matrixRenderer = null;
 let matrixCanvas = null; // Separate canvas for Matrix Mode (avoids WebGL context conflicts)
 
-/**
- * Wait for Tauri API to be available
- */
+/* Wait for Tauri API to be available */
 function waitForTauriAPI() {
   return new Promise((resolve) => {
     if (window.rainydesk) return resolve();
@@ -57,9 +57,7 @@ function waitForTauriAPI() {
   });
 }
 
-/**
- * Resize canvas to full virtual desktop
- */
+/* Resize canvas to full virtual desktop */
 function resizeCanvas() {
   const width = virtualDesktop?.width || window.innerWidth;
   const height = virtualDesktop?.height || window.innerHeight;
@@ -70,18 +68,31 @@ function resizeCanvas() {
   if (renderer) {
     renderer.resize(width, height, 1, renderScale);
   }
-  window.rainydesk?.log?.(`[Background] Canvas resized to ${width}x${height}`);
+  window.rainydesk?.log?.(`[Background] Canvas resized to ${width}x${height}, dpr=${window.devicePixelRatio}`);
 }
 
-/**
- * Render loop
- */
+/* Render loop */
 function renderLoop() {
   const now = performance.now();
+
+  // FPS limiting via ideal-time accumulation
+  if (fpsLimit > 0) {
+    const minFrameTime = 1000 / fpsLimit;
+    const elapsed = now - lastFrameTime;
+    if (elapsed > 1000) {
+      lastFrameTime = now;
+    } else if (elapsed < minFrameTime * 0.97) {
+      requestAnimationFrame(renderLoop);
+      return;
+    } else {
+      lastFrameTime += minFrameTime;
+      if (now - lastFrameTime > minFrameTime) lastFrameTime = now;
+    }
+  }
+
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
 
-  // Skip rendering when paused/fullscreen to give GPU a breather
   if (!isPaused && !isFullscreenActive) {
     if (matrixMode && matrixRenderer) {
       matrixRenderer.update(dt);
@@ -95,9 +106,7 @@ function renderLoop() {
   requestAnimationFrame(renderLoop);
 }
 
-/**
- * Register all event listeners
- */
+/* Register all event listeners */
 function registerEventListeners() {
   window.addEventListener('resize', resizeCanvas);
 
@@ -131,6 +140,10 @@ function registerEventListeners() {
           speed: speed
         });
       }
+    }
+
+    if (path === 'physics.fpsLimit') {
+      fpsLimit = Number(value) || 0;
     }
 
     if (path === 'physics.renderScale') {
@@ -171,6 +184,10 @@ function registerEventListeners() {
       if (matrixRenderer) {
         matrixRenderer.setGaytrixMode(Boolean(value));
       }
+    }
+
+    if (path === 'visual.rainbowSpeed') {
+      renderer.setBackgroundRainConfig({ rainbowSpeed: Number(value) || 1 });
     }
 
     // Trans Mode sync (background matrix layer)
@@ -260,12 +277,15 @@ function registerEventListeners() {
     }
   });
 
-  // Fullscreen hiding handled locally via window-data
+  // Per-monitor fullscreen state from overlay
+  window.rainydesk.onFullscreenMonitors?.((indices) => {
+    const monitorCount = virtualDesktop?.monitors?.length || 1;
+    isFullscreenActive = indices.length >= monitorCount;
+    window.rainydesk.log(`[Background] Fullscreen monitors: [${indices}], hiding=${isFullscreenActive}`);
+  });
 }
 
-/**
- * Initialize background Matrix renderer (dimmed, no collision)
- */
+/* Initialize background Matrix renderer (dimmed, no collision) */
 async function initBackgroundMatrix() {
   if (matrixRenderer || !matrixCanvas) {
     window.rainydesk?.log?.(`[Background] initBackgroundMatrix skipped: renderer=${!!matrixRenderer}, canvas=${!!matrixCanvas}`);
@@ -318,9 +338,7 @@ async function initBackgroundMatrix() {
   }
 }
 
-/**
- * Destroy background Matrix renderer
- */
+/* Destroy background Matrix renderer */
 function destroyBackgroundMatrix() {
   if (matrixRenderer) {
     matrixRenderer.destroy();
@@ -333,9 +351,7 @@ function destroyBackgroundMatrix() {
   window.rainydesk.log('[Background] Matrix renderer destroyed');
 }
 
-/**
- * Main initialization - SINGLE SEQUENTIAL FLOW
- */
+/* Main initialization */
 async function init() {
   // PHASE 2: Wait for Tauri API
   await waitForTauriAPI();
@@ -390,6 +406,10 @@ async function init() {
           const wind = Math.max(-1, Math.min(1, rain.wind / 100));
           renderer.setBackgroundRainConfig({ wind });
         }
+      }
+      // FPS limit
+      if (data.system && typeof data.system.fpsLimit === 'number') {
+        fpsLimit = data.system.fpsLimit;
       }
       window.rainydesk.log('[Background] Applied startup rainscape settings');
     }

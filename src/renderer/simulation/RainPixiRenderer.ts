@@ -31,6 +31,8 @@ export interface RendererConfig {
     preferWebGPU: boolean;
     /** Grid scale factor (0.125 = 1:8, 0.25 = 1:4). Default 0.125. */
     gridScale: number;
+    /** Render resolution scale (0.125 = Lo-Fi, 0.25 = Pixel, 0.5 = Clean, 1.0 = Full). Default 0.25. */
+    renderScale: number;
 }
 
 export class RainPixiRenderer {
@@ -45,6 +47,7 @@ export class RainPixiRenderer {
     private rainColor: number = 0xa0c4e8; // Default blue
     private gayMode: boolean = false;
     private gayModeHue: number = 0;  // 0-360 degrees
+    private rainbowSpeed: number = 1;
 
     // Containers
     private puddleContainer: Container | null = null;
@@ -77,6 +80,7 @@ export class RainPixiRenderer {
             backgroundColor: config.backgroundColor ?? 0x000000,
             preferWebGPU: config.preferWebGPU ?? true,
             gridScale: config.gridScale ?? 0.25,
+            renderScale: config.renderScale ?? 0.25,
         };
         this.logicScale = this.config.gridScale;
     }
@@ -94,6 +98,7 @@ export class RainPixiRenderer {
             canvas: this.config.canvas,
             width: this.config.width,
             height: this.config.height,
+            resolution: this.config.renderScale,
             backgroundColor: this.config.backgroundColor,
             backgroundAlpha: 0, // Transparent background
             antialias: false,   // Pixelated aesthetic
@@ -203,6 +208,10 @@ export class RainPixiRenderer {
         this.gayMode = enabled;
     }
 
+    setRainbowSpeed(speed: number): void {
+        this.rainbowSpeed = Math.max(1, Math.min(10, speed));
+    }
+
     /**
      * Get current rain color as hex string.
      */
@@ -229,7 +238,7 @@ export class RainPixiRenderer {
         // Use absolute time for sync with background shader (60-second cycle)
         // Matches shader formula: mod(u_time * 0.0167, 1.0) where u_time ≈ performance.now()/1000
         const now = performance.now();
-        this.gayModeHue = ((now / 60000) % 1.0) * 360; // 60000ms = 60 sec cycle
+        this.gayModeHue = ((now / (60000 / this.rainbowSpeed)) % 1.0) * 360;
 
         // Convert HSL to RGB (saturation=70%, lightness=70% to match shader's HSV(h, 0.7, 0.95))
         return this.hslToHex(this.gayModeHue, 70, 70);

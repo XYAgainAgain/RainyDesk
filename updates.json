@@ -1,10 +1,10 @@
 {
-  "version": "0.9.2-alpha",
-  "notes": "Rainscapes moved to Documents, panel drag fixes, tray Reset Panel, help 16:9",
-  "pub_date": "2026-02-08T00:00:00Z",
+  "version": "0.9.3-alpha",
+  "notes": "Panel overhaul, browser tabs, maximized detection, presets, FPS fix, real refresh rates, sysinfo",
+  "pub_date": "2026-02-10T00:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/XYAgainAgain/RainyDesk/releases/download/v0.9.2-alpha/RainyDesk_0.9.2-alpha_x64-setup.nsis.zip",
+      "url": "https://github.com/XYAgainAgain/RainyDesk/releases/download/v0.9.3-alpha/RainyDesk_0.9.3-alpha_x64-setup.nsis.zip",
       "signature": ""
     }
   }
