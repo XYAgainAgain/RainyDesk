@@ -3,7 +3,7 @@
 
 import { marked } from 'marked';
 
-import { applyTheme as applyPanelTheme } from './rainydesk-panel/themes';
+import { applyTheme as applyPanelTheme, applyCustomTheme } from './rainydesk-panel/themes';
 
 const BASE_FONT_SIZE = 12; // Default text size in pt
 const MIN_FONT_SIZE = 8;
@@ -37,8 +37,25 @@ function applyFontSize(size: number): void {
   saveFontSize(size);
 }
 
-// Apply theme as per panel
+// Apply theme as per panel (built-in or custom)
 async function applyThemeToWindow(themeId: string): Promise<void> {
+  if (themeId.startsWith('custom-')) {
+    try {
+      const themesFile = await window.rainydesk.loadUserThemes();
+      if (themesFile?.themes) {
+        const match = themesFile.themes.find((t: { id: string }) => t.id === themeId);
+        if (match) {
+          applyCustomTheme(match);
+          currentTheme = themeId;
+          return;
+        }
+      }
+    } catch { /* fall through to blue */ }
+    // Custom theme not found or load failed — fall back to default
+    await applyPanelTheme('blue');
+    currentTheme = 'blue';
+    return;
+  }
   await applyPanelTheme(themeId);
   currentTheme = themeId;
 }
@@ -264,6 +281,14 @@ interface PerformanceTier {
   masterVolume: number; // dB
 }
 
+const PRESET_SVG_ATTR = 'width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;margin-right:4px"';
+const PRESET_ICONS: Record<string, string> = {
+  Potato: `<svg ${PRESET_SVG_ATTR}><path d="M21 14.7C21 18.1794 19.0438 21 15.5 21C11.9562 21 10 18.1794 10 14.7C10 11.2206 15.5 3 15.5 3C15.5 3 21 11.2206 21 14.7Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8.2C8 9.7464 7.11083 11 5.5 11C3.88917 11 3 9.7464 3 8.2C3 6.6536 5.5 3 5.5 3C5.5 3 8 6.6536 8 8.2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  Light: `<svg ${PRESET_SVG_ATTR}><path d="M10.5 21L12 18M14.5 21L16 18M6.5 21L8 18M8.8 15C6.14903 15 4 12.9466 4 10.4137C4 8.31435 5.6 6.375 8 6C8.75283 4.27403 10.5346 3 12.6127 3C15.2747 3 17.4504 4.99072 17.6 7.5C19.0127 8.09561 20 9.55741 20 11.1402C20 13.2719 18.2091 15 16 15L8.8 15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  Balanced: `<svg ${PRESET_SVG_ATTR}><path d="M16 13V20M4 14.7519C3.37037 13.8768 3 12.8059 3 11.6493C3 9.20008 4.8 6.9375 7.5 6.5C8.34694 4.48637 10.3514 3 12.6893 3C15.684 3 18.1317 5.32251 18.3 8.25C19.8893 8.94488 21 10.6503 21 12.4969C21 13.4232 20.7205 14.2842 20.2413 15M12 14V21M8 13V20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  Cranked: `<svg ${PRESET_SVG_ATTR}><path d="M19.3278 16C20.3478 15.1745 21 13.9119 21 12.4969C21 10.6503 19.8893 8.94488 18.3 8.25C18.1317 5.32251 15.684 3 12.6893 3C10.3514 3 8.34694 4.48637 7.5 6.5C4.8 6.9375 3 9.20008 3 11.6493C3 13.1613 3.63296 14.5269 4.65065 15.5M8 18V20M8 12V14M12 19V21M16 18V20M16 12V14M12 13V15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
 const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Potato',
@@ -351,7 +376,7 @@ function createOnboardingOverlay(isFirstLaunch = true): HTMLElement {
 
     const name = document.createElement('div');
     name.className = 'onboarding-card-name';
-    name.textContent = tier.name;
+    name.innerHTML = `${PRESET_ICONS[tier.name] || ''}${tier.name}`;
 
     const desc = document.createElement('div');
     desc.className = 'onboarding-card-desc';
@@ -446,6 +471,10 @@ async function init(): Promise<void> {
     }
     if (e.key === 'rainscaper-matrix-mode') {
       syncMatrixMode();
+    }
+    // Live custom theme sync (instant updates during editor fiddling, no wipe)
+    if (e.key === 'rainscaper-custom-theme-sync' && e.newValue) {
+      try { applyCustomTheme(JSON.parse(e.newValue)); } catch { /* ignore */ }
     }
   });
 

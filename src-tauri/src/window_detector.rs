@@ -91,9 +91,9 @@ pub fn get_visible_windows() -> Result<WindowData, Box<dyn std::error::Error>> {
         )?;
     }
 
-    // DEBUG: Log window count periodically (every 60 calls = ~3 seconds at 50ms)
+    // DEBUG: Log window count periodically (every 600 calls = ~30 seconds at 50ms)
     let poll_num = POLL_COUNT.fetch_add(1, Ordering::Relaxed);
-    if poll_num % 60 == 0 {
+    if poll_num % 600 == 0 {
         log::info!("[WindowDetector] Poll #{}: found {} windows (raw)", poll_num + 1, ctx.windows.len());
     }
 

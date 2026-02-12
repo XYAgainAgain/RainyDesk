@@ -2,6 +2,40 @@
  * Type declarations for window.rainydesk Tauri API bridge
  */
 
+// Custom theme data structures (persisted in UserThemes.json)
+export interface CustomThemeColors {
+  accent: string;
+  background: string;
+  text: string;
+  autoColors: boolean;
+  accentHover: string | null;
+  accentActive: string | null;
+  borderColor: string | null;
+  shadowColor: string | null;
+  closeHover: string | null;
+  sliderTrack: string | null;
+  toggleBg: string | null;
+  textSecondary: string | null;
+}
+
+export interface CustomThemeFonts {
+  body: string;
+  headers: string;
+  applyToMatrix: boolean;
+}
+
+export interface CustomTheme {
+  id: string;
+  name: string;
+  colors: CustomThemeColors;
+  fonts: CustomThemeFonts;
+}
+
+export interface UserThemesFile {
+  version: number;
+  themes: CustomTheme[];
+}
+
 declare global {
   interface Window {
     rainydesk: {
@@ -53,6 +87,8 @@ declare global {
       onReinitStatus: (callback: (status: 'stopped' | 'initializing' | 'raining') => void) => void;
       // Help window hidden event
       onHelpWindowHidden: (callback: () => void) => void;
+      // Monitor hot-swap detection
+      onMonitorConfigChanged: (callback: () => void) => void;
       // Virtual desktop info (all monitors + bounding box)
       getVirtualDesktop: () => Promise<{
         width: number;
@@ -77,8 +113,12 @@ declare global {
       getSystemSpecs: () => Promise<{
         cpuModel: string;
         gpuModel: string;
+        gpuVramGb: number | null;
         totalRamGb: number;
       }>;
+      // Custom themes I/O
+      loadUserThemes: () => Promise<UserThemesFile>;
+      saveUserThemes: (data: UserThemesFile) => Promise<void>;
     };
   }
 }

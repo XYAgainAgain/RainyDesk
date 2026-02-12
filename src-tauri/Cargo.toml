@@ -1,6 +1,6 @@
 [package]
 name = "rainydesk"
-version = "0.9.3-alpha"
+version = "0.9.4-alpha"
 description = "A peaceful desktop rain simulation"
 authors = ["Sam Atwood"]
 license = "BUSL-1.1"

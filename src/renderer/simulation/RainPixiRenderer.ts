@@ -111,6 +111,9 @@ export class RainPixiRenderer {
         this.rainContainer = new Container();
         this.splashContainer = new Container();
 
+        // Render group on puddles — texture updates infrequently vs. rain/splash every frame
+        this.puddleContainer.isRenderGroup = true;
+
         this.app.stage.addChild(this.puddleContainer);
         this.app.stage.addChild(this.rainContainer);
         this.app.stage.addChild(this.splashContainer);
@@ -477,15 +480,33 @@ export class RainPixiRenderer {
 
         // Skip expensive GPU upload when puddles haven't changed
         if (grid.dirty) {
-            // Convert grid to pixel buffer (Uint8Array → Uint32Array RGBA)
+            // Convert grid to pixel buffer
             this.updatePuddleBuffer(grid.data, grid.width, grid.displayFloorMap, grid.depth);
 
-            // Upload to GPU
-            this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
-
-            // Update texture from canvas
-            if (this.puddleTexture) {
-                this.puddleTexture.source.update();
+            // Tile-based upload: only putImageData for dirty 16×16 regions
+            if (grid.dirtyTiles && grid.tileColCount && grid.tileSize) {
+                let anyDirty = false;
+                const ts = grid.tileSize;
+                for (let tr = 0; tr < grid.tileRowCount!; tr++) {
+                    for (let tc = 0; tc < grid.tileColCount; tc++) {
+                        if (!grid.dirtyTiles[tr * grid.tileColCount + tc]) continue;
+                        anyDirty = true;
+                        const sx = tc * ts;
+                        const sy = tr * ts;
+                        const tw = Math.min(ts, grid.width - sx);
+                        const th = Math.min(ts, grid.height - sy);
+                        this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0, sx, sy, tw, th);
+                    }
+                }
+                if (anyDirty && this.puddleTexture) {
+                    this.puddleTexture.source.update();
+                }
+            } else {
+                // Fallback: full upload
+                this.puddleCtx!.putImageData(this.puddleImageData!, 0, 0);
+                if (this.puddleTexture) {
+                    this.puddleTexture.source.update();
+                }
             }
         }
 

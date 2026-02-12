@@ -74,6 +74,8 @@
   --close-hover: rgba(220, 80, 80, 0.8);
   --input-bg: rgba(30, 50, 80, 0.5);
   --input-border: rgba(80, 120, 160, 0.4);
+  --font-body: 'Convergence', 'Segoe UI', sans-serif;
+  --font-headers: 'Departure Mono', monospace;
 }
 
 /* Purple theme */
@@ -305,29 +307,7 @@
   --input-border: rgba(0, 100, 180, 0.4);
 }
 
-/* Custom theme - placeholder for user-defined themes */
-[data-theme="custom"] {
-  /* Falls back to blue theme for now */
-  --panel-bg: rgba(20, 40, 70, 0.85);
-  --panel-border: rgba(100, 150, 200, 0.3);
-  --panel-shadow: rgba(0, 20, 50, 0.5);
-  --accent-color: #5090d0;
-  --accent-hover: #60a0e0;
-  --accent-active: #4080c0;
-  --text-primary: #e8f0ff;
-  --text-secondary: rgba(200, 220, 240, 0.7);
-  --text-muted: rgba(180, 200, 220, 0.65);
-  --slider-track: rgba(80, 120, 160, 0.3);
-  --slider-fill: var(--accent-color);
-  --toggle-bg: rgba(60, 90, 130, 0.4);
-  --toggle-active: var(--accent-color);
-  --tab-bg: rgba(40, 70, 110, 0.4);
-  --tab-active: rgba(80, 130, 180, 0.5);
-  --tab-hover: rgba(60, 100, 150, 0.4);
-  --close-hover: rgba(220, 80, 80, 0.8);
-  --input-bg: rgba(30, 50, 80, 0.5);
-  --input-border: rgba(80, 120, 160, 0.4);
-}
+/* Custom themes use inline CSS variables set by JS — no static data-theme needed */
 
 /* Focus visible outlines for keyboard navigation (WCAG 2.4.7) */
 :focus-visible {
@@ -427,7 +407,7 @@ html, body {
 
 
 .panel-title {
-  font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   font-size: 16px;
   font-weight: 400;
   color: var(--text-primary);
@@ -486,7 +466,7 @@ html, body {
   border-radius: 6px;
   font-size: 18px;
   font-weight: 700;
-  font-family: 'Departure Mono', monospace;
+  font-family: var(--font-headers);
   transition: background 0.15s, color 0.15s;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
@@ -530,7 +510,7 @@ html, body {
   border-bottom: 1px solid var(--panel-border);
   background: transparent;
   color: var(--text-secondary);
-  font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   font-weight: 400;
   cursor: pointer;
@@ -1207,13 +1187,51 @@ html, body {
 }
 
 /* Theme Selector - 4x3 grid of circles (centered) */
+/* Theme Grid Layout */
+.theme-grid-wrapper {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  margin: 4px auto 0;
+}
+
+.theme-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.theme-grid-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .theme-selector {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
   justify-items: center;
+}
+
+.theme-defaults {
   max-width: 200px;
-  margin: 4px auto 0;
+}
+
+.theme-customs {
+  max-width: 200px;
+}
+
+.theme-divider {
+  width: 1px;
+  background: var(--panel-border);
+  align-self: stretch;
+  margin: 0 10px;
 }
 
 .theme-button {
@@ -1238,14 +1256,12 @@ html, body {
   outline-offset: 2px;
 }
 
-/* Use pseudo-element for the gradient to avoid WebView2 button weirdness */
 .theme-button::before {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: 50%;
   transition: all 0.15s ease;
-  /* Stroke around all swatches */
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5);
 }
 
@@ -1253,7 +1269,6 @@ html, body {
   transform: scale(1.15);
 }
 
-/* Active ring via box-shadow (frees ::after for gleam) */
 .theme-button.active {
   box-shadow: 0 0 0 2px var(--text-primary), 0 0 6px rgba(255, 255, 255, 0.3);
 }
@@ -1284,6 +1299,7 @@ html, body {
   animation: sword-gleam 0.6s ease-out forwards;
 }
 
+/* Default theme swatches */
 .theme-button[data-theme="blue"]::before {
   background: radial-gradient(circle at 30% 30%, #5090d0, #2a4a7a);
 }
@@ -1325,21 +1341,374 @@ html, body {
 }
 
 .theme-button[data-theme="windows"]::before {
-  /* Windows logo icon - 4 quadrants zoomed in to fill circle */
   background: #1a1a2e url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%230078d4'%3E%3Crect x='1' y='1' width='10' height='10' rx='1'/%3E%3Crect x='13' y='1' width='10' height='10' rx='1'/%3E%3Crect x='1' y='13' width='10' height='10' rx='1'/%3E%3Crect x='13' y='13' width='10' height='10' rx='1'/%3E%3C/svg%3E") center/180% no-repeat;
 }
 
-/* FUTURE FEATURE: Custom theme editor
- * - Greyed out until theme editor is implemented
- * - TODO: Prevent click handler from firing (currently still refreshes panel)
- */
-.theme-button[data-theme="custom"]::before {
+/* Randomize button (rainbow conic gradient) */
+.theme-randomize::before {
   background: conic-gradient(from 0deg, #ff6b6b, #ffd93d, #6bcb77, #4d96ff, #ff6b6b);
+}
+
+.theme-randomize.slots-full {
+  cursor: not-allowed;
+}
+
+.theme-randomize.slots-full::before {
   filter: grayscale(0.5) opacity(0.5);
 }
 
-.theme-button[data-theme="custom"] {
-  cursor: not-allowed;
+/* Custom theme slots (accent color from inline style) */
+.theme-custom-slot::before {
+  background: radial-gradient(circle at 30% 30%,
+    var(--custom-accent),
+    color-mix(in srgb, var(--custom-accent) 40%, black)
+  );
+}
+
+/* Empty slot (dashed border circle with +) */
+.theme-empty-slot {
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 28px;
+  text-align: center;
+}
+
+.theme-empty-slot::before {
+  background: transparent;
+  box-shadow: none;
+  border: 2px dashed var(--text-muted);
+}
+
+.theme-placeholder {
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: default;
+}
+
+/* Edit link beside section title */
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title-row .section-title {
+  margin-bottom: 0;
+}
+
+.theme-edit-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.theme-edit-link:hover {
+  color: var(--accent-color);
+}
+
+/* Card Flip Animation */
+.flip-container {
+  perspective: 800px;
+  min-height: 140px;
+}
+
+.flip-card {
+  position: relative;
+  transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-style: preserve-3d;
+}
+
+.flip-card.flipped {
+  transform: rotateY(-180deg);
+}
+
+.flip-front,
+.flip-back {
+  backface-visibility: hidden;
+}
+
+.flip-front {
+  position: relative;
+}
+
+.flip-back {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  transform: rotateY(180deg);
+}
+
+/* Theme Tooltips */
+.theme-tooltip {
+  position: fixed;
+  z-index: 10000;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: tooltip-fade 0.15s ease-out;
+}
+
+@keyframes tooltip-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Theme Editor (B-side) */
+.theme-editor {
+  padding: 4px 0;
+}
+
+.theme-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.theme-editor-back {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.theme-editor-back:hover {
+  color: var(--accent-color);
+}
+
+.theme-name-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  margin-bottom: 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.theme-name-input:focus {
+  border-color: var(--accent-color);
+}
+
+.theme-primary-colors {
+  display: flex;
+  justify-content: space-around;
+  margin-bottom: 10px;
+}
+
+.theme-color-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.theme-color-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.theme-color-input {
+  width: 40px;
+  height: 28px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 1px;
+  background: var(--input-bg);
+  color-scheme: dark;
+}
+
+.theme-color-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.theme-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.theme-color-hex {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.theme-auto-row {
+  margin-bottom: 6px;
+}
+
+.theme-randomize-btn {
+  width: 100%;
+  padding: 6px;
+  border: 1px solid var(--accent-color);
+  border-radius: 6px;
+  background: transparent;
+  font-family: var(--font-body);
+  color: var(--accent-color);
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: all 0.15s;
+}
+
+.theme-randomize-btn:hover {
+  background: var(--accent-color);
+  color: var(--text-primary);
+}
+
+/* Fine Tuning */
+.theme-fine-tuning.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.theme-ft-header {
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.theme-ft-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.theme-ft-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.theme-ft-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.theme-ft-input {
+  width: 32px;
+  height: 22px;
+}
+
+.theme-ft-input.placeholder {
+  opacity: 0.5;
+}
+
+/* Font Selection */
+.theme-fonts {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.theme-font-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.theme-font-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.theme-font-select {
+  width: 160px;
+  padding: 4px 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.theme-font-select:focus {
+  border-color: var(--accent-color);
+}
+
+/* Action Buttons */
+.theme-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.theme-action-btn {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.theme-save-btn {
+  background: var(--accent-color);
+  color: var(--text-primary);
+}
+
+.theme-save-btn:hover {
+  filter: brightness(1.15);
+}
+
+.theme-save-btn.confirming {
+  background: rgba(220, 180, 50, 0.9);
+  color: #1a1a1a;
+}
+
+.theme-delete-btn {
+  background: rgba(220, 80, 80, 0.8);
+  color: #fff;
+}
+
+.theme-delete-btn:hover {
+  background: rgba(220, 80, 80, 1);
+}
+
+.theme-cancel-btn {
+  background: var(--toggle-bg);
+  color: var(--text-secondary);
+}
+
+.theme-cancel-btn:hover {
+  background: var(--tab-hover);
+  color: var(--text-primary);
 }
 
 /* Theme wipe transition overlay */
@@ -1618,7 +1987,7 @@ html, body {
   border: none;
   color: var(--text-primary);
   font-size: 12px;
-  font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   cursor: pointer;
   border-radius: 5px;
   transition: background 0.12s ease;
@@ -1736,6 +2105,12 @@ html, body {
 .debug-sys-value {
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.debug-sys-sub {
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 .debug-sys-monitor {
@@ -1793,7 +2168,7 @@ html, body {
   border: 1px solid var(--input-border);
   border-radius: 6px;
   font-size: 12px;
-  font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -1807,6 +2182,16 @@ html, body {
 .reinit-button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Monitor hot-swap alert — red pulsing inner glow */
+.reinit-button.monitor-alert {
+  animation: monitor-alert-pulse 1.2s ease-in-out infinite;
+  border-color: #e74c3c;
+}
+@keyframes monitor-alert-pulse {
+  0%, 100% { box-shadow: inset 0 0 6px 1px rgba(231, 76, 60, 0.3); }
+  50% { box-shadow: inset 0 0 12px 3px rgba(231, 76, 60, 0.7); }
 }
 
 /* Grid Scale + Reset Rain Button */
@@ -1825,7 +2210,7 @@ html, body {
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
-  font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   transition: background 0.15s;
   align-self: center;
 }
@@ -1876,7 +2261,7 @@ html, body {
   border: 1px solid var(--input-border);
   border-radius: 6px;
   font-size: 12px;
-  font-family: 'Convergence', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-body);
   cursor: pointer;
   transition: all 0.15s ease;
 }

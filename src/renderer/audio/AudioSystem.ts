@@ -29,6 +29,7 @@ import type {
   ThunderModuleConfig,
   MatrixModuleConfig,
   BusConfig,
+  SpatialConfig,
 } from '../../types/audio';
 
 export interface AudioSystemConfig {
@@ -85,10 +86,19 @@ export class AudioSystem {
   private _eq: Tone.EQ3 | null = null;
   private _reverb: Tone.Reverb | null = null;
 
+  // 3D spatial audio
+  private _spatialConfig: SpatialConfig = {
+    enabled: false,
+    panningModel: 'equalpower', // Cheap default; switches to HRTF when spatial enabled
+    worldScale: 5,
+    fixedDepth: -2,
+  };
+
   // State tracking
   private _isMuted = false;
   private _isMuffled = false;
   private _fadeInActive = false; // Guard: prevents setMasterVolume/setMuted from cancelling startup fade
+  private _stopTimer: ReturnType<typeof setTimeout> | null = null;
   private _matrixModeEnabled = false;
   private _currentRainscape: RainscapeConfig | null = null;
   private _currentRainscapeV2: RainscapeConfigV2 | null = null;
@@ -122,6 +132,17 @@ export class AudioSystem {
       this.createSheetLayer();
       this.createModules();
       this.connectAudioGraph();
+
+      // Configure 3D listener at origin, facing -Z
+      Tone.Listener.positionX.value = 0;
+      Tone.Listener.positionY.value = 0;
+      Tone.Listener.positionZ.value = 0;
+      Tone.Listener.forwardX.value = 0;
+      Tone.Listener.forwardY.value = 0;
+      Tone.Listener.forwardZ.value = -1;
+      Tone.Listener.upX.value = 0;
+      Tone.Listener.upY.value = 1;
+      Tone.Listener.upZ.value = 0;
 
       // Start transport for scheduled releases
       Tone.getTransport().start();
@@ -273,6 +294,12 @@ export class AudioSystem {
 
     if (this._state !== 'ready' && this._state !== 'stopped') return;
 
+    // Cancel any pending deferred stopAllLayers from a previous stop() fade-out
+    if (this._stopTimer) {
+      clearTimeout(this._stopTimer);
+      this._stopTimer = null;
+    }
+
     if (fadeIn && this._masterGain) {
       const fadeTime = resumeFade ? 0.5 : this._config.fadeInTime;
       this._masterGain.gain.value = 0;
@@ -316,7 +343,8 @@ export class AudioSystem {
 
     if (fadeOut && this._masterGain) {
       this._masterGain.gain.rampTo(0, this._config.fadeOutTime);
-      setTimeout(() => {
+      this._stopTimer = setTimeout(() => {
+        this._stopTimer = null;
         this.stopAllLayers();
       }, this._config.fadeOutTime * 1000);
     } else {
@@ -346,6 +374,11 @@ export class AudioSystem {
     // Calculate stereo pan from X position (-1 = left, 0 = center, 1 = right)
     const normalizedX = event.position.x / window.innerWidth;
     params.pan = Math.max(-1, Math.min(1, (normalizedX * 2) - 1));
+
+    // Compute 3D position when spatial mode is on
+    if (this._spatialConfig.enabled) {
+      params.position3d = this.pixelToAudio(event.position.x, event.position.y);
+    }
 
     // Trigger impact sound (always)
     const impactVoice = this._impactPool.trigger(params);
@@ -554,18 +587,21 @@ export class AudioSystem {
 
     this._isMuffled = clampedAmount > 0;
 
-    const rampTime = 0.5;
-
     if (this._muffleFilter) {
       // Interpolate: 20kHz (open) → 3kHz (muffled) — gentler than 800Hz
       const targetFreq = 20000 - (17000 * clampedAmount);
-      this._muffleFilter.frequency.rampTo(targetFreq, rampTime);
+      const currentFreq = this._muffleFilter.frequency.value as number;
+      // Asymmetric ramps: slow duck (1.5s) feels less jarring, snappy recovery (0.5s)
+      const freqRamp = targetFreq < currentFreq ? 1.5 : 0.5;
+      this._muffleFilter.frequency.rampTo(targetFreq, freqRamp);
     }
 
     if (this._muffleGain) {
       // Interpolate: 0dB → -3dB — gentler than -6dB
       const targetGain = Tone.dbToGain(-3 * clampedAmount);
-      this._muffleGain.gain.rampTo(targetGain, rampTime);
+      const currentGain = this._muffleGain.gain.value;
+      const gainRamp = targetGain < currentGain ? 1.5 : 0.5;
+      this._muffleGain.gain.rampTo(targetGain, gainRamp);
     }
 
     // Only log state changes, not every adjustment
@@ -576,6 +612,58 @@ export class AudioSystem {
 
   get isMuffled(): boolean {
     return this._isMuffled;
+  }
+
+  // 3D Spatial Audio
+
+  /** Toggle 3D spatial audio on/off. Propagates panning model to all modules. */
+  setSpatialMode(enabled: boolean): void {
+    this._spatialConfig.enabled = enabled;
+    if (enabled) {
+      this._spatialConfig.panningModel = 'HRTF';
+    }
+
+    // Propagate enabled, panningModel, and worldScale — but NOT fixedDepth,
+    // because modules like WindModule have their own intentional depth values
+    const shared: Partial<SpatialConfig> = {
+      enabled,
+      panningModel: enabled ? 'HRTF' : 'equalpower',
+      worldScale: this._spatialConfig.worldScale,
+    };
+
+    this._impactPool?.setSpatialConfig(shared);
+    this._bubblePool?.setSpatialConfig(shared);
+    this._windModule?.setSpatialConfig(shared);
+    this._thunderModule?.setSpatialConfig(shared);
+    this._sheetLayer?.setSpatialConfig(shared);
+
+    console.log(`[AudioSystem] Spatial audio ${enabled ? 'ON (HRTF)' : 'OFF'}`);
+  }
+
+  setSpatialConfig(config: Partial<SpatialConfig>): void {
+    Object.assign(this._spatialConfig, config);
+    // Re-propagate full config to all modules
+    this.setSpatialMode(this._spatialConfig.enabled);
+  }
+
+  get isSpatialEnabled(): boolean {
+    return this._spatialConfig.enabled;
+  }
+
+  /** Map pixel coordinates to 3D audio space. Uses live window dimensions (mega window = virtual desktop). */
+  pixelToAudio(pixelX: number, pixelY: number): { x: number; y: number; z: number } {
+    const ws = this._spatialConfig.worldScale;
+    // Use live window size — mega window spans the full virtual desktop
+    const w = window.innerWidth || 1920;
+    const h = window.innerHeight || 1080;
+    const halfW = w / 2;
+    const halfH = h / 2;
+
+    return {
+      x: ((pixelX - halfW) / halfW) * ws,
+      y: -((pixelY - halfH) / halfH) * ws, // Inverted: screen Y down, audio Y up
+      z: this._spatialConfig.fixedDepth,
+    };
   }
 
   // Effects (Legacy API)
@@ -872,6 +960,21 @@ export class AudioSystem {
           this._matrixModule?.setMasterGain(Number(value));
         } else if (matrixKey) {
           this._matrixModule?.updateConfig({ [matrixKey]: value } as Partial<MatrixModuleConfig>);
+        }
+        break;
+      }
+
+      case 'spatial': {
+        const spatialKey = getPart(1);
+        if (!spatialKey) break;
+
+        if (spatialKey === 'enabled') {
+          this.setSpatialMode(Boolean(value));
+        } else if (spatialKey === 'panningModel') {
+          const model = value === 'equalpower' ? 'equalpower' : 'HRTF';
+          this.setSpatialConfig({ panningModel: model });
+        } else if (spatialKey === 'worldScale') {
+          this.setSpatialConfig({ worldScale: Number(value) });
         }
         break;
       }

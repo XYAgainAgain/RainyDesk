@@ -40,6 +40,14 @@
   <!-- Font preload for Matrix Mode (katakana char triggers Matrix Code font load) -->
   <span class="matrix-font-preload">&#x30A2;</span>
   <canvas id="rain-canvas"></canvas>
+  <!-- Hide page if a critical script/link fails to load (CDN down, etc.) -->
+  <script>
+    window.addEventListener('error', function(e) {
+      if (e.target && (e.target.nodeName === 'SCRIPT' || e.target.nodeName === 'LINK')) {
+        document.documentElement.style.display = 'none';
+      }
+    }, true);
+  </script>
   <!-- Tauri API compatibility layer (loads before renderer.js) -->
   <script type="module" src="tauri-api.bundle.js"></script>
   <script type="module" src="renderer.js"></script>

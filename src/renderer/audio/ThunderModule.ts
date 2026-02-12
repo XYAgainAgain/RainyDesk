@@ -18,6 +18,7 @@ import type {
   ThunderCrackConfig,
   ThunderBodyConfig,
   ThunderRumbleConfig,
+  SpatialConfig,
 } from '../../types/audio';
 
 // Default Configurations
@@ -491,6 +492,7 @@ export class ThunderModule {
   private _body: BodyLayer;
   private _rumble: RumbleLayer;
   private _masterGain: Tone.Gain;
+  private _panner3d: Tone.Panner3D;
   private _output: Tone.Gain;
 
   // Sidechain compressor for ducking other audio
@@ -503,6 +505,13 @@ export class ThunderModule {
 
   // Strike event IDs (cleared on stopAuto/dispose to prevent orphan callbacks)
   private _strikeEventIds: number[] = [];
+
+  private _spatialConfig: SpatialConfig = {
+    enabled: false,
+    panningModel: 'equalpower',
+    worldScale: 5,
+    fixedDepth: -2,
+  };
 
   constructor(config: Partial<ThunderModuleConfig> = {}) {
     this._config = {
@@ -522,14 +531,22 @@ export class ThunderModule {
 
     // Master output
     this._masterGain = new Tone.Gain(Tone.dbToGain(this._config.masterGain));
+    this._panner3d = new Tone.Panner3D({
+      panningModel: this._spatialConfig.panningModel,
+      rolloffFactor: 0,
+      positionX: 0,
+      positionY: this._spatialConfig.worldScale * 0.5,
+      positionZ: this._spatialConfig.fixedDepth,
+    });
     this._output = new Tone.Gain(1);
 
-    // Connect layers to master
+    // Connect layers to master, then through 3D panner
     this._tearing.output.connect(this._masterGain);
     this._crack.output.connect(this._masterGain);
     this._body.output.connect(this._masterGain);
     this._rumble.output.connect(this._masterGain);
-    this._masterGain.connect(this._output);
+    this._masterGain.connect(this._panner3d);
+    this._panner3d.connect(this._output);
 
     // Sidechain compressor for other buses to duck during thunder
     this._sidechain = new Tone.Compressor({
@@ -554,6 +571,17 @@ export class ThunderModule {
 
     // Calculate intensity (inverse of distance, normalized)
     const intensity = 1 - (dist - minDist) / (maxDist - minDist);
+
+    // Randomize spatial position per-strike
+    if (this._spatialConfig.enabled) {
+      const ws = this._spatialConfig.worldScale;
+      const strikeX = (Math.random() * 2 - 1) * ws;
+      const strikeY = ws * 0.5; // Above — thunder comes from the sky
+      const strikeZ = this._spatialConfig.fixedDepth - (dist * 0.5); // Farther strikes are farther back
+      this._panner3d.positionX.value = strikeX;
+      this._panner3d.positionY.value = strikeY;
+      this._panner3d.positionZ.value = strikeZ;
+    }
 
     // Schedule layers with appropriate delays
     // Distance affects timing offsets between layers
@@ -685,6 +713,22 @@ export class ThunderModule {
     };
   }
 
+  setSpatialConfig(config: Partial<SpatialConfig>): void {
+    if (config.enabled !== undefined) this._spatialConfig.enabled = config.enabled;
+    if (config.panningModel !== undefined) {
+      this._spatialConfig.panningModel = config.panningModel;
+      this._panner3d.panningModel = config.panningModel;
+    }
+    if (config.worldScale !== undefined) this._spatialConfig.worldScale = config.worldScale;
+    if (config.fixedDepth !== undefined) this._spatialConfig.fixedDepth = config.fixedDepth;
+    // Reset to default position when spatial is disabled
+    if (!this._spatialConfig.enabled) {
+      this._panner3d.positionX.value = 0;
+      this._panner3d.positionY.value = 0;
+      this._panner3d.positionZ.value = this._spatialConfig.fixedDepth;
+    }
+  }
+
   getConfig(): ThunderModuleConfig {
     return { ...this._config };
   }
@@ -728,6 +772,7 @@ export class ThunderModule {
     this._body.dispose();
     this._rumble.dispose();
     this._masterGain.dispose();
+    this._panner3d.dispose();
     this._output.dispose();
     this._sidechain.dispose();
     this._sidechainEnvelope.dispose();

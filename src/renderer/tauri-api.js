@@ -97,12 +97,8 @@ window.rainydesk = {
     listen('start-audio', () => callback());
   },
 
-  // Fade-in coordination: signal readiness and wait for synchronized start
-  rendererReady: () => invoke('renderer_ready'),
-  backgroundReady: () => invoke('background_ready'),
-  onStartFadeIn: (callback) => {
-    listen('start-fade-in', () => callback());
-  },
+  // WebView health heartbeat (crash detection watchdog)
+  heartbeat: () => invoke('heartbeat'),
 
   // Log messages to main process console
   log: (message) => invoke('log_message', { message }),
@@ -136,6 +132,10 @@ window.rainydesk = {
   // Open logs folder in Explorer
   openLogsFolder: () => invoke('open_logs_folder'),
 
+  // Custom themes I/O (UserThemes.json in Documents\RainyDesk\)
+  loadUserThemes: () => invoke('load_user_themes'),
+  saveUserThemes: (data) => invoke('save_user_themes', { data }),
+
   // Stats bridge (overlay → panel)
   // Emits stats from overlay window so panel can display them
   emitStats: (stats) => emit('renderer-stats', stats),
@@ -159,6 +159,11 @@ window.rainydesk = {
   // Help window hidden event (Rust -> panel)
   onHelpWindowHidden: (callback) => {
     listen('help-window-hidden', () => callback());
+  },
+
+  // Monitor hot-swap detection (Rust -> renderer)
+  onMonitorConfigChanged: (callback) => {
+    listen('monitor-config-changed', () => callback());
   }
 };
 

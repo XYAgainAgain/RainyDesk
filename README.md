@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/icons/RainyDeskIconWhite.png" alt="RainyDesk logo" width="128">
 <h1>🌧️ RainyDesk 💻</h1>
- <sup>v0.9.3-alpha</sup>
+ <sup>v0.9.4-alpha</sup>
 </div>
 
 
@@ -86,20 +86,29 @@ RainyDesk is in active development and I'm really not rushing it because it's my
 - **Rainscaper control panel** to tweak everything from rain intensity to gravity to gaiety
 - **Procedural audio synthesis** for impact sounds, wind, background noise, and lots more!
 - **Background rain sheets** made of atmospheric layers behind your windows with no physics; really sells the effect!
-- **Render scale options** for chunky, normal, or fairly smooth visuals, your choice! Lower render scale is lighter on the graphics card, but it all sounds the same!
+- **Render scale** in 4 tiers (Lo-Fi / Pixel / Clean / Full) — lower is lighter on the GPU, but it all sounds the same!
+- **Grid scale** in 4 tiers (Potato / Chunky / Normal / Detailed) — controls simulation resolution
 - **Gentle fade-in on startup** so no jump-scares from fake water lol
 - **Matrix Mode** complete with a sweet synth tune that the rain plays automagically 😎
-- **Oscillator knobs** that auto-drift sliders for natural variation in intensity, wind, turbulence, and splash size
+- **Oscillator knobs** that auto-drift sliders for natural variation in intensity, wind, turbulence, and more
+- **Splash size chain-link** that auto-derives splash scale from drop mass (or unlink for manual control)
 - **FPS limiter** from 15 Hz all the way to 360 Hz (or uncapped) so you can balance performance vs. smoothness
+- **Performance presets** (Potato / Light / Balanced / Cranked) for one-click performance tuning
+- **Impact Pitch** control with OSC knob for tuning raindrop sound character
 - **Start with Windows** toggle so RainyDesk launches on login
-- **Built-in help guide** accessible from the version menu in the panel
+- **Built-in help guide** accessible from the **?** button in the panel header
 - **12 panel themes** including one that auto-matches your Windows accent color
+- **System tab** with 4 collapsible sections (Performance, Behavior, Diagnostics, Actions) showing CPU/GPU/RAM info and per-monitor refresh rates
+- **Maximized detection** — rain hides on monitors with maximized windows (toggleable)
+- **Window collision toggles** — fine-grained control over fullscreen detection, audio muffling, and window collision
+- **Monitor hot-swap detection** — plug or unplug a display, and RainyDesk prompts you to reset the rain layout
+- **Per-mode settings** — Rain Mode and Matrix Mode save their own independent configurations in `.rain` files
 
 **What's Coming:**
 
 - ***Thunder synth!*** Because we *gotta* have the booms! ⛈
-- **7 audio materials** which will be Glass, Metal, Wood, Concrete, Fabric, Foliage, & Water (each sounding different!)
 - **Rainscape preset system** to save and load your perfect rainy day vibes as `.rain` files like `TinRoof.rain` & `Forest.rain`
+- **7 audio materials** which will be Glass, Metal, Wood, Concrete, Fabric, Foliage, & Water (each sounding different!)
 - 3D spatial audio with full 5.1/7.1 surround sound support (like Dolby Atmos for Headphones)
 - More visual effects (adjustable trails, droplet styles)
 - Linux support (I pinkie promise!) and maybe MacOS later if my Mac Mini behaves

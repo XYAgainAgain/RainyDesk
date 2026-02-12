@@ -7,10 +7,10 @@
  * 1. Hide canvas immediately (synchronous)
  * 2. Wait for Tauri API
  * 3. Get virtual desktop info
- * 4. Init WebGL renderer
- * 5. Register event listeners
+ * 4. Init WebGL renderer + resize + register event listeners
+ * 5. Load startup rainscape (rain settings + Matrix mode if saved)
  * 6. Start render loop (hidden)
- * 7. Signal ready, wait for coordinated fade-in
+ * 7. 300ms stabilization delay, then fade-in
  */
 
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
@@ -43,6 +43,7 @@ let lastFrameTime = 0;
 let matrixMode = false;
 let matrixRenderer = null;
 let matrixCanvas = null; // Separate canvas for Matrix Mode (avoids WebGL context conflicts)
+let matrixInitGeneration = 0; // Incremented on each toggle-ON to cancel stale async inits
 
 /* Wait for Tauri API to be available */
 function waitForTauriAPI() {
@@ -67,6 +68,15 @@ function resizeCanvas() {
   canvas.style.height = height + 'px';
   if (renderer) {
     renderer.resize(width, height, 1, renderScale);
+  }
+  if (matrixCanvas) {
+    matrixCanvas.width = width;
+    matrixCanvas.height = height;
+    matrixCanvas.style.width = width + 'px';
+    matrixCanvas.style.height = height + 'px';
+  }
+  if (matrixRenderer) {
+    matrixRenderer.resize(width, height);
   }
   window.rainydesk?.log?.(`[Background] Canvas resized to ${width}x${height}, dpr=${window.devicePixelRatio}`);
 }
@@ -215,8 +225,7 @@ function registerEventListeners() {
     if (path === 'visual.matrixMode') {
       matrixMode = Boolean(value);
       if (matrixMode) {
-        // Hide rain shader canvas, create separate matrix canvas
-        canvas.style.display = 'none';
+        // Stop rain shader (matrix canvas renders on top)
         renderer.setBackgroundRainConfig({ enabled: false });
 
         // Create separate canvas for Matrix Mode (avoids WebGL context conflicts)
@@ -229,12 +238,10 @@ function registerEventListeners() {
         document.body.appendChild(matrixCanvas);
 
         // Init background matrix
-        initBackgroundMatrix();
+        initBackgroundMatrix(++matrixInitGeneration);
       } else {
-        // Destroy matrix and its canvas
+        // Destroy matrix and its canvas, re-enable rain shader
         destroyBackgroundMatrix();
-        // Show rain shader canvas
-        canvas.style.display = 'block';
         renderer.setBackgroundRainConfig({ enabled: true });
       }
     }
@@ -252,12 +259,6 @@ function registerEventListeners() {
       }
     }
 
-    // CRT Filter intensity (Matrix Mode only, 0-1)
-    if (path === 'visual.crtIntensity') {
-      if (matrixRenderer) {
-        matrixRenderer.setCrtIntensity(Number(value));
-      }
-    }
   });
 
   // Reinit status: pause background during overlay reset
@@ -280,13 +281,16 @@ function registerEventListeners() {
   // Per-monitor fullscreen state from overlay
   window.rainydesk.onFullscreenMonitors?.((indices) => {
     const monitorCount = virtualDesktop?.monitors?.length || 1;
+    const wasFullscreen = isFullscreenActive;
     isFullscreenActive = indices.length >= monitorCount;
-    window.rainydesk.log(`[Background] Fullscreen monitors: [${indices}], hiding=${isFullscreenActive}`);
+    if (isFullscreenActive !== wasFullscreen) {
+      window.rainydesk.log(`[Background] Fullscreen monitors: [${indices}], hiding=${isFullscreenActive}`);
+    }
   });
 }
 
 /* Initialize background Matrix renderer (dimmed, no collision) */
-async function initBackgroundMatrix() {
+async function initBackgroundMatrix(gen) {
   if (matrixRenderer || !matrixCanvas) {
     window.rainydesk?.log?.(`[Background] initBackgroundMatrix skipped: renderer=${!!matrixRenderer}, canvas=${!!matrixCanvas}`);
     return;
@@ -295,6 +299,7 @@ async function initBackgroundMatrix() {
   try {
     window.rainydesk.log('[Background] Importing simulation.bundle.js for Matrix...');
     const module = await import('./simulation.bundle.js');
+    if (gen !== matrixInitGeneration) return; // Superseded by newer toggle
     window.rainydesk.log(`[Background] Import OK, MatrixPixiRenderer: ${typeof module.MatrixPixiRenderer}`);
 
     const { MatrixPixiRenderer } = module;
@@ -316,6 +321,11 @@ async function initBackgroundMatrix() {
       collisionEnabled: false,
     });
     await matrixRenderer.init();
+    if (gen !== matrixInitGeneration) {
+      matrixRenderer?.destroy();
+      matrixRenderer = null;
+      return;
+    }
     window.rainydesk.log('[Background] Matrix renderer initialized (dimmed layer)');
   } catch (err) {
     window.rainydesk.log(`[Background] Failed to init matrix: ${err?.message || err}`);
@@ -332,7 +342,6 @@ async function initBackgroundMatrix() {
       matrixCanvas.remove();
       matrixCanvas = null;
     }
-    canvas.style.display = 'block';
     renderer.setBackgroundRainConfig({ enabled: true });
     window.rainydesk.log('[Background] Falling back to rain shader (matrix init failed)');
   }
@@ -386,6 +395,11 @@ async function init() {
     enabled: true
   });
 
+  resizeCanvas();
+
+  // Register event listeners early so IPC events aren't dropped during Matrix init
+  registerEventListeners();
+
   // Try to load startup rainscape settings
   try {
     const startup = await window.rainydesk.getStartupRainscape();
@@ -411,18 +425,47 @@ async function init() {
       if (data.system && typeof data.system.fpsLimit === 'number') {
         fpsLimit = data.system.fpsLimit;
       }
+
+      // Matrix Mode: activate background layer if saved as active
+      if (data.visual && data.visual.matrixMode) {
+        matrixMode = true;
+        renderer.setBackgroundRainConfig({ enabled: false });
+
+        matrixCanvas = document.createElement('canvas');
+        matrixCanvas.id = 'matrix-bg-canvas';
+        matrixCanvas.style.cssText = canvas.style.cssText;
+        matrixCanvas.style.display = 'block';
+        matrixCanvas.width = canvas.width;
+        matrixCanvas.height = canvas.height;
+        document.body.appendChild(matrixCanvas);
+
+        await initBackgroundMatrix(++matrixInitGeneration);
+
+        // Apply visual settings after matrix renderer is ready
+        if (matrixRenderer) {
+          if (data.rain && data.rain.gayMode) {
+            matrixRenderer.setGaytrixMode(true);
+          }
+          if (data.matrix && data.matrix.transMode) {
+            matrixRenderer.setTransMode(true);
+          }
+          if (data.matrix && data.matrix.transScrollDirection) {
+            matrixRenderer.setTransScrollDirection(String(data.matrix.transScrollDirection));
+          }
+          if (data.rain && typeof data.rain.color === 'string' && data.rain.color !== '#8aa8c0') {
+            matrixRenderer.setRainColor(data.rain.color);
+          }
+        }
+        window.rainydesk.log('[Background] Matrix mode activated from startup rainscape');
+      }
+
       window.rainydesk.log('[Background] Applied startup rainscape settings');
     }
   } catch (err) {
     window.rainydesk.log(`[Background] Failed to load startup rainscape: ${err}`);
   }
 
-  resizeCanvas();
-
-  // PHASE 5: Register event listeners
-  registerEventListeners();
-
-  // PHASE 6: Start render loop (still hidden)
+  // Start render loop (still hidden)
   requestAnimationFrame(renderLoop);
   window.rainydesk.log('[Background] Render loop started (hidden)');
 
@@ -432,6 +475,10 @@ async function init() {
     window.rainydesk.log('[Background] Starting fade-in');
     canvas.style.visibility = 'visible';
     canvas.style.opacity = '1';
+    if (matrixCanvas) {
+      matrixCanvas.style.visibility = 'visible';
+      matrixCanvas.style.opacity = '1';
+    }
 
     // Mark init time so hot-reloads don't flash (localStorage survives WebView recreation)
     localStorage.setItem('__RAINYDESK_BACKGROUND_INIT_TIME__', Date.now().toString());
@@ -439,8 +486,12 @@ async function init() {
     // Clean up transition after it completes
     setTimeout(() => {
       canvas.style.transition = 'none';
+      if (matrixCanvas) matrixCanvas.style.transition = 'none';
     }, 5000);
   }, 300);
+
+  // Start heartbeat for crash detection watchdog
+  setInterval(() => window.rainydesk.heartbeat().catch(() => {}), 5000);
 
   window.rainydesk.log('[Background] Initialization complete');
 }

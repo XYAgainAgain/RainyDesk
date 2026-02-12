@@ -1,5 +1,5 @@
 import { Application, Container, BitmapText, BitmapFont } from 'pixi.js';
-import { GlowFilter, CRTFilter } from 'pixi-filters';
+import { GlowFilter } from 'pixi-filters';
 
 // Configuration
 export const MATRIX_CONFIG = {
@@ -66,6 +66,9 @@ export interface MatrixRendererConfig {
 }
 
 export class MatrixPixiRenderer {
+  // Static font cache — survives toggle cycles, only built once per session
+  private static fontInstalled = false;
+
   private app: Application | null = null;
   private initialized = false;
 
@@ -79,8 +82,6 @@ export class MatrixPixiRenderer {
   private glyphContainer: Container | null = null;
   private bloomContainer: Container | null = null;
   private bloomFilter: GlowFilter | null = null;
-  private crtFilter: CRTFilter | null = null;
-  private crtEnabled = false;
 
   // Head bloom glyphs (one per column for glow effect)
   private headBloomGlyphs: BitmapText[] = [];
@@ -123,9 +124,9 @@ export class MatrixPixiRenderer {
   private readonly fontSize = 28;
   private columnSpacing = 28;
 
-  // Performance: throttle mutations to 60Hz (matches physics tick rate)
+  // Performance: throttle mutations (60Hz foreground, 30Hz dimmed background)
   private mutationAccum = 0;
-  private readonly MUTATION_INTERVAL = 1 / 60; // 60Hz mutation ticks
+  private readonly MUTATION_INTERVAL: number;
 
   // Callbacks - returns { onBeat: boolean } for flash intensity decision
   public onCollision: ((x: number, y: number) => { onBeat: boolean }) | null = null;
@@ -135,6 +136,8 @@ export class MatrixPixiRenderer {
     this.speedMult = config.speedMultiplier ?? 1.0;
     this.alphaMult = config.alphaMultiplier ?? 1.0;
     this.collisionEnabled = config.collisionEnabled ?? true;
+    this.columnSpacing = config.dimmed ? 40 : 28;
+    this.MUTATION_INTERVAL = config.dimmed ? 1 / 30 : 1 / 60;
   }
 
   async init(): Promise<void> {
@@ -157,29 +160,17 @@ export class MatrixPixiRenderer {
 
     // Bloom container for head glow effect (rendered on top)
     this.bloomContainer = new Container();
-    this.bloomFilter = new GlowFilter({
-      distance: 8,
-      outerStrength: 2.5,
-      innerStrength: 0,
-      color: MATRIX_CONFIG.COLOR_GLOW,
-      quality: 0.3, // Lower quality = better performance
-    });
-    this.bloomContainer.filters = [this.bloomFilter];
+    if (!this.config.dimmed) {
+      this.bloomFilter = new GlowFilter({
+        distance: 8,
+        outerStrength: 2.5,
+        innerStrength: 0,
+        color: MATRIX_CONFIG.COLOR_GLOW,
+        quality: 0.3,
+      });
+      this.bloomContainer.filters = [this.bloomFilter];
+    }
     this.app.stage.addChild(this.bloomContainer);
-
-    // CRT filter for retro scanline effect (applied to whole stage, starts disabled)
-    this.crtFilter = new CRTFilter({
-      curvature: 2,
-      lineWidth: 2,
-      lineContrast: 0.3,
-      noise: 0.1,
-      noiseSize: 1,
-      vignetting: 0.2,
-      vignettingAlpha: 0.7,
-      vignettingBlur: 0.3,
-      time: 0,
-    });
-    // Don't apply filter until enabled (performance)
 
     await this.initBitmapFont();
     // Pool size calculation: columns × max_tail_length × 1.5 safety margin
@@ -194,14 +185,17 @@ export class MatrixPixiRenderer {
   }
 
   private async initBitmapFont(): Promise<void> {
-    // Wait for web fonts to load (Matrix Code for katakana, Nimbus Mono Bold for Latin)
+    if (MatrixPixiRenderer.fontInstalled) {
+      this.fontReady = true;
+      return;
+    }
+
     await document.fonts.ready;
 
     const matrixLoaded = document.fonts.check('20px "Matrix Code"');
     const nimbusLoaded = document.fonts.check('bold 20px "Nimbus Mono"');
     console.log('[Matrix] Font check — Matrix Code:', matrixLoaded, '| Nimbus Mono Bold:', nimbusLoaded);
 
-    // Font fallback chain: katakana/digits → Matrix Code, Latin → Nimbus Mono Bold
     const fontFamily = matrixLoaded
       ? "'Matrix Code', 'Nimbus Mono', monospace"
       : "'Nimbus Mono', monospace";
@@ -217,7 +211,8 @@ export class MatrixPixiRenderer {
       chars: GLYPHS.split(''),
     });
 
-    console.log('[Matrix] BitmapFont installed');
+    console.log('[Matrix] BitmapFont installed (cached for session)');
+    MatrixPixiRenderer.fontInstalled = true;
     this.fontReady = true;
   }
 
@@ -511,47 +506,6 @@ export class MatrixPixiRenderer {
     return this.columnSpacing;
   }
 
-  /**
-   * Set CRT filter intensity (0 = off, 1 = full effect).
-   * Values > 0 enable the filter, 0 disables it for performance.
-   */
-  setCrtIntensity(intensity: number): void {
-    if (!this.crtFilter || !this.app) return;
-
-    const clamped = Math.max(0, Math.min(1, intensity));
-
-    if (clamped <= 0) {
-      // Disable CRT filter for performance
-      if (this.crtEnabled) {
-        this.app.stage.filters = [];
-        this.crtEnabled = false;
-      }
-      return;
-    }
-
-    // Enable and scale CRT parameters
-    if (!this.crtEnabled) {
-      this.app.stage.filters = [this.crtFilter];
-      this.crtEnabled = true;
-    }
-
-    // Scale CRT parameters with intensity
-    this.crtFilter.curvature = 2 * clamped;
-    this.crtFilter.lineContrast = 0.3 * clamped;
-    this.crtFilter.noise = 0.1 * clamped;
-    this.crtFilter.vignetting = 0.2 * clamped;
-    this.crtFilter.vignettingAlpha = 0.7 * clamped;
-  }
-
-  /**
-   * Update CRT time for animated noise (call each frame if CRT enabled).
-   */
-  updateCrtTime(time: number): void {
-    if (this.crtFilter && this.crtEnabled) {
-      this.crtFilter.time = time;
-    }
-  }
-
   private getRandomGlyph(): string {
     return GLYPHS[Math.floor(Math.random() * GLYPHS.length)] || 'A';
   }
@@ -750,7 +704,7 @@ export class MatrixPixiRenderer {
   update(dt: number): void {
     if (!this.initialized || !this.fontReady) return;
 
-    // Throttle mutations to 30Hz (saves BitmapText recalculation overhead)
+    // Throttle mutations (saves BitmapText recalculation overhead)
     this.mutationAccum += dt;
     const doMutations = this.mutationAccum >= this.MUTATION_INTERVAL;
     if (doMutations) this.mutationAccum = 0;
@@ -766,11 +720,6 @@ export class MatrixPixiRenderer {
 
     try {
       this.updateColumns(dt, doMutations);
-
-      // Animate CRT noise if enabled
-      if (this.crtEnabled && this.crtFilter) {
-        this.crtFilter.time = performance.now() / 1000;
-      }
     } catch (err) {
       console.error('[Matrix] Update error:', err instanceof Error ? err.message : String(err));
     }
@@ -1026,8 +975,6 @@ export class MatrixPixiRenderer {
     this.headBloomGlyphs.length = 0;
     this.bloomFilter = null;
     this.bloomContainer = null;
-    this.crtFilter = null;
-    this.crtEnabled = false;
 
     // Release all column glyphs back to pool
     for (const col of this.columns) {

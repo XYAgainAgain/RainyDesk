@@ -1,5 +1,23 @@
 /* Reusable slider, toggle, and knob components */
 
+// Custom tooltip (matches theme-tooltip styling, replaces native title)
+function showTooltip(el: HTMLElement, text: string): HTMLElement {
+  const tip = document.createElement('div');
+  tip.className = 'theme-tooltip';
+  tip.textContent = text;
+  document.body.appendChild(tip);
+  const rect = el.getBoundingClientRect();
+  const tipRect = tip.getBoundingClientRect();
+  tip.style.left = `${rect.left + rect.width / 2 - tipRect.width / 2}px`;
+  tip.style.top = `${rect.top - tipRect.height - 6}px`;
+  return tip;
+}
+
+function hideTooltip(tip: HTMLElement | null): null {
+  if (tip) tip.remove();
+  return null;
+}
+
 export interface SliderConfig {
   id?: string;
   label: string;
@@ -381,18 +399,27 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
   if (id) knob.dataset.knobId = id;
 
   const tooltipPrefix = description ? `${description}: ` : '';
-  knob.title = `${tooltipPrefix}${Math.round(currentValue)}`;
+  let tooltipEl: HTMLElement | null = null;
+  let tooltipText = `${tooltipPrefix}${Math.round(currentValue)}`;
 
   const indicator = document.createElement('div');
   indicator.className = 'rotary-knob-indicator';
   knob.appendChild(indicator);
+
+  knob.addEventListener('mouseenter', () => {
+    tooltipEl = showTooltip(knob, tooltipText);
+  });
+  knob.addEventListener('mouseleave', () => {
+    tooltipEl = hideTooltip(tooltipEl);
+  });
 
   // Map to rotation angle: 0 = 225deg, max = 315deg, arc spans 270deg total
   const updateVisual = () => {
     const t = (currentValue - min) / (max - min); // 0-1
     const angle = 225 + t * 270; // 225deg to 495deg
     indicator.style.transform = `rotate(${angle}deg)`;
-    knob.title = `${tooltipPrefix}${Math.round(currentValue)}`;
+    tooltipText = `${tooltipPrefix}${Math.round(currentValue)}`;
+    if (tooltipEl) tooltipEl.textContent = tooltipText;
 
     knob.classList.toggle('has-value', t > 0.01);
 

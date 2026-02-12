@@ -25,8 +25,8 @@ const BASS_SUSTAINED = { attack: 0.3, decay: 0.1, sustain: 0.9, release: 0.5 };
 const BASS_PULSED = { attack: 0.01, decay: 0.4, sustain: 0.3, release: 0.3 }; // Longer "dmmm" not "bmp"
 
 // Bass volume per section (B1)
-const BASS_VOLUME_MAIN = -12;    // Present in main loop
-const BASS_VOLUME_BRIDGE = -8;   // Prominent in bridge pulsed section
+const BASS_VOLUME_MAIN = -9;     // 50% slider default
+const BASS_VOLUME_BRIDGE = -5;   // Prominent in bridge pulsed section (main + 4 dB)
 
 // G Dorian ascending walk (sub-bass intro, bars 0-3)
 const G_DORIAN_WALK = ['G0', 'A0', 'Bb0', 'C1', 'D1', 'Eb1', 'F1', 'G1'];
@@ -106,9 +106,9 @@ export class GlitchSynth {
 
   // Section/volume tracking
   private currentSection: Section = 'main';
-  private targetDroneVolumeDb = -12; // B5: bumped from -18 for more presence
-  private targetBassVolumeDb = BASS_VOLUME_MAIN; // User's preferred bass dB
-  private targetCollisionVolumeDb = -24; // Matches initial gain
+  private targetDroneVolumeDb = -17.4; // 30% slider default
+  private targetBassVolumeDb = BASS_VOLUME_MAIN; // 50% slider default (-9 dB)
+  private targetCollisionVolumeDb = -21.6; // 20% slider default
 
   // Master output node — all synth outputs route here, then to destination or external chain
   private masterOutput: Tone.Gain;

@@ -185,6 +185,8 @@ class BackgroundRainShader {
             reverseGravity: null
         };
 
+        this._lastLoggedConfig = '';
+
         // Configurable parameters
         this.config = {
             intensity: 0.5,     // 0.0 - 1.0
@@ -359,9 +361,24 @@ class BackgroundRainShader {
         if (config.reverseGravity !== undefined) {
             this.config.reverseGravity = Boolean(config.reverseGravity);
         }
-        // Debug: log config updates
+        // Throttled config logging — at most once per 2s during slider drags
         if (typeof window !== 'undefined' && window.rainydesk?.log) {
-            window.rainydesk.log(`[BGShader] Config: enabled=${this.config.enabled}, intensity=${this.config.intensity.toFixed(2)}, wind=${this.config.wind.toFixed(2)}, layers=${this.config.layerCount}, speed=${this.config.speed.toFixed(2)}`);
+            const configStr = `enabled=${this.config.enabled}, intensity=${this.config.intensity.toFixed(2)}, wind=${this.config.wind.toFixed(2)}, layers=${this.config.layerCount}, speed=${this.config.speed.toFixed(2)}`;
+            if (configStr !== this._lastLoggedConfig) {
+                this._lastLoggedConfig = configStr;
+                const now = performance.now();
+                clearTimeout(this._configLogTimer);
+                if (!this._lastLogTime || now - this._lastLogTime >= 2000) {
+                    this._lastLogTime = now;
+                    window.rainydesk.log(`[BGShader] Config: ${configStr}`);
+                } else {
+                    // Flush final value after dragging stops
+                    this._configLogTimer = setTimeout(() => {
+                        this._lastLogTime = performance.now();
+                        window.rainydesk.log(`[BGShader] Config: ${configStr}`);
+                    }, 500);
+                }
+            }
         }
     }
 

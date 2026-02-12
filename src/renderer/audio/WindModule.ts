@@ -19,6 +19,7 @@ import type {
   KatabaticConfig,
   NoiseType,
   FormantSet,
+  SpatialConfig,
 } from '../../types/audio';
 
 // Default Configs:
@@ -696,9 +697,16 @@ export class WindModule {
   private _singing: SingingWindSynth;
   private _katabatic: KatabaticLayer;
   private _masterGain: Tone.Gain;
+  private _panner3d: Tone.Panner3D;
   private _output: Tone.Gain;
   private _windSpeed = 0;
   private _isPlaying = false;
+  private _spatialConfig: SpatialConfig = {
+    enabled: false,
+    panningModel: 'equalpower',
+    worldScale: 5,
+    fixedDepth: -3, // Slightly farther than rain
+  };
 
   constructor(config: Partial<WindModuleConfig> = {}) {
     this._config = {
@@ -720,15 +728,23 @@ export class WindModule {
 
     // Master output
     this._masterGain = new Tone.Gain(Tone.dbToGain(this._config.masterGain));
+    this._panner3d = new Tone.Panner3D({
+      panningModel: this._spatialConfig.panningModel,
+      rolloffFactor: 0,
+      positionX: 0,
+      positionY: 0,
+      positionZ: this._spatialConfig.fixedDepth,
+    });
     this._output = new Tone.Gain(1);
 
-    // Connect all layers to master
+    // Connect all layers to master, then through 3D panner
     this._bed.output.connect(this._masterGain);
     this._gust.output.connect(this._masterGain);
     this._aeolian.output.connect(this._masterGain);
     this._singing.output.connect(this._masterGain);
     this._katabatic.output.connect(this._masterGain);
-    this._masterGain.connect(this._output);
+    this._masterGain.connect(this._panner3d);
+    this._panner3d.connect(this._output);
   }
 
   start(): void {
@@ -773,6 +789,12 @@ export class WindModule {
     // Scale bed intensity with wind speed
     const bedBoost = (this._windSpeed / 100) * 12;
     this._bed.setBaseGain(this._config.bed.baseGain + bedBoost);
+
+    // Offset spatial position: wind comes from left, stronger wind = farther left
+    if (this._spatialConfig.enabled) {
+      const xOffset = -(this._windSpeed / 100) * (this._spatialConfig.worldScale * 0.8);
+      this._panner3d.positionX.rampTo(xOffset, 0.5);
+    }
   }
 
   get windSpeed(): number {
@@ -823,6 +845,25 @@ export class WindModule {
     return this._output;
   }
 
+  setSpatialConfig(config: Partial<SpatialConfig>): void {
+    if (config.enabled !== undefined) this._spatialConfig.enabled = config.enabled;
+    if (config.panningModel !== undefined) {
+      this._spatialConfig.panningModel = config.panningModel;
+      this._panner3d.panningModel = config.panningModel;
+    }
+    if (config.worldScale !== undefined) this._spatialConfig.worldScale = config.worldScale;
+    if (config.fixedDepth !== undefined) {
+      this._spatialConfig.fixedDepth = config.fixedDepth;
+      this._panner3d.positionZ.value = config.fixedDepth;
+    }
+    // Reset to center when spatial is disabled
+    if (!this._spatialConfig.enabled) {
+      this._panner3d.positionX.value = 0;
+      this._panner3d.positionY.value = 0;
+      this._panner3d.positionZ.value = this._spatialConfig.fixedDepth;
+    }
+  }
+
   getStats(): {
     isPlaying: boolean;
     windSpeed: number;
@@ -855,6 +896,7 @@ export class WindModule {
     this._singing.dispose();
     this._katabatic.dispose();
     this._masterGain.dispose();
+    this._panner3d.dispose();
     this._output.dispose();
   }
 }

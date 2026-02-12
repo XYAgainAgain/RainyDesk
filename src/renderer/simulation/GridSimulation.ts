@@ -92,6 +92,19 @@ export class GridSimulation {
     // Puddle dirty tracking (skip GPU upload when nothing changed)
     private _puddlesDirty = true;
 
+    // Settled-state system: cells with low energy + momentum skip CA processing
+    private settled: Uint8Array;          // 1 = settled, 0 = active
+    private settledFrames: Uint8Array;    // Consecutive frames below threshold (need 2+ to settle)
+    private static readonly SETTLE_ENERGY = 0.03;
+    private static readonly SETTLE_MOMENTUM = 0.03;
+    private static readonly SETTLE_FRAMES = 2;
+
+    // Dirty-region tile tracking: only upload changed 16×16 tiles to GPU
+    private dirtyTiles: Uint8Array;
+    private tileColCount: number;
+    private tileRowCount: number;
+    private static readonly TILE_SIZE = 16;
+
     // Spatial hash for drop merge (pre-allocated, zero-GC)
     private mergeHashCells: Int16Array;    // Flat bucket storage (cellCount × bucketCap)
     private mergeHashCounts: Int16Array;   // Per-cell drop count
@@ -213,6 +226,14 @@ export class GridSimulation {
         this.splashVelY = new Float32Array(maxSplashes);
         this.splashLife = new Float32Array(maxSplashes);
 
+        // Settled-state + dirty tile grids
+        this.settled = new Uint8Array(gridSize);
+        this.settledFrames = new Uint8Array(gridSize);
+        this.tileColCount = Math.ceil(this.gridWidth / GridSimulation.TILE_SIZE);
+        this.tileRowCount = Math.ceil(this.gridHeight / GridSimulation.TILE_SIZE);
+        this.dirtyTiles = new Uint8Array(this.tileColCount * this.tileRowCount);
+        this.dirtyTiles.fill(1); // All tiles dirty on init
+
         // Spatial hash for merge: cell size = max interaction distance
         // Max radius after merge can grow, but practical cap is ~6 at default scale.
         // Cell must be >= 2*maxPossibleRadius + mergeThreshold so neighbors cover all pairs.
@@ -223,6 +244,32 @@ export class GridSimulation {
         const cellCount = this.mergeGridCols * this.mergeGridRows;
         this.mergeHashCells = new Int16Array(cellCount * this.MERGE_BUCKET_CAP);
         this.mergeHashCounts = new Int16Array(cellCount);
+    }
+
+    // Tile dirty helpers
+
+    /* Mark the tile containing cell (x, y) as dirty */
+    private markTileDirty(x: number, y: number): void {
+        const tc = (x / GridSimulation.TILE_SIZE) | 0;
+        const tr = (y / GridSimulation.TILE_SIZE) | 0;
+        if (tc >= 0 && tc < this.tileColCount && tr >= 0 && tr < this.tileRowCount) {
+            this.dirtyTiles[tr * this.tileColCount + tc] = 1;
+        }
+    }
+
+    /* Wake a settled cell and its neighbors (radius in cells) */
+    private wakeCell(x: number, y: number, radius = 2): void {
+        const x0 = Math.max(0, x - radius);
+        const x1 = Math.min(this.gridWidth - 1, x + radius);
+        const y0 = Math.max(0, y - radius);
+        const y1 = Math.min(this.gridHeight - 1, y + radius);
+        for (let wy = y0; wy <= y1; wy++) {
+            for (let wx = x0; wx <= x1; wx++) {
+                const wi = wy * this.gridWidth + wx;
+                this.settled[wi] = 0;
+                this.settledFrames[wi] = 0;
+            }
+        }
     }
 
     // Public API
@@ -301,14 +348,19 @@ export class GridSimulation {
             }
         }
 
-        // Step 4: Commit target grid to main grid
+        // Step 4: Commit target grid and wake adjacent settled water
         let changedCount = 0;
         for (let i = 0; i < this.grid.length; i++) {
             if (this.grid[i] !== targetGrid[i]) {
                 this.grid[i] = targetGrid[i]!;
                 changedCount++;
+                const cx = i % this.gridWidth;
+                const cy = (i / this.gridWidth) | 0;
+                this.markTileDirty(cx, cy);
+                this.wakeCell(cx, cy);
             }
         }
+        if (changedCount > 0) this._puddlesDirty = true;
 
         // Step 5: Now displace water (grid is finalized, air cells are safe)
         for (const { x, y } of waterToDisplace) {
@@ -447,6 +499,10 @@ export class GridSimulation {
         this.config.splashScale = Math.max(0.5, Math.min(2.0, scale));
     }
 
+    getSplashScale(): number {
+        return this.config.splashScale;
+    }
+
     /**
      * Set turbulence (wind gust strength).
      * @param intensity 0-1 (0 = no gusts, 1 = strong gusts)
@@ -537,7 +593,10 @@ export class GridSimulation {
 
     get gridState() {
         const dirty = this._puddlesDirty;
-        this._puddlesDirty = false; // Reset on read (renderer consumes it)
+        this._puddlesDirty = false;
+        // Copy dirty tiles and clear (renderer consumes them)
+        const tiles = new Uint8Array(this.dirtyTiles);
+        this.dirtyTiles.fill(0);
         return {
             data: this.grid,
             depth: this.waterDepth,
@@ -546,6 +605,10 @@ export class GridSimulation {
             floorMap: this.floorMap,
             displayFloorMap: this.displayFloorMap,
             dirty,
+            dirtyTiles: tiles,
+            tileColCount: this.tileColCount,
+            tileRowCount: this.tileRowCount,
+            tileSize: GridSimulation.TILE_SIZE,
         };
     }
 
@@ -796,6 +859,8 @@ export class GridSimulation {
                                 this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
                                 this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
                                 this._puddlesDirty = true;
+                                this.wakeCell(cellX, waterY);
+                                this.markTileDirty(cellX, waterY);
                             }
                         }
 
@@ -954,6 +1019,8 @@ export class GridSimulation {
                                 this.waterEnergy[waterIndex] = Math.min(impactSpeed * 0.01, 0.6);
                                 this.waterMomentumX[waterIndex] = Math.max(-1, Math.min(1, this.dropsVelX[i]! * 0.01));
                                 this._puddlesDirty = true;
+                                this.wakeCell(waterX, waterY);
+                                this.markTileDirty(waterX, waterY);
 
                                 // Large drops spread horizontally (radius > 1.0)
                                 const spreadRadius = Math.min(3, Math.floor(dropRadius));
@@ -968,8 +1035,11 @@ export class GridSimulation {
                                         if (this.grid[spreadIdx] === CELL_AIR) {
                                             this.grid[spreadIdx] = CELL_WATER;
                                             this.waterDepth[spreadIdx] = Math.min(15.0, spreadDepth);
+                                            this.markTileDirty(spreadX, waterY);
+                                            this.wakeCell(spreadX, waterY);
                                         } else if (this.grid[spreadIdx] === CELL_WATER) {
                                             this.waterDepth[spreadIdx] = Math.min(15.0, this.waterDepth[spreadIdx]! + spreadDepth * 0.5);
+                                            this.markTileDirty(spreadX, waterY);
                                         }
                                     }
                                 }
@@ -1186,6 +1256,9 @@ export class GridSimulation {
                 const index = y * this.gridWidth + x;
                 if (this.grid[index] !== CELL_WATER) continue;
 
+                // Skip settled cells entirely (no CA processing needed)
+                if (this.settled[index]) continue;
+
                 // Water exists, so the puddle grid needs a GPU re-upload
                 this._puddlesDirty = true;
 
@@ -1314,15 +1387,17 @@ export class GridSimulation {
                         const currentDepth = this.waterDepth[index] || 1.0;
                         const belowDepth = this.waterDepthBuffer[belowIndex] || 1.0;
                         if (belowDepth < 15.0) {
-                            // Transfer 80% of depth DOWN - water wants to merge!
                             const transfer = currentDepth * 0.8;
                             this.waterDepthBuffer[belowIndex] = Math.min(15.0, belowDepth + transfer);
                             this.waterDepthBuffer[index] = currentDepth - transfer;
-                            // If we transferred most of our depth, we might evaporate
+                            this.markTileDirty(x, y);
+                            this.markTileDirty(x, gravTargetY);
                             if (this.waterDepthBuffer[index]! < 0.5) {
                                 this.gridBuffer[index] = CELL_AIR;
                                 this.waterDepthBuffer[index] = 0;
                                 this.waterEnergyBuffer[index] = 0;
+                                this.settled[index] = 0;
+                                this.settledFrames[index] = 0;
                             } else {
                                 this.waterEnergyBuffer[index] = energy * energyDecay;
                             }
@@ -1376,6 +1451,16 @@ export class GridSimulation {
                     this.spawnPuddleSplash(x, y, energy);
                 }
                 this.waterEnergyBuffer[index] = Math.max(restThreshold, energy * energyDecay);
+
+                // Settling: track consecutive low-energy frames
+                if (energy < GridSimulation.SETTLE_ENERGY && Math.abs(momentum) < GridSimulation.SETTLE_MOMENTUM) {
+                    this.settledFrames[index] = Math.min(255, (this.settledFrames[index] || 0) + 1);
+                    if (this.settledFrames[index]! >= GridSimulation.SETTLE_FRAMES) {
+                        this.settled[index] = 1;
+                    }
+                } else {
+                    this.settledFrames[index] = 0;
+                }
             }
         }
 
@@ -1387,21 +1472,23 @@ export class GridSimulation {
 
                 const index = floorY * this.gridWidth + x;
                 if (this.grid[index] === CELL_WATER) {
-                    // Floor drain: removes water at work area edge
-                    // Scaled by evaporation rate (0.5% base × rate)
                     if (Math.random() < 0.005 * this.config.evaporationRate) {
                         this.gridBuffer[index] = CELL_AIR;
                         this.waterEnergyBuffer[index] = 0;
                         this.waterMomentumXBuffer[index] = 0;
                         this.waterDepthBuffer[index] = 0;
+                        this.settled[index] = 0;
+                        this.settledFrames[index] = 0;
+                        this.markTileDirty(x, floorY);
+                        this._puddlesDirty = true;
                     }
                 }
             }
         }
 
-        // DEBUG: Log movement bias every 120 frames (~2 seconds at 60Hz)
+        // DEBUG: Log movement bias every 1800 frames (~30 seconds at 60Hz)
         this.debugFrameCount++;
-        if (this.debugFrameCount >= 120) {
+        if (this.debugFrameCount >= 1800) {
             // Count water cells for debugging
             let waterCount = 0;
             for (let i = 0; i < this.grid.length; i++) {
@@ -1551,6 +1638,12 @@ export class GridSimulation {
 
         // Mark destination as processed
         this.processedThisFrame[destIndex] = 1;
+
+        // Wake destination and mark tiles dirty for GPU upload
+        this.settled[destIndex] = 0;
+        this.settledFrames[destIndex] = 0;
+        this.markTileDirty(srcX, Math.floor(srcIndex / this.gridWidth));
+        this.markTileDirty(destX, destY);
 
         // Write energy to buffer
         this.waterEnergyBuffer[srcIndex] = 0;
@@ -1735,12 +1828,12 @@ export class GridSimulation {
             const neighborIndex = ny * this.gridWidth + nx;
             if (this.grid[neighborIndex] === CELL_AIR) {
                 this.grid[neighborIndex] = CELL_WATER;
-                // More energy when falling down (gravity assist)
                 this.waterEnergy[neighborIndex] = displacementEnergy + (dy > 0 ? 0.15 : 0);
-                this.waterDepth[neighborIndex] = originalDepth; // PRESERVE DEPTH!
-                // Strong momentum in push direction
+                this.waterDepth[neighborIndex] = originalDepth;
                 const pushMomentum = dx > 0 ? 0.95 : dx < 0 ? -0.95 : (Math.random() > 0.5 ? 0.3 : -0.3);
                 this.waterMomentumX[neighborIndex] = pushMomentum;
+                this.wakeCell(nx, ny);
+                this.markTileDirty(nx, ny);
                 return true;
             }
             return false;
@@ -1750,12 +1843,12 @@ export class GridSimulation {
         const mergeWater = (nx: number, ny: number, dx: number): boolean => {
             const neighborIndex = ny * this.gridWidth + nx;
             if (this.grid[neighborIndex] === CELL_WATER) {
-                // ADD depth to existing water - mass is conserved!
                 this.waterDepth[neighborIndex] = Math.min(15.0, (this.waterDepth[neighborIndex] || 1.0) + originalDepth);
                 this.waterEnergy[neighborIndex] = Math.min(1.0, (this.waterEnergy[neighborIndex] || 0) + displacementEnergy * 0.7);
-                // ACCUMULATE momentum - this creates the slosh wave!
                 const pushMomentum = dx > 0 ? 0.7 : dx < 0 ? -0.7 : 0;
                 this.waterMomentumX[neighborIndex] = Math.max(-1, Math.min(1, (this.waterMomentumX[neighborIndex] || 0) + pushMomentum));
+                this.wakeCell(nx, ny);
+                this.markTileDirty(nx, ny);
                 return true;
             }
             return false;
@@ -1950,14 +2043,17 @@ export class GridSimulation {
                 if (y2 < 0) continue;
                 const index = y2 * this.gridWidth + x;
                 if (this.grid[index] === CELL_WATER && Math.random() < evaporationChance) {
-                    // Reduce depth instead of removing water
                     this.waterDepth[index] = (this.waterDepth[index] || 1.0) - 1.0;
                     if (this.waterDepth[index]! <= 0) {
                         this.grid[index] = CELL_AIR;
                         this.waterEnergy[index] = 0;
                         this.waterMomentumX[index] = 0;
                         this.waterDepth[index] = 0;
+                        this.settled[index] = 0;
+                        this.settledFrames[index] = 0;
                     }
+                    this.markTileDirty(x, y2);
+                    this._puddlesDirty = true;
                 }
             }
         }
@@ -1986,7 +2082,6 @@ export class GridSimulation {
      * Clean up resources.
      */
     dispose(): void {
-        // TypedArrays are garbage collected, but we can help by nulling references
         // @ts-expect-error Intentional cleanup
         this.grid = this.waterEnergy = this.waterMomentumX = this.waterDepth = this.processedThisFrame = null;
         // @ts-expect-error Intentional cleanup
@@ -1997,5 +2092,7 @@ export class GridSimulation {
         this.splashX = this.splashY = this.splashVelX = this.splashVelY = this.splashLife = null;
         // @ts-expect-error Intentional cleanup
         this.mergeHashCells = this.mergeHashCounts = null;
+        // @ts-expect-error Intentional cleanup
+        this.settled = this.settledFrames = this.dirtyTiles = null;
     }
 }

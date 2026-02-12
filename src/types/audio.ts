@@ -121,6 +121,8 @@ export interface AudioParams {
   filterFreq: number;
   /** Stereo pan position (-1 = left, 0 = center, 1 = right) */
   pan: number;
+  /** 3D position for spatial audio (pixel coords from physics sim) */
+  position3d?: { x: number; y: number; z: number };
 }
 
 // Sheet Layer Types
@@ -176,6 +178,14 @@ export interface SpatialPosition {
   x: number;
   y: number;
   z: number;
+}
+
+/** 3D spatial audio configuration */
+export interface SpatialConfig {
+  enabled: boolean;
+  panningModel: 'HRTF' | 'equalpower';
+  worldScale: number;      // Half-width of audio world in meters (default 5)
+  fixedDepth: number;      // Z distance for rain sources (default -2)
 }
 
 /** Full effects chain configuration */

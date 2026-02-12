@@ -1,7 +1,8 @@
 /* Main panel class — standalone Rainscaper window UI */
 
 import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, updateSliderValue } from './components';
-import { applyTheme } from './themes';
+import { applyTheme, applyCustomTheme, generateRandomTheme, getRandomThemeName, DEFAULT_THEME_NAMES, clearCustomFonts, deriveThemeColors } from './themes';
+import type { CustomTheme, UserThemesFile } from './types';
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
 
 // Tab definitions
@@ -78,6 +79,7 @@ interface PanelState {
   // Physics
   gravity: number;
   splashSize: number;
+  splashLinked: boolean;
   puddleDrain: number;
   turbulence: number;
   dropSize: number;
@@ -90,9 +92,9 @@ interface PanelState {
   thunderEnabled: boolean;
   windSound: number;
   // Matrix Mode audio (E1) — percentages that map to dB via (v/100*42)-30
-  matrixBassVolume: number;       // Default 43% = -12 dB (matches GlitchSynth BASS_VOLUME_MAIN)
-  matrixCollisionVolume: number;  // Default 14% = -24 dB (matches GlitchSynth initial gain)
-  matrixDroneVolume: number;      // Default 43% = -12 dB (matches GlitchSynth targetDroneVolumeDb)
+  matrixBassVolume: number;       // Default 50% = -9 dB
+  matrixCollisionVolume: number;  // Default 20% = -21.6 dB
+  matrixDroneVolume: number;      // Default 30% = -17.4 dB
   matrixTranspose: number;
   // Visual
   backgroundShaderEnabled: boolean;
@@ -102,7 +104,6 @@ interface PanelState {
   gayMode: boolean;
   matrixMode: boolean;
   matrixDensity: number;
-  crtIntensity: number;
   uiScale: number;
   rainbowSpeed: number;
   // Trans Mode easter egg
@@ -117,7 +118,6 @@ interface PanelState {
   windOsc: number;
   intensityOsc: number;
   turbulenceOsc: number;
-  splashOsc: number;
   sheetOsc: number;
   // Presets
   presets: string[];
@@ -134,6 +134,8 @@ interface PanelState {
   rainOverFullscreen: boolean;
   audioMuffling: boolean;
   windowCollision: boolean;
+  // Spatial audio
+  spatialAudio: boolean;
   // Help window state
   helpWindowOpen: boolean;
   // App status
@@ -173,13 +175,22 @@ export class RainyDeskPanel {
   private autosaveIndicatorTimer: ReturnType<typeof setTimeout> | null = null;
   private autosaveRevertTimer: ReturnType<typeof setTimeout> | null = null;
   private autosaveState: 'idle' | 'saving' | 'saved' = 'idle';
+  private reinitButton: HTMLButtonElement | null = null;
   private reinitCooldownTimer: ReturnType<typeof setInterval> | null = null;
-  private reinitCooldownEnd: number = 0; // timestamp when cooldown expires
+  private reinitCooldownEnd: number = 0;
   private appStartTime: number = Date.now();
   // Document-level listeners (stored for cleanup on re-render)
   private previousTab: TabId = 'basic';
+  private pulseTimers: ReturnType<typeof setTimeout>[] = [];
+  private lastMatrixToggle = 0;
   private docClickListener: (() => void) | null = null;
   private docKeyListener: ((e: KeyboardEvent) => void) | null = null;
+  // Custom theme state
+  private customThemes: CustomTheme[] = [];
+  private scratchTheme: CustomTheme | null = null;
+  private themeEditorOpen = false;
+  private previousThemeId: string = 'blue';
+  private editingThemeId: string | null = null;
 
   /* Get saved UI Scale, or auto-fit to screen on first launch */
   private static getInitialUIScale(): number {
@@ -234,6 +245,7 @@ export class RainyDeskPanel {
       // Physics
       gravity: 980,
       splashSize: 1.0,
+      splashLinked: true,
       puddleDrain: 0.2,
       turbulence: 0.3,
       dropSize: 4,
@@ -246,9 +258,9 @@ export class RainyDeskPanel {
       thunderEnabled: false,
       windSound: 20,
       // Matrix Mode audio (E1) — percentages matching GlitchSynth default dB values
-      matrixBassVolume: 43,       // -12 dB
-      matrixCollisionVolume: 14,  // -24 dB
-      matrixDroneVolume: 43,      // -12 dB
+      matrixBassVolume: 50,       // -9 dB
+      matrixCollisionVolume: 20,  // -21.6 dB
+      matrixDroneVolume: 30,      // -17.4 dB
       matrixTranspose: 0,
       // Visual
       backgroundShaderEnabled: true,
@@ -258,7 +270,6 @@ export class RainyDeskPanel {
       gayMode: false,
       matrixMode: false,
       matrixDensity: 28,
-      crtIntensity: 0,
       uiScale: RainyDeskPanel.getInitialUIScale(),
       rainbowSpeed: 1,
       // Trans Mode easter egg
@@ -273,7 +284,6 @@ export class RainyDeskPanel {
       windOsc: 0,
       intensityOsc: 0,
       turbulenceOsc: 0,
-      splashOsc: 0,
       sheetOsc: 0,
       // Presets
       presets: [],
@@ -290,6 +300,8 @@ export class RainyDeskPanel {
       rainOverFullscreen: false,
       audioMuffling: true,
       windowCollision: true,
+      // Spatial audio
+      spatialAudio: false,
       // Help window state
       helpWindowOpen: false,
       // App status
@@ -333,6 +345,29 @@ export class RainyDeskPanel {
       this.state.presets = [...rootPresets, ...customPresets];
     } catch (err) {
       window.rainydesk.log(`[RainyDeskPanel] Failed to load presets: ${err}`);
+    }
+
+    // Load custom themes
+    try {
+      const themesFile = await window.rainydesk.loadUserThemes();
+      if (themesFile && Array.isArray(themesFile.themes)) {
+        this.customThemes = themesFile.themes;
+      }
+    } catch (err) {
+      window.rainydesk.log(`[RainyDeskPanel] Failed to load custom themes: ${err}`);
+    }
+
+    // If the active theme is custom, apply it now
+    if (this.state.theme.startsWith('custom-')) {
+      const customTheme = this.customThemes.find(t => t.id === this.state.theme);
+      if (customTheme) {
+        applyCustomTheme(customTheme);
+      } else {
+        // Theme was deleted, fall back to blue
+        this.state.theme = 'blue';
+        localStorage.setItem('rainscaper-theme', 'blue');
+        await applyTheme('blue');
+      }
     }
 
     // Hook param updates to flash the autosave indicator (skip non-saveable commands)
@@ -416,149 +451,176 @@ export class RainyDeskPanel {
       this.state.appStatus = status;
       this.updateFooterStatus();
     });
+
+    // Monitor hot-swap: show panel on System tab and flash the Reset button
+    window.rainydesk.onMonitorConfigChanged?.(() => {
+      window.rainydesk.log('[Panel] Monitor config changed, alerting user');
+      window.rainydesk.showRainscaper(0, 0);
+      this.state.activeTab = 'system';
+      this.switchTab('system');
+      // Button is created fresh by switchTab → apply glow after DOM settles
+      requestAnimationFrame(() => this.flashReinitButton());
+    });
   }
 
-  private applyRainscapeData(data: Record<string, unknown>): void {
-    // Apply rain settings (stored in data.rain.*)
+  /* Migrate old .rain format (no version field) to v2 structure */
+  private static migrateToV2(data: Record<string, unknown>): Record<string, unknown> {
+    if (data.version === 2) return data;
+
+    const rain = (data.rain || {}) as Record<string, unknown>;
+    const physics = (data.physics || {}) as Record<string, unknown>;
+    const audio = (data.audio || {}) as Record<string, unknown>;
+    const visual = (data.visual || {}) as Record<string, unknown>;
+    const system = (data.system || {}) as Record<string, unknown>;
+
+    return {
+      version: 2,
+      name: data.name,
+      rain: {
+        ...rain,
+        gravity: physics.gravity,
+        reverseGravity: physics.reverseGravity,
+        color: visual.rainColor,
+        gayMode: visual.gayMode,
+        rainbowSpeed: visual.rainbowSpeed,
+        osc: {
+          intensity: rain.intensityOsc,
+          wind: rain.windOsc,
+          turbulence: rain.turbulenceOsc,
+          sheet: rain.sheetOsc,
+        },
+      },
+      matrix: {
+        density: visual.matrixDensity,
+        transpose: visual.matrixTranspose,
+        transMode: visual.transMode,
+        transScrollDirection: visual.transScrollDirection,
+      },
+      audio: {
+        muted: audio.muted,
+        rain: {
+          masterVolume: audio.masterVolume,
+          rainIntensity: audio.rainIntensity,
+          impactPitch: audio.impactPitch,
+          impactPitchOsc: audio.impactPitchOsc,
+          windMasterGain: audio.windMasterGain,
+          thunderEnabled: audio.thunderEnabled,
+        },
+        matrix: {
+          bass: audio.matrixBass,
+          collision: audio.matrixCollision,
+          drone: audio.matrixDrone,
+        },
+      },
+      visual: {
+        matrixMode: visual.matrixMode,
+        backgroundShaderEnabled: visual.backgroundShaderEnabled ?? system.backgroundShaderEnabled,
+        backgroundIntensity: visual.backgroundIntensity,
+        backgroundLayers: visual.backgroundLayers,
+      },
+      system: {
+        fpsLimit: physics.fpsLimit,
+        gridScale: physics.gridScale,
+        renderScale: system.renderScale,
+        maximizedDetection: system.maximizedDetection,
+        maximizedMuffling: system.maximizedMuffling,
+        fullscreenDetection: system.fullscreenDetection,
+        audioMuffling: system.audioMuffling,
+        windowCollision: system.windowCollision,
+        spatialAudio: system.spatialAudio,
+      },
+    };
+  }
+
+  private applyRainscapeData(rawData: Record<string, unknown>): void {
+    const data = RainyDeskPanel.migrateToV2(rawData);
+
+    // Rain settings
     if (data.rain && typeof data.rain === 'object') {
       const rain = data.rain as Record<string, unknown>;
       if (typeof rain.intensity === 'number') this.state.intensity = rain.intensity;
       if (typeof rain.wind === 'number') this.state.wind = rain.wind;
+      if (typeof rain.gravity === 'number') this.state.gravity = rain.gravity;
+      if (typeof rain.reverseGravity === 'boolean') this.state.reverseGravity = rain.reverseGravity;
       if (typeof rain.turbulence === 'number') this.state.turbulence = rain.turbulence;
+      if (typeof rain.splashScale === 'number') this.state.splashSize = rain.splashScale;
+      // Old files without splashLinked default to false (preserve independent behavior)
+      if (typeof rain.splashLinked === 'boolean') this.state.splashLinked = rain.splashLinked;
+      else this.state.splashLinked = false;
       if (typeof rain.puddleDrain === 'number') this.state.puddleDrain = rain.puddleDrain;
-
-      // Drop size stored in rain.dropSize.max
       if (rain.dropSize && typeof rain.dropSize === 'object') {
         const dropSize = rain.dropSize as Record<string, unknown>;
         if (typeof dropSize.max === 'number') this.state.dropSize = dropSize.max;
       }
-    }
-
-    // Apply physics settings (stored in data.physics.*)
-    if (data.physics && typeof data.physics === 'object') {
-      const physics = data.physics as Record<string, unknown>;
-      if (typeof physics.reverseGravity === 'boolean') {
-        this.state.reverseGravity = physics.reverseGravity;
+      if (typeof rain.color === 'string') this.state.rainColor = rain.color;
+      if (typeof rain.gayMode === 'boolean') this.state.gayMode = rain.gayMode;
+      if (typeof rain.rainbowSpeed === 'number') this.state.rainbowSpeed = rain.rainbowSpeed;
+      if (typeof rain.sheetVolume === 'number') this.state.sheetVolume = rain.sheetVolume;
+      // Oscillator amounts (v2: nested under rain.osc)
+      if (rain.osc && typeof rain.osc === 'object') {
+        const osc = rain.osc as Record<string, unknown>;
+        if (typeof osc.intensity === 'number') this.state.intensityOsc = osc.intensity;
+        if (typeof osc.wind === 'number') this.state.windOsc = osc.wind;
+        if (typeof osc.turbulence === 'number') this.state.turbulenceOsc = osc.turbulence;
+        if (typeof osc.sheet === 'number') this.state.sheetOsc = osc.sheet;
       }
-      if (typeof physics.gravity === 'number') this.state.gravity = physics.gravity;
     }
 
-    // Apply audio settings (stored in data.audio.*)
+    // Matrix settings
+    if (data.matrix && typeof data.matrix === 'object') {
+      const matrix = data.matrix as Record<string, unknown>;
+      if (typeof matrix.density === 'number') this.state.matrixDensity = matrix.density;
+      if (typeof matrix.transpose === 'number') this.state.matrixTranspose = matrix.transpose;
+      if (typeof matrix.transMode === 'boolean') this.state.transMode = matrix.transMode;
+      if (typeof matrix.transScrollDirection === 'string') {
+        this.state.transScrollDirection = matrix.transScrollDirection as 'left' | 'off' | 'right';
+      }
+    }
+
+    // Audio settings (v2: split into audio.rain and audio.matrix)
     if (data.audio && typeof data.audio === 'object') {
       const audio = data.audio as Record<string, unknown>;
-      if (typeof audio.masterVolume === 'number') {
-        // Convert from dB to percentage (roughly -60 to 0 dB -> 0 to 100%)
-        const dbValue = audio.masterVolume as number;
-        this.state.masterVolume = Math.round(Math.max(0, Math.min(100, ((dbValue + 60) / 60) * 100)));
-        this.state.volume = this.state.masterVolume;
-      }
+      if (typeof audio.muted === 'boolean') this.state.muted = audio.muted;
 
-      if (typeof audio.muted === 'boolean') {
-        this.state.muted = audio.muted;
-      }
-
-      // Rain impact sound (0-100)
-      if (typeof audio.rainIntensity === 'number') {
-        this.state.rainIntensity = audio.rainIntensity;
-      }
-
-      // Impact pitch center + OSC
-      if (typeof audio.impactPitch === 'number') {
-        this.state.impactPitch = audio.impactPitch;
-      }
-      if (typeof audio.impactPitchOsc === 'number') {
-        this.state.impactPitchOsc = audio.impactPitchOsc;
-      }
-
-      // Thunder toggle
-      if (typeof audio.thunderEnabled === 'boolean') {
-        this.state.thunderEnabled = audio.thunderEnabled;
-      }
-
-      // Wind sound — flat dB key from new autosave format
-      // Slider: 0% = -60dB (mute), 1-100% maps to -24dB to +12dB (36dB range)
-      if (typeof audio.windMasterGain === 'number') {
-        const db = audio.windMasterGain as number;
-        this.state.windSound = db <= -60 ? 0 : Math.round(Math.max(0, Math.min(100, ((db + 24) / 36) * 100)));
-      } else if (audio.wind && typeof audio.wind === 'object') {
-        // Legacy nested format fallback
-        const wind = audio.wind as Record<string, unknown>;
-        if (typeof wind.masterGain === 'number') {
-          const db = wind.masterGain as number;
+      if (audio.rain && typeof audio.rain === 'object') {
+        const ar = audio.rain as Record<string, unknown>;
+        if (typeof ar.masterVolume === 'number') {
+          const dbValue = ar.masterVolume as number;
+          this.state.masterVolume = Math.round(Math.max(0, Math.min(100, ((dbValue + 60) / 60) * 100)));
+          this.state.volume = this.state.masterVolume;
+        }
+        if (typeof ar.rainIntensity === 'number') this.state.rainIntensity = ar.rainIntensity;
+        if (typeof ar.impactPitch === 'number') this.state.impactPitch = ar.impactPitch;
+        if (typeof ar.impactPitchOsc === 'number') this.state.impactPitchOsc = ar.impactPitchOsc;
+        if (typeof ar.thunderEnabled === 'boolean') this.state.thunderEnabled = ar.thunderEnabled;
+        // Wind: dB → slider percentage (0% = -60dB mute, 1–100% = -24dB to +12dB)
+        if (typeof ar.windMasterGain === 'number') {
+          const db = ar.windMasterGain as number;
           this.state.windSound = db <= -60 ? 0 : Math.round(Math.max(0, Math.min(100, ((db + 24) / 36) * 100)));
         }
       }
 
-      // Matrix synth volumes (dB → percentage via reverse of (v/100*42)-30)
-      if (typeof audio.matrixBass === 'number') {
-        this.state.matrixBassVolume = Math.round(Math.max(0, Math.min(100, ((audio.matrixBass as number) + 30) / 42 * 100)));
-      }
-      if (typeof audio.matrixCollision === 'number') {
-        this.state.matrixCollisionVolume = Math.round(Math.max(0, Math.min(100, ((audio.matrixCollision as number) + 30) / 42 * 100)));
-      }
-      if (typeof audio.matrixDrone === 'number') {
-        this.state.matrixDroneVolume = Math.round(Math.max(0, Math.min(100, ((audio.matrixDrone as number) + 30) / 42 * 100)));
-      }
-    }
-
-    // Apply physics extras
-    if (data.physics && typeof data.physics === 'object') {
-      const physics = data.physics as Record<string, unknown>;
-      if (typeof physics.fpsLimit === 'number') {
-        this.state.fpsLimit = physics.fpsLimit;
+      if (audio.matrix && typeof audio.matrix === 'object') {
+        const am = audio.matrix as Record<string, unknown>;
+        // dB → percentage via reverse of (v/100*42)-30
+        if (typeof am.bass === 'number') {
+          this.state.matrixBassVolume = Math.round(Math.max(0, Math.min(100, ((am.bass as number) + 30) / 42 * 100)));
+        }
+        if (typeof am.collision === 'number') {
+          this.state.matrixCollisionVolume = Math.round(Math.max(0, Math.min(100, ((am.collision as number) + 30) / 42 * 100)));
+        }
+        if (typeof am.drone === 'number') {
+          this.state.matrixDroneVolume = Math.round(Math.max(0, Math.min(100, ((am.drone as number) + 30) / 42 * 100)));
+        }
       }
     }
 
-    // Apply rain extras (oscillator amounts + extra physics values)
-    if (data.rain && typeof data.rain === 'object') {
-      const rain = data.rain as Record<string, unknown>;
-      if (typeof rain.windOsc === 'number') {
-        this.state.windOsc = rain.windOsc;
-      }
-      if (typeof rain.intensityOsc === 'number') {
-        this.state.intensityOsc = rain.intensityOsc;
-      }
-      if (typeof rain.turbulenceOsc === 'number') {
-        this.state.turbulenceOsc = rain.turbulenceOsc;
-      }
-      if (typeof rain.splashOsc === 'number') {
-        this.state.splashOsc = rain.splashOsc;
-      }
-      if (typeof rain.sheetVolume === 'number') {
-        this.state.sheetVolume = rain.sheetVolume;
-      }
-      if (typeof rain.sheetOsc === 'number') {
-        this.state.sheetOsc = rain.sheetOsc;
-      }
-      if (typeof rain.splashScale === 'number') {
-        this.state.splashSize = rain.splashScale;
-      }
-    }
-
-    // Apply visual settings
+    // Visual settings (v2: only background + mode toggle)
     if (data.visual && typeof data.visual === 'object') {
       const visual = data.visual as Record<string, unknown>;
       if (typeof visual.matrixMode === 'boolean') {
         this.state.matrixMode = visual.matrixMode;
         localStorage.setItem('rainscaper-matrix-mode', String(visual.matrixMode));
-      }
-      if (typeof visual.gayMode === 'boolean') {
-        this.state.gayMode = visual.gayMode;
-      }
-      if (typeof visual.matrixDensity === 'number') {
-        this.state.matrixDensity = visual.matrixDensity;
-      }
-      if (typeof visual.matrixTranspose === 'number') {
-        this.state.matrixTranspose = visual.matrixTranspose;
-      }
-      if (typeof visual.transMode === 'boolean') {
-        this.state.transMode = visual.transMode;
-      }
-      if (typeof visual.transScrollDirection === 'string') {
-        this.state.transScrollDirection = visual.transScrollDirection as 'left' | 'off' | 'right';
-      }
-      if (typeof visual.rainColor === 'string') {
-        this.state.rainColor = visual.rainColor;
       }
       if (typeof visual.backgroundShaderEnabled === 'boolean') {
         this.state.backgroundShaderEnabled = visual.backgroundShaderEnabled;
@@ -569,14 +631,12 @@ export class RainyDeskPanel {
       if (typeof visual.backgroundLayers === 'number') {
         this.state.backgroundLayers = visual.backgroundLayers;
       }
-      if (typeof visual.rainbowSpeed === 'number') {
-        this.state.rainbowSpeed = visual.rainbowSpeed;
-      }
     }
 
-    // System settings (behavior toggles + render scale)
+    // System settings
     if (data.system && typeof data.system === 'object') {
       const sys = data.system as Record<string, unknown>;
+      if (typeof sys.fpsLimit === 'number') this.state.fpsLimit = sys.fpsLimit;
       // Saved files use detection=true (suppress rain), panel uses rainOver=true (show rain)
       if (typeof sys.maximizedDetection === 'boolean') {
         this.state.rainOverMaximized = !sys.maximizedDetection;
@@ -587,21 +647,14 @@ export class RainyDeskPanel {
       if (typeof sys.fullscreenDetection === 'boolean') {
         this.state.rainOverFullscreen = !sys.fullscreenDetection;
       }
-      if (typeof sys.audioMuffling === 'boolean') {
-        this.state.audioMuffling = sys.audioMuffling;
-      }
-      if (typeof sys.windowCollision === 'boolean') {
-        this.state.windowCollision = sys.windowCollision;
-      }
+      if (typeof sys.audioMuffling === 'boolean') this.state.audioMuffling = sys.audioMuffling;
+      if (typeof sys.windowCollision === 'boolean') this.state.windowCollision = sys.windowCollision;
       if (typeof sys.renderScale === 'number') {
         this.state.renderScale = sys.renderScale;
         this.state.renderScalePending = sys.renderScale;
       }
-      if (typeof sys.backgroundShaderEnabled === 'boolean') {
-        this.state.backgroundShaderEnabled = sys.backgroundShaderEnabled;
-      }
+      if (typeof sys.spatialAudio === 'boolean') this.state.spatialAudio = sys.spatialAudio;
     }
-
   }
 
   private handleExternalParamUpdate(path: string, value: unknown): void {
@@ -817,6 +870,10 @@ export class RainyDeskPanel {
       btn.className = `tab-button${tab.id === this.state.activeTab ? ' active' : ''}`;
       btn.textContent = tab.label;
       btn.onclick = () => {
+        if (this.state.activeTab === tab.id) {
+          this.pulseTabGlow(tabBar);
+          return;
+        }
         this.state.activeTab = tab.id;
         sessionStorage.setItem('rainscaper-tab', tab.id);
         this.switchTab(tab.id);
@@ -853,8 +910,30 @@ export class RainyDeskPanel {
     }, 100);
   }
 
+  /* Two quick opacity pulses on the active tab gradient */
+  private pulseTabGlow(tabBar: HTMLElement): void {
+    this.clearPulseTimers();
+    tabBar.style.setProperty('--tab-glow-opacity', '0.2');
+    this.pulseTimers.push(setTimeout(() => {
+      tabBar.style.setProperty('--tab-glow-opacity', '1');
+      this.pulseTimers.push(setTimeout(() => {
+        tabBar.style.setProperty('--tab-glow-opacity', '0.2');
+        this.pulseTimers.push(setTimeout(() => {
+          tabBar.style.setProperty('--tab-glow-opacity', '1');
+          this.pulseTimers = [];
+        }, 120));
+      }, 120));
+    }, 120));
+  }
+
+  private clearPulseTimers(): void {
+    for (const t of this.pulseTimers) clearTimeout(t);
+    this.pulseTimers = [];
+  }
+
   /* Switch tab content without rebuilding entire panel */
   private switchTab(tabId: TabId): void {
+    this.clearPulseTimers();
     // Determine slide direction from tab index change
     const prevIdx = TABS.findIndex(t => t.id === this.previousTab);
     const nextIdx = TABS.findIndex(t => t.id === tabId);
@@ -981,24 +1060,7 @@ export class RainyDeskPanel {
         max: 100,
         unit: '%',
         onChange: (v) => {
-          const wasZero = this.state.volume === 0;
-          this.state.volume = v;
-          this.state.masterVolume = v;
-          // Convert percentage to dB; use -1000dB NOT -100 for true silence
-          const db = v <= 0 ? -1000 : (v / 100 * 60) - 60;
-          window.rainydesk.updateRainscapeParam('effects.masterVolume', db);
-          // Auto-toggle mute when volume hits 0
-          if (v === 0 && !this.state.muted) {
-            this.state.muted = true;
-            window.rainydesk.updateRainscapeParam('audio.muted', true);
-            this.updateMuteToggle();
-          }
-          // Auto-unmute when volume goes from 0 to any positive value
-          if (wasZero && v > 0 && this.state.muted) {
-            this.state.muted = false;
-            window.rainydesk.updateRainscapeParam('audio.muted', false);
-            this.updateMuteToggle();
-          }
+          this.applyVolumeChange(v);
         },
       })
     );
@@ -1019,7 +1081,8 @@ export class RainyDeskPanel {
           this.state.masterVolume = 50;
           const db = (50 / 100 * 60) - 60; // -30 dB
           window.rainydesk.updateRainscapeParam('effects.masterVolume', db);
-          this.render();
+          updateSliderValue(this.root, 'volume', 50);
+          updateSliderValue(this.root, 'masterVolume', 50);
         }
       },
     });
@@ -1045,16 +1108,31 @@ export class RainyDeskPanel {
 
     container.appendChild(toggleRow);
 
-    // Panel Appearance section (scale slider + centered theme grid)
+    // Panel Appearance section (scale slider + theme grid with custom themes)
     const themeSection = document.createElement('div');
     themeSection.className = 'section';
+
+    // Section header row with title + edit link
+    const themeTitleRow = document.createElement('div');
+    themeTitleRow.className = 'section-title-row';
 
     const themeTitle = document.createElement('div');
     themeTitle.className = 'section-title';
     themeTitle.textContent = 'Panel Appearance';
-    themeSection.appendChild(themeTitle);
+    themeTitleRow.appendChild(themeTitle);
 
-    // UI Scale as horizontal slider (same style as Intensity/Wind/Volume)
+    // Edit link (visible when a custom theme is active)
+    const editLink = document.createElement('div');
+    editLink.className = 'theme-edit-link';
+    editLink.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Edit`;
+    if (!this.state.theme.startsWith('custom-')) {
+      editLink.style.display = 'none';
+    }
+    themeTitleRow.appendChild(editLink);
+
+    themeSection.appendChild(themeTitleRow);
+
+    // UI Scale slider
     const scaleSteps = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5];
     const foundIndex = scaleSteps.findIndex((s) => Math.abs(s - this.state.uiScale) < 0.01);
     const currentStepIndex = foundIndex >= 0 ? foundIndex : 2;
@@ -1079,66 +1157,590 @@ export class RainyDeskPanel {
       })
     );
 
-    // Centered theme grid
-    const themeSelector = document.createElement('div');
-    themeSelector.className = 'theme-selector';
+    // Card flip container (wraps A-side theme grid + B-side editor)
+    const flipContainer = document.createElement('div');
+    flipContainer.className = 'flip-container';
 
-    const themeOptions = ['blue', 'purple', 'warm', 'sakura', 'forest', 'midnight', 'lavender', 'gothic', 'ocean', 'ember', 'windows', 'custom'];
-    for (const theme of themeOptions) {
+    const flipCard = document.createElement('div');
+    flipCard.className = 'flip-card';
+    if (this.themeEditorOpen) flipCard.classList.add('flipped');
+
+    // A-Side: Theme grid
+    const flipFront = document.createElement('div');
+    flipFront.className = 'flip-front';
+
+    const themeGridWrapper = document.createElement('div');
+    themeGridWrapper.className = 'theme-grid-wrapper';
+
+    // Default themes (4x3, last slot is Randomize)
+    const defaultGrid = document.createElement('div');
+    defaultGrid.className = 'theme-selector theme-defaults';
+
+    const defaultThemes = ['blue', 'purple', 'warm', 'sakura', 'forest', 'midnight', 'lavender', 'gothic', 'ocean', 'ember', 'windows'];
+    for (const theme of defaultThemes) {
       const btn = document.createElement('button');
       btn.className = `theme-button${this.state.theme === theme ? ' active' : ''}`;
       btn.dataset.theme = theme;
+      btn.dataset.tooltip = DEFAULT_THEME_NAMES[theme] || theme;
       btn.onclick = async () => {
         if (this.state.theme === theme) return;
+        this.previousThemeId = this.state.theme;
         this.state.theme = theme;
         localStorage.setItem('rainscaper-theme', theme);
-
-        // Diagonal wipe transition from a random corner
-        const panel = this.root.querySelector('.rainscaper-panel') as HTMLElement;
-        if (panel) {
-          // Capture old background color before applying new theme
-          const oldBg = getComputedStyle(panel).backgroundColor;
-
-          const overlay = document.createElement('div');
-          overlay.className = 'theme-wipe-overlay';
-          overlay.style.background = oldBg;
-
-          // Pick a random corner: triangle starts oversized, collapses to corner point
-          const wipes = [
-            ['polygon(0 0, 300% 0, 0 300%)', 'polygon(0 0, 0 0, 0 0)'],
-            ['polygon(100% 0, 100% 300%, -200% 0)', 'polygon(100% 0, 100% 0, 100% 0)'],
-            ['polygon(0 100%, 300% 100%, 0 -200%)', 'polygon(0 100%, 0 100%, 0 100%)'],
-            ['polygon(100% 100%, -200% 100%, 100% -200%)', 'polygon(100% 100%, 100% 100%, 100% 100%)'],
-          ];
-          const wipe = wipes[Math.floor(Math.random() * wipes.length)]!;
-          overlay.style.clipPath = wipe[0]!;
-          panel.appendChild(overlay);
-
-          // Apply new theme (colors change instantly under the overlay)
-          await applyTheme(theme);
-
-          themeSelector.querySelectorAll('.theme-button').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-
-          // Trigger the wipe animation
-          requestAnimationFrame(() => {
-            overlay.style.clipPath = wipe[1]!;
-            overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
-            // Fallback: remove overlay if transitionend never fires (reduced motion, etc.)
-            setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 700);
-          });
-        }
+        editLink.style.display = 'none';
+        await this.playThemeWipe(theme, btn, themeGridWrapper);
       };
-      themeSelector.appendChild(btn);
+      defaultGrid.appendChild(btn);
     }
 
-    themeSection.appendChild(themeSelector);
+    // Randomize button (replaces the old custom slot)
+    const randomBtn = document.createElement('button');
+    randomBtn.className = 'theme-button theme-randomize';
+    randomBtn.dataset.tooltip = this.customThemes.length >= 12 ? 'All custom slots full' : 'Randomize!';
+    if (this.customThemes.length >= 12) {
+      randomBtn.classList.add('slots-full');
+    }
+    randomBtn.onclick = () => {
+      if (this.customThemes.length >= 12) return;
+      this.previousThemeId = this.state.theme;
+      const random = generateRandomTheme();
+      random.name = getRandomThemeName();
+      this.scratchTheme = random;
+      applyCustomTheme(random);
+      this.openThemeEditor(null, flipCard);
+    };
+    defaultGrid.appendChild(randomBtn);
+
+    // Defaults column (label + grid)
+    const defaultsCol = document.createElement('div');
+    defaultsCol.className = 'theme-column';
+    const defaultsLabel = document.createElement('div');
+    defaultsLabel.className = 'theme-grid-label';
+    defaultsLabel.textContent = 'Defaults';
+    defaultsCol.appendChild(defaultsLabel);
+    defaultsCol.appendChild(defaultGrid);
+    themeGridWrapper.appendChild(defaultsCol);
+
+    const divider = document.createElement('div');
+    divider.className = 'theme-divider';
+    themeGridWrapper.appendChild(divider);
+
+    // Yours column (label + grid)
+    const customsCol = document.createElement('div');
+    customsCol.className = 'theme-column';
+    const customsLabel = document.createElement('div');
+    customsLabel.className = 'theme-grid-label';
+    customsLabel.textContent = 'Yours';
+    customsCol.appendChild(customsLabel);
+
+    // Custom themes grid (4×3, matching defaults)
+    const customGrid = document.createElement('div');
+    customGrid.className = 'theme-selector theme-customs';
+
+    for (let i = 0; i < 12; i++) {
+      const theme = this.customThemes[i];
+      if (theme) {
+        const btn = document.createElement('button');
+        btn.className = `theme-button theme-custom-slot${this.state.theme === theme.id ? ' active' : ''}`;
+        btn.dataset.theme = theme.id;
+        btn.dataset.tooltip = theme.name || 'Custom Theme';
+        btn.style.setProperty('--custom-accent', theme.colors.accent);
+        btn.onclick = async () => {
+          if (this.state.theme === theme.id) return;
+          this.previousThemeId = this.state.theme;
+          this.state.theme = theme.id;
+          localStorage.setItem('rainscaper-theme', theme.id);
+          editLink.style.display = '';
+          await this.playThemeWipe(theme.id, btn, themeGridWrapper, () => applyCustomTheme(theme));
+        };
+        customGrid.appendChild(btn);
+      } else if (i === this.customThemes.length) {
+        // Next available slot: clickable "+" button
+        const emptyBtn = document.createElement('button');
+        emptyBtn.className = 'theme-button theme-empty-slot';
+        emptyBtn.dataset.tooltip = 'New theme';
+        emptyBtn.innerHTML = '+';
+        emptyBtn.onclick = () => {
+          if (this.customThemes.length >= 12) return;
+          this.previousThemeId = this.state.theme;
+          const random = generateRandomTheme();
+          random.name = getRandomThemeName();
+          this.scratchTheme = random;
+          applyCustomTheme(random);
+          this.openThemeEditor(null, flipCard);
+        };
+        customGrid.appendChild(emptyBtn);
+      } else {
+        // Future empty slots: faded non-interactive placeholders
+        const placeholder = document.createElement('div');
+        placeholder.className = 'theme-button theme-empty-slot theme-placeholder';
+        placeholder.innerHTML = '+';
+        customGrid.appendChild(placeholder);
+      }
+    }
+
+    customsCol.appendChild(customGrid);
+    themeGridWrapper.appendChild(customsCol);
+
+    flipFront.appendChild(themeGridWrapper);
+
+    // Wire up edit link click handler (link is in the section title row)
+    editLink.onclick = () => {
+      const activeTheme = this.customThemes.find(t => t.id === this.state.theme);
+      if (activeTheme) {
+        this.previousThemeId = this.state.theme;
+        this.scratchTheme = JSON.parse(JSON.stringify(activeTheme));
+        this.openThemeEditor(activeTheme.id, flipCard);
+      }
+    };
+
+    // B-Side: Theme editor (content built lazily when opened)
+    const flipBack = document.createElement('div');
+    flipBack.className = 'flip-back';
+
+    flipCard.appendChild(flipFront);
+    flipCard.appendChild(flipBack);
+    flipContainer.appendChild(flipCard);
+    themeSection.appendChild(flipContainer);
     container.appendChild(themeSection);
 
-    // Apply Matrix Mode disabled states after DOM is ready
-    requestAnimationFrame(() => this.updateMatrixModeSliders());
+    // Tooltip setup for theme buttons
+    requestAnimationFrame(() => {
+      this.setupThemeTooltips(themeSection);
+      this.updateMatrixModeSliders();
+    });
 
     return container;
+  }
+
+  // Theme Editor (B-side of card flip)
+  private createThemeEditor(flipCard: HTMLElement): HTMLElement {
+    const editor = document.createElement('div');
+    editor.className = 'theme-editor';
+
+    // Header
+    const headerRow = document.createElement('div');
+    headerRow.className = 'theme-editor-header';
+    const headerTitle = document.createElement('span');
+    headerTitle.textContent = 'Theme Editor';
+    headerRow.appendChild(headerTitle);
+    editor.appendChild(headerRow);
+
+    // Theme name input
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'theme-name-input';
+    nameInput.placeholder = 'Untitled Theme';
+    nameInput.value = this.scratchTheme?.name || '';
+    nameInput.maxLength = 30;
+    nameInput.oninput = () => {
+      if (this.scratchTheme) this.scratchTheme.name = nameInput.value;
+    };
+    editor.appendChild(nameInput);
+
+    // Primary color pickers row
+    const primaryRow = document.createElement('div');
+    primaryRow.className = 'theme-primary-colors';
+
+    const makeColorPicker = (label: string, value: string, onChange: (v: string) => void) => {
+      const group = document.createElement('div');
+      group.className = 'theme-color-group';
+
+      const lbl = document.createElement('div');
+      lbl.className = 'theme-color-label';
+      lbl.textContent = label;
+      group.appendChild(lbl);
+
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.className = 'theme-color-input';
+      input.value = value;
+      input.oninput = () => {
+        hexLabel.textContent = input.value;
+        onChange(input.value);
+        if (this.scratchTheme) applyCustomTheme(this.scratchTheme);
+      };
+      group.appendChild(input);
+
+      const hexLabel = document.createElement('div');
+      hexLabel.className = 'theme-color-hex';
+      hexLabel.textContent = value;
+      group.appendChild(hexLabel);
+
+      return group;
+    };
+
+    const scratch = this.scratchTheme!;
+    primaryRow.appendChild(makeColorPicker('Accent', scratch.colors.accent, (v) => { scratch.colors.accent = v; }));
+    primaryRow.appendChild(makeColorPicker('Background', scratch.colors.background, (v) => { scratch.colors.background = v; }));
+    primaryRow.appendChild(makeColorPicker('Text', scratch.colors.text, (v) => { scratch.colors.text = v; }));
+    editor.appendChild(primaryRow);
+
+    // Auto Colors toggle
+    const autoRow = document.createElement('div');
+    autoRow.className = 'theme-auto-row';
+    autoRow.appendChild(Toggle({
+      label: 'Auto Colors',
+      checked: scratch.colors.autoColors,
+      onChange: (v) => {
+        scratch.colors.autoColors = v;
+        const ft = editor.querySelector('.theme-fine-tuning') as HTMLElement;
+        if (ft) ft.classList.toggle('disabled', v);
+      },
+    }));
+    editor.appendChild(autoRow);
+
+    // Randomize button
+    const randomizeBtn = document.createElement('button');
+    randomizeBtn.className = 'theme-randomize-btn';
+    randomizeBtn.textContent = 'Randomize!';
+    randomizeBtn.onclick = () => {
+      const newRandom = generateRandomTheme();
+      newRandom.name = nameInput.value || getRandomThemeName();
+      newRandom.id = scratch.id;
+      newRandom.fonts = { ...scratch.fonts };
+      Object.assign(scratch, newRandom);
+      // Refresh editor inputs
+      nameInput.value = scratch.name;
+      const colorInputs = primaryRow.querySelectorAll('.theme-color-input') as NodeListOf<HTMLInputElement>;
+      const hexLabels = primaryRow.querySelectorAll('.theme-color-hex');
+      if (colorInputs[0]) { colorInputs[0].value = scratch.colors.accent; hexLabels[0]!.textContent = scratch.colors.accent; }
+      if (colorInputs[1]) { colorInputs[1].value = scratch.colors.background; hexLabels[1]!.textContent = scratch.colors.background; }
+      if (colorInputs[2]) { colorInputs[2].value = scratch.colors.text; hexLabels[2]!.textContent = scratch.colors.text; }
+      applyCustomTheme(scratch);
+    };
+    editor.appendChild(randomizeBtn);
+
+    // Fine Tuning (collapsible)
+    const ftSection = document.createElement('div');
+    ftSection.className = `theme-fine-tuning${scratch.colors.autoColors ? ' disabled' : ''}`;
+
+    const ftHeader = document.createElement('div');
+    ftHeader.className = 'theme-ft-header collapsible';
+    ftHeader.innerHTML = '<span class="collapse-arrow">&#9654;</span> Fine Tuning';
+    const ftContent = document.createElement('div');
+    ftContent.className = 'theme-ft-content collapsible-section collapsed';
+
+    ftHeader.onclick = () => {
+      const isCollapsed = ftContent.classList.contains('collapsed');
+      ftContent.classList.toggle('collapsed');
+      ftHeader.querySelector('.collapse-arrow')!.innerHTML = isCollapsed ? '&#9660;' : '&#9654;';
+    };
+
+    const ftGrid = document.createElement('div');
+    ftGrid.className = 'theme-ft-grid';
+
+    // Get derived values to show as placeholders
+    const derived = deriveThemeColors(scratch.colors.accent, scratch.colors.background, scratch.colors.text);
+
+    const ftFields: [string, keyof typeof scratch.colors, string][] = [
+      ['Accent Hover', 'accentHover', derived.accentHover],
+      ['Accent Active', 'accentActive', derived.accentActive],
+      ['Border Color', 'borderColor', derived.panelBorder],
+      ['Shadow Color', 'shadowColor', derived.panelShadow],
+      ['Close Hover', 'closeHover', derived.closeHover],
+      ['Slider Track', 'sliderTrack', derived.sliderTrack],
+      ['Toggle BG', 'toggleBg', derived.toggleBg],
+      ['Text Secondary', 'textSecondary', derived.textSecondary],
+    ];
+
+    for (const [label, key] of ftFields) {
+      const row = document.createElement('div');
+      row.className = 'theme-ft-row';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'theme-ft-label';
+      lbl.textContent = label;
+      row.appendChild(lbl);
+
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.className = 'theme-color-input theme-ft-input';
+      // Fine tuning values can be hex or rgba — convert rgba placeholders to hex for color input
+      const currentVal = scratch.colors[key] as string | null;
+      input.value = currentVal || '#808080';
+      if (!currentVal) input.classList.add('placeholder');
+      input.oninput = () => {
+        (scratch.colors as unknown as Record<string, unknown>)[key] = input.value;
+        input.classList.remove('placeholder');
+        applyCustomTheme(scratch);
+      };
+      row.appendChild(input);
+      ftGrid.appendChild(row);
+    }
+
+    ftContent.appendChild(ftGrid);
+    ftSection.appendChild(ftHeader);
+    ftSection.appendChild(ftContent);
+    editor.appendChild(ftSection);
+
+    // Font editing (TODO: implement properly later)
+    // const fontSection = document.createElement('div');
+    // fontSection.className = 'theme-fonts';
+    // const makeFontSelect = (label: string, current: string, onChange: (v: string) => void) => {
+    //   const row = document.createElement('div');
+    //   row.className = 'theme-font-row';
+    //   const lbl = document.createElement('span');
+    //   lbl.className = 'theme-font-label';
+    //   lbl.textContent = label;
+    //   row.appendChild(lbl);
+    //   const select = document.createElement('select');
+    //   select.className = 'theme-font-select';
+    //   const bundledGroup = document.createElement('optgroup');
+    //   bundledGroup.label = 'Bundled';
+    //   for (const font of FONT_LIST.bundled) {
+    //     const opt = document.createElement('option');
+    //     opt.value = font;
+    //     opt.textContent = font;
+    //     opt.style.fontFamily = `'${font}'`;
+    //     if (font === current) opt.selected = true;
+    //     bundledGroup.appendChild(opt);
+    //   }
+    //   select.appendChild(bundledGroup);
+    //   const systemGroup = document.createElement('optgroup');
+    //   systemGroup.label = 'System';
+    //   for (const font of FONT_LIST.system) {
+    //     const opt = document.createElement('option');
+    //     opt.value = font;
+    //     opt.textContent = font;
+    //     opt.style.fontFamily = `'${font}'`;
+    //     if (font === current) opt.selected = true;
+    //     systemGroup.appendChild(opt);
+    //   }
+    //   select.appendChild(systemGroup);
+    //   select.onchange = () => {
+    //     onChange(select.value);
+    //     if (this.scratchTheme) applyCustomTheme(this.scratchTheme);
+    //   };
+    //   row.appendChild(select);
+    //   return row;
+    // };
+    // fontSection.appendChild(makeFontSelect('Body Font', scratch.fonts.body, (v) => { scratch.fonts.body = v; }));
+    // fontSection.appendChild(makeFontSelect('Header Font', scratch.fonts.headers, (v) => { scratch.fonts.headers = v; }));
+    // fontSection.appendChild(Toggle({
+    //   label: 'Apply to Matrix Mode',
+    //   checked: scratch.fonts.applyToMatrix,
+    //   onChange: (v) => { scratch.fonts.applyToMatrix = v; },
+    // }));
+    // editor.appendChild(fontSection);
+
+    // Action buttons
+    const actions = document.createElement('div');
+    actions.className = 'theme-editor-actions';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'theme-action-btn theme-save-btn';
+    saveBtn.textContent = 'Save';
+    let saveConfirmPending = false;
+    saveBtn.onclick = () => {
+      if (this.editingThemeId && !saveConfirmPending) {
+        // Overwriting existing — require confirmation
+        saveConfirmPending = true;
+        saveBtn.textContent = 'Confirm?';
+        saveBtn.classList.add('confirming');
+        return;
+      }
+      this.saveCustomTheme(flipCard);
+    };
+    actions.appendChild(saveBtn);
+
+    if (this.editingThemeId) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'theme-action-btn theme-delete-btn';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.onclick = () => this.deleteCustomTheme(flipCard);
+      actions.appendChild(deleteBtn);
+    }
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'theme-action-btn theme-cancel-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => this.cancelThemeEditor(flipCard);
+    actions.appendChild(cancelBtn);
+
+    editor.appendChild(actions);
+    return editor;
+  }
+
+  private openThemeEditor(existingId: string | null, flipCard: HTMLElement): void {
+    this.editingThemeId = existingId;
+    this.themeEditorOpen = true;
+
+    // Rebuild editor content with current scratchTheme
+    const flipBack = flipCard.querySelector('.flip-back') as HTMLElement;
+    if (flipBack) {
+      flipBack.innerHTML = '';
+      flipBack.appendChild(this.createThemeEditor(flipCard));
+    }
+
+    // Toggle Edit → Back
+    const editLink = flipCard.closest('.section')?.querySelector('.theme-edit-link') as HTMLElement | null;
+    if (editLink) {
+      editLink.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg> Back`;
+      editLink.style.display = '';
+      editLink.onclick = () => this.cancelThemeEditor(flipCard);
+    }
+
+    flipCard.classList.add('flipped');
+  }
+
+  private async cancelThemeEditor(flipCard: HTMLElement): Promise<void> {
+    this.themeEditorOpen = false;
+    this.scratchTheme = null;
+    this.editingThemeId = null;
+    flipCard.classList.remove('flipped');
+
+    // Toggle Back → Edit (or hide if not a custom theme)
+    const editLink = flipCard.closest('.section')?.querySelector('.theme-edit-link') as HTMLElement | null;
+    if (editLink) {
+      editLink.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Edit`;
+      if (!this.previousThemeId.startsWith('custom-')) {
+        editLink.style.display = 'none';
+      }
+      // Restore edit click handler
+      editLink.onclick = () => {
+        const activeTheme = this.customThemes.find(t => t.id === this.state.theme);
+        if (activeTheme) {
+          this.previousThemeId = this.state.theme;
+          this.scratchTheme = JSON.parse(JSON.stringify(activeTheme));
+          this.openThemeEditor(activeTheme.id, flipCard);
+        }
+      };
+    }
+
+    // Clear B-side after flip animation to collapse container height
+    setTimeout(() => {
+      const flipBack = flipCard.querySelector('.flip-back') as HTMLElement;
+      if (flipBack) flipBack.innerHTML = '';
+    }, 550);
+
+    // Revert to the previous theme
+    clearCustomFonts();
+    if (this.previousThemeId.startsWith('custom-')) {
+      const prev = this.customThemes.find(t => t.id === this.previousThemeId);
+      if (prev) {
+        applyCustomTheme(prev);
+        this.state.theme = prev.id;
+      } else {
+        await applyTheme('blue');
+        this.state.theme = 'blue';
+      }
+    } else {
+      await applyTheme(this.previousThemeId);
+      this.state.theme = this.previousThemeId;
+    }
+    localStorage.setItem('rainscaper-theme', this.state.theme);
+  }
+
+  private async saveCustomTheme(flipCard: HTMLElement): Promise<void> {
+    if (!this.scratchTheme) return;
+
+    // Default name if empty
+    if (!this.scratchTheme.name.trim()) {
+      this.scratchTheme.name = getRandomThemeName();
+    }
+
+    if (this.editingThemeId) {
+      // Update existing theme
+      const idx = this.customThemes.findIndex(t => t.id === this.editingThemeId);
+      if (idx >= 0) {
+        this.scratchTheme.id = this.editingThemeId;
+        this.customThemes[idx] = JSON.parse(JSON.stringify(this.scratchTheme));
+      }
+    } else {
+      // Find the next available slot ID
+      const usedIds = new Set(this.customThemes.map(t => t.id));
+      let slotId = '';
+      for (let i = 1; i <= 12; i++) {
+        if (!usedIds.has(`custom-${i}`)) {
+          slotId = `custom-${i}`;
+          break;
+        }
+      }
+      if (!slotId) return; // All slots full (shouldn't happen — Randomize is disabled)
+
+      this.scratchTheme.id = slotId;
+      this.customThemes.push(JSON.parse(JSON.stringify(this.scratchTheme)));
+    }
+
+    // Set as active theme
+    this.state.theme = this.scratchTheme.id;
+    localStorage.setItem('rainscaper-theme', this.state.theme);
+
+    // Persist to disk
+    await this.persistCustomThemes();
+
+    // Close editor and re-render
+    this.themeEditorOpen = false;
+    this.scratchTheme = null;
+    this.editingThemeId = null;
+    flipCard.classList.remove('flipped');
+    this.render();
+  }
+
+  private async deleteCustomTheme(flipCard: HTMLElement): Promise<void> {
+    if (!this.editingThemeId) return;
+
+    // Simple confirmation
+    const themeToDelete = this.customThemes.find(t => t.id === this.editingThemeId);
+    const name = themeToDelete?.name || 'this theme';
+    if (!confirm(`Delete "${name}"?`)) return;
+
+    this.customThemes = this.customThemes.filter(t => t.id !== this.editingThemeId);
+    await this.persistCustomThemes();
+
+    // Revert to blue
+    this.state.theme = 'blue';
+    localStorage.setItem('rainscaper-theme', 'blue');
+    clearCustomFonts();
+    await applyTheme('blue');
+
+    this.themeEditorOpen = false;
+    this.scratchTheme = null;
+    this.editingThemeId = null;
+    flipCard.classList.remove('flipped');
+    this.render();
+  }
+
+  private async persistCustomThemes(): Promise<void> {
+    const data: UserThemesFile = {
+      version: 1,
+      themes: this.customThemes,
+    };
+    try {
+      await window.rainydesk.saveUserThemes(data);
+    } catch (err) {
+      console.error('Failed to save custom themes:', err);
+    }
+  }
+
+  private setupThemeTooltips(container: HTMLElement): void {
+    const buttons = container.querySelectorAll('.theme-button[data-tooltip]');
+    let tooltip: HTMLElement | null = null;
+
+    const show = (btn: HTMLElement) => {
+      const text = btn.dataset.tooltip;
+      if (!text) return;
+
+      tooltip = document.createElement('div');
+      tooltip.className = 'theme-tooltip';
+      tooltip.textContent = text;
+      document.body.appendChild(tooltip);
+
+      const rect = btn.getBoundingClientRect();
+      const tipRect = tooltip.getBoundingClientRect();
+      tooltip.style.left = `${rect.left + rect.width / 2 - tipRect.width / 2}px`;
+      tooltip.style.top = `${rect.top - tipRect.height - 6}px`;
+    };
+
+    const hide = () => {
+      if (tooltip) { tooltip.remove(); tooltip = null; }
+    };
+
+    buttons.forEach(btn => {
+      btn.addEventListener('mouseenter', () => show(btn as HTMLElement));
+      btn.addEventListener('mouseleave', hide);
+    });
   }
 
   private createPhysicsTab(): HTMLElement {
@@ -1153,6 +1755,7 @@ export class RainyDeskPanel {
         value: this.state.gravity,
         min: 100,
         max: 2000,
+        step: 10,
         unit: '',
         defaultValue: 980,
         onChange: (v) => {
@@ -1162,22 +1765,66 @@ export class RainyDeskPanel {
       })
     );
 
-    // Splash OSC knob (inline with Splash Size slider)
-    const splashOscKnob = RotaryKnob({
-      value: this.state.splashOsc,
-      min: 0,
-      max: 100,
-      id: 'splashOsc',
-      description: 'Splash size drift (auto-varies splash scale)',
-      onChange: (v) => {
-        this.state.splashOsc = v;
-        window.rainydesk.updateRainscapeParam('physics.splashOsc', v);
-      },
-    });
+    // Chain-link toggle: links splash scale to drop mass
+    const chainSvgA = 'width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"';
+    const chainLinkedPath = 'M14 12C14 14.7614 11.7614 17 9 17H7C4.23858 17 2 14.7614 2 12C2 9.23858 4.23858 7 7 7H7.5M10 12C10 9.23858 12.2386 7 15 7H17C19.7614 7 22 9.23858 22 12C22 14.7614 19.7614 17 17 17H16.5';
+    const chainUnlinkedPath = 'M7 7C4.23858 7 2 9.23858 2 12C2 14.7614 4.23858 17 7 17H9C11.1636 17 13.0062 15.6258 13.7026 13.7026M17 17H16.5M10 12C10 11.4021 10.1049 10.8288 10.2974 10.2974M21 21L13.7026 13.7026M3 3L10.2974 10.2974M10.2974 10.2974L13.7026 13.7026M13.0464 7.39604C13.6466 7.14106 14.3068 7 15 7H17C19.7614 7 22 9.23858 22 12C22 13.2151 21.5665 14.329 20.8458 15.1954';
+
+    // Derive splash scale from drop mass: mass 1-10 -> splashScale 0.5-2.0
+    const deriveSplashScale = (dropMass: number): number => 0.5 + (dropMass - 1) * (1.5 / 9);
+
+    // Both chain icons share state; collect them so we can update in sync
+    const chainIcons: HTMLElement[] = [];
+
+    const createChainIcon = (): HTMLElement => {
+      const btn = document.createElement('button');
+      btn.className = 'chain-link-toggle';
+      btn.title = this.state.splashLinked ? 'Linked to Drop Mass (click to unlink)' : 'Independent (click to link)';
+      btn.innerHTML = `<svg ${chainSvgA}><path d="${this.state.splashLinked ? chainLinkedPath : chainUnlinkedPath}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+      btn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px;color:currentColor;opacity:0.7;display:flex;align-items:center;';
+      if (this.state.splashLinked) btn.style.opacity = '1';
+
+      btn.addEventListener('click', () => {
+        this.state.splashLinked = !this.state.splashLinked;
+        window.rainydesk.updateRainscapeParam('physics.splashLinked', this.state.splashLinked);
+
+        // Update all chain icons in sync
+        for (const icon of chainIcons) {
+          icon.innerHTML = `<svg ${chainSvgA}><path d="${this.state.splashLinked ? chainLinkedPath : chainUnlinkedPath}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+          icon.title = this.state.splashLinked ? 'Linked to Drop Mass (click to unlink)' : 'Independent (click to link)';
+          icon.style.opacity = this.state.splashLinked ? '1' : '0.7';
+        }
+
+        // Enable/disable splash slider
+        const splashRow = this.root.querySelector('[data-slider-id="splashSize"]') as HTMLElement;
+        if (splashRow) {
+          const slider = splashRow.querySelector('.slider') as HTMLInputElement;
+          if (slider) {
+            slider.disabled = this.state.splashLinked;
+            slider.style.opacity = this.state.splashLinked ? '0.4' : '';
+            slider.style.pointerEvents = this.state.splashLinked ? 'none' : '';
+          }
+        }
+
+        // When linking, derive splash from current drop mass
+        if (this.state.splashLinked) {
+          const derived = deriveSplashScale(this.state.dropSize);
+          this.state.splashSize = derived;
+          window.rainydesk.updateRainscapeParam('physics.splashScale', derived);
+          updateSliderValue(this.root, 'splashSize', Math.round(((derived - 0.5) / 1.5) * 100));
+        }
+      });
+
+      chainIcons.push(btn);
+      return btn;
+    };
+
+    const splashChainIcon = createChainIcon();
+    const dropMassChainIcon = createChainIcon();
 
     // Splash size (disabled in Matrix Mode)
     // Slider 0-100% maps to splashScale 0.5-2.0 (full valid range)
-    // Default 33% ≈ splashScale 1.0
+    // Default 33% ~ splashScale 1.0
     container.appendChild(
       Slider({
         id: 'splashSize',
@@ -1187,15 +1834,27 @@ export class RainyDeskPanel {
         max: 100,
         unit: '%',
         defaultValue: 33,
-        extraElement: splashOscKnob,
+        extraElement: splashChainIcon,
         onChange: (v) => {
-          // Map 0-100 slider → 0.5-2.0 splashScale
           const splashScale = 0.5 + (v / 100) * 1.5;
           this.state.splashSize = splashScale;
           window.rainydesk.updateRainscapeParam('physics.splashScale', splashScale);
         },
       })
     );
+
+    // Disable splash slider when linked
+    if (this.state.splashLinked) {
+      const splashRow = this.root.querySelector('[data-slider-id="splashSize"]') as HTMLElement;
+      if (splashRow) {
+        const slider = splashRow.querySelector('.slider') as HTMLInputElement;
+        if (slider) {
+          slider.disabled = true;
+          slider.style.opacity = '0.4';
+          slider.style.pointerEvents = 'none';
+        }
+      }
+    }
 
     // Puddle drain (disabled in Matrix Mode)
     container.appendChild(
@@ -1246,7 +1905,7 @@ export class RainyDeskPanel {
       })
     );
 
-    // Drop mass (Matrix: String Length)
+    // Drop mass (Matrix: String Length) — chain icon links splash scale
     container.appendChild(
       Slider({
         id: 'dropMass',
@@ -1257,9 +1916,17 @@ export class RainyDeskPanel {
         max: 10,
         unit: '',
         defaultValue: 4,
+        extraElement: dropMassChainIcon,
         onChange: (v) => {
           this.state.dropSize = v;
           window.rainydesk.updateRainscapeParam('physics.dropMaxSize', v);
+          // When linked, derive splash scale from drop mass
+          if (this.state.splashLinked) {
+            const derived = deriveSplashScale(v);
+            this.state.splashSize = derived;
+            window.rainydesk.updateRainscapeParam('physics.splashScale', derived);
+            updateSliderValue(this.root, 'splashSize', Math.round(((derived - 0.5) / 1.5) * 100));
+          }
         },
       })
     );
@@ -1325,6 +1992,25 @@ export class RainyDeskPanel {
     }
   }
 
+  private flashReinitButton(): void {
+    if (!this.reinitButton) return;
+    // Clear any active cooldown so the button is immediately usable
+    this.reinitCooldownEnd = 0;
+    if (this.reinitCooldownTimer) {
+      clearInterval(this.reinitCooldownTimer);
+      this.reinitCooldownTimer = null;
+    }
+    this.reinitButton.disabled = false;
+    // Restore label (cooldown may have overwritten it with "Cooldown (Ns)")
+    const svgA = 'width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"';
+    const resetIcon = `<svg ${svgA}><path d="M12 21V11M12 11L9 14M12 11L15 14M7 16.8184C4.69636 16.2074 3 14.1246 3 11.6493C3 9.20008 4.8 6.9375 7.5 6.5C8.34694 4.48637 10.3514 3 12.6893 3C15.684 3 18.1317 5.32251 18.3 8.25C19.8893 8.94488 21 10.6503 21 12.4969C21 14.8148 19.25 16.7236 17 16.9725" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    this.reinitButton.innerHTML = `${resetIcon}Reset RainyDesk`;
+    this.reinitButton.classList.add('monitor-alert');
+    this.reinitButton.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const cleanup = () => this.reinitButton?.classList.remove('monitor-alert');
+    this.reinitButton.addEventListener('click', cleanup, { once: true });
+  }
+
   private createAudioTab(): HTMLElement {
     const container = document.createElement('div');
 
@@ -1338,17 +2024,7 @@ export class RainyDeskPanel {
         max: 100,
         unit: '%',
         onChange: (v) => {
-          this.state.masterVolume = v;
-          // Sync with Basic tab's volume
-          this.state.volume = v;
-          const db = v <= 0 ? -1000 : (v / 100 * 60) - 60;
-          window.rainydesk.updateRainscapeParam('effects.masterVolume', db);
-          // Auto-toggle mute when volume hits 0
-          if (v === 0 && !this.state.muted) {
-            this.state.muted = true;
-            window.rainydesk.updateRainscapeParam('audio.muted', true);
-            this.render();
-          }
+          this.applyVolumeChange(v);
         },
       })
     );
@@ -1530,7 +2206,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 43,
+        defaultValue: 50,
         onChange: (v) => {
           this.state.matrixBassVolume = v;
           const db = v <= 0 ? -60 : (v / 100 * 42) - 30; // 0% = -60dB, 43% = -12dB, 100% = +12dB
@@ -1548,7 +2224,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 14,
+        defaultValue: 20,
         onChange: (v) => {
           this.state.matrixCollisionVolume = v;
           const db = v <= 0 ? -60 : (v / 100 * 42) - 30;
@@ -1566,7 +2242,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 43,
+        defaultValue: 30,
         onChange: (v) => {
           this.state.matrixDroneVolume = v;
           const db = v <= 0 ? -60 : (v / 100 * 42) - 30;
@@ -1642,15 +2318,8 @@ export class RainyDeskPanel {
         onChange: (v) => {
           this.state.gayMode = v;
           window.rainydesk.updateRainscapeParam('visual.gayMode', v);
-          // Sync title bar color
-          if (v) {
-            this.startGayModeAnimation();
-          } else {
-            this.stopGayModeAnimation();
-          }
-          if (rainbowSpeedSlider) {
-            rainbowSpeedSlider.style.display = v ? '' : 'none';
-          }
+          v ? this.startGayModeAnimation() : this.stopGayModeAnimation();
+          if (rainbowSpeedSlider) rainbowSpeedSlider.style.display = v ? '' : 'none';
           // Update Gaytrix hint visibility
           this.updateGaytrixHint();
         },
@@ -1675,27 +2344,30 @@ export class RainyDeskPanel {
     rainbowSpeedSlider.style.display = this.state.gayMode ? '' : 'none';
     container.appendChild(rainbowSpeedSlider);
 
-    // Matrix Mode toggle (digital rain)
-    container.appendChild(
-      Toggle({
-        label: 'Matrix Mode',
-        sublabel: 'Digital rain with collision effects',
-        checked: this.state.matrixMode,
-        onChange: (v) => {
-          this.state.matrixMode = v;
-          window.rainydesk.updateRainscapeParam('visual.matrixMode', v);
-          // Persist for cross-window sync (help window reads this)
-          localStorage.setItem('rainscaper-matrix-mode', String(v));
-          // Toggle Matrix font mode on the panel
-          const panelEl = this.root.querySelector('.rainscaper-panel');
-          if (panelEl) panelEl.classList.toggle('matrix-font-mode', v);
-          // Update Gaytrix hint visibility
-          this.updateGaytrixHint();
-          // Update Physics tab slider labels and disabled states
-          this.updateMatrixModeSliders();
-        },
-      })
-    );
+    // Matrix Mode toggle (digital rain) — 2s cooldown prevents async init race conditions
+    const matrixToggle = Toggle({
+      label: 'Matrix Mode',
+      sublabel: 'Digital rain with collision effects',
+      checked: this.state.matrixMode,
+      onChange: (v) => {
+        const now = Date.now();
+        if (now - this.lastMatrixToggle < 2000) {
+          // Revert the checkbox — still in cooldown
+          const input = matrixToggle.querySelector('input') as HTMLInputElement;
+          if (input) input.checked = this.state.matrixMode;
+          return;
+        }
+        this.lastMatrixToggle = now;
+        this.state.matrixMode = v;
+        window.rainydesk.updateRainscapeParam('visual.matrixMode', v);
+        localStorage.setItem('rainscaper-matrix-mode', String(v));
+        const panelEl = this.root.querySelector('.rainscaper-panel');
+        if (panelEl) panelEl.classList.toggle('matrix-font-mode', v);
+        this.updateGaytrixHint();
+        this.updateMatrixModeSliders();
+      },
+    });
+    container.appendChild(matrixToggle);
 
     // Gaytrix hint (appears when both Gay Mode + Matrix Mode are enabled)
     const gaytrixHint = document.createElement('div');
@@ -1773,6 +2445,38 @@ export class RainyDeskPanel {
     container.appendChild(scrollToggle);
 
     return container;
+  }
+
+  /* Diagonal clip-path wipe transition between themes */
+  private async playThemeWipe(theme: string, btn: HTMLElement, themeSelector: HTMLElement, customApply?: () => void): Promise<void> {
+    const panel = this.root.querySelector('.rainscaper-panel') as HTMLElement;
+    if (!panel) return;
+
+    const oldBg = getComputedStyle(panel).backgroundColor;
+    const overlay = document.createElement('div');
+    overlay.className = 'theme-wipe-overlay';
+    overlay.style.background = oldBg;
+
+    const wipes = [
+      ['polygon(0 0, 300% 0, 0 300%)', 'polygon(0 0, 0 0, 0 0)'],
+      ['polygon(100% 0, 100% 300%, -200% 0)', 'polygon(100% 0, 100% 0, 100% 0)'],
+      ['polygon(0 100%, 300% 100%, 0 -200%)', 'polygon(0 100%, 0 100%, 0 100%)'],
+      ['polygon(100% 100%, -200% 100%, 100% -200%)', 'polygon(100% 100%, 100% 100%, 100% 100%)'],
+    ];
+    const wipe = wipes[Math.floor(Math.random() * wipes.length)]!;
+    overlay.style.clipPath = wipe[0]!;
+    panel.appendChild(overlay);
+
+    if (customApply) customApply();
+    else await applyTheme(theme);
+    themeSelector.querySelectorAll('.theme-button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    requestAnimationFrame(() => {
+      overlay.style.clipPath = wipe[1]!;
+      overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+      setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 700);
+    });
   }
 
   private createSystemTab(): HTMLElement {
@@ -2011,17 +2715,27 @@ export class RainyDeskPanel {
       })
     );
 
+    // 3D Audio (disabled - needs tuning)
+    behavior.content.appendChild(
+      Toggle({
+        label: '3D Audio',
+        checked: this.state.spatialAudio,
+        disabled: true,
+        disabledNote: '(Soon\u2122)',
+        onChange: (v) => {
+          this.state.spatialAudio = v;
+          window.rainydesk.updateRainscapeParam('spatial.enabled', v);
+        },
+      })
+    );
+
     // Start with Windows
     const autostartToggle = Toggle({
       label: 'Start with Windows',
       checked: false,
       onChange: async (v) => {
         try {
-          if (v) {
-            await enableAutostart();
-          } else {
-            await disableAutostart();
-          }
+          await (v ? enableAutostart() : disableAutostart());
         } catch (err) {
           window.rainydesk.log(`[Autostart] Toggle failed: ${err}`);
         }
@@ -2172,6 +2886,7 @@ export class RainyDeskPanel {
 
     actions.content.appendChild(presetGrid);
     actions.content.appendChild(reinitBtn);
+    this.reinitButton = reinitBtn;
     container.appendChild(actions.content);
 
     // Apply Matrix Mode state to relevant sliders
@@ -2284,7 +2999,7 @@ export class RainyDeskPanel {
           </div>
           <div class="debug-sys-item">
             <span class="debug-sys-label">GPU</span>
-            <span class="debug-sys-value">${specs.gpuModel}</span>
+            <span class="debug-sys-value">${specs.gpuModel}${specs.gpuVramGb ? `<br><span class="debug-sys-sub">${specs.gpuVramGb} GB VRAM</span>` : ''}</span>
           </div>
           <div class="debug-sys-item">
             <span class="debug-sys-label">RAM</span>
@@ -2350,6 +3065,27 @@ export class RainyDeskPanel {
     }
   }
 
+  /* Shared volume → dB conversion + auto-mute/unmute logic for Basic and Audio tabs */
+  private applyVolumeChange(v: number): void {
+    const wasZero = this.state.volume === 0;
+    this.state.volume = v;
+    this.state.masterVolume = v;
+    // Convert percentage to dB; use -1000dB NOT -100 for true silence
+    const db = v <= 0 ? -1000 : (v / 100 * 60) - 60;
+    window.rainydesk.updateRainscapeParam('effects.masterVolume', db);
+
+    if (v === 0 && !this.state.muted) {
+      this.state.muted = true;
+      window.rainydesk.updateRainscapeParam('audio.muted', true);
+      this.updateMuteToggle();
+    }
+    if (wasZero && v > 0 && this.state.muted) {
+      this.state.muted = false;
+      window.rainydesk.updateRainscapeParam('audio.muted', false);
+      this.updateMuteToggle();
+    }
+  }
+
   private updateMuteToggle(): void {
     const muteRow = this.root.querySelector('[data-control="mute"]');
     if (!muteRow) return;
@@ -2389,71 +3125,68 @@ export class RainyDeskPanel {
     this.applyUIScaleCSS(scale);
   }
 
+  /* Inject or update SVG radialGradient for trans mode logo cycling */
+  private updateTransLogo(svg: Element): void {
+    // One-time setup: inject radialGradient with 9 stops
+    if (!svg.querySelector('#trans-grad')) {
+      const ns = 'http://www.w3.org/2000/svg';
+      const defs = document.createElementNS(ns, 'defs');
+      const grad = document.createElementNS(ns, 'radialGradient');
+      grad.id = 'trans-grad';
+      for (let i = 0; i < 9; i++) {
+        const stop = document.createElementNS(ns, 'stop');
+        stop.setAttribute('offset', `${(i / 8) * 100}%`);
+        grad.appendChild(stop);
+      }
+      defs.appendChild(grad);
+      svg.insertBefore(defs, svg.firstChild);
+      svg.querySelector('path')!.setAttribute('fill', 'url(#trans-grad)');
+    }
+    // Cycle stop colors: W(#FFF) → P(#F5A9B8) → B(#5BCEFA), seamless loop
+    const stops = svg.querySelectorAll('#trans-grad stop');
+    const phase = (performance.now() / 3000) % 1.0;
+    const W = [255, 255, 255], P = [245, 169, 184], B = [91, 206, 250];
+    const C = [W, P, B];
+    for (let i = 0; i < stops.length; i++) {
+      const seg = (((i / 9) - phase + 1) % 1.0) * 3;
+      const si = Math.floor(seg) % 3;
+      const sf = seg - Math.floor(seg);
+      const fr = C[si]!, to = C[(si + 1) % 3]!;
+      stops[i]!.setAttribute('stop-color',
+        `rgb(${fr[0]! + (to[0]! - fr[0]!) * sf | 0},${fr[1]! + (to[1]! - fr[1]!) * sf | 0},${fr[2]! + (to[2]! - fr[2]!) * sf | 0})`);
+    }
+  }
+
   /* Start rainbow cycling on title bar + logo */
   private startGayModeAnimation(): void {
-    if (this.gayModeInterval) return; // Already running
+    if (this.gayModeInterval) return;
 
     this.gayModeInterval = setInterval(() => {
       if (!this.titleElement) return;
+
       if (this.state.transMode) {
-        // Trans mode: gradient text matching the flag
         this.titleElement.style.color = 'transparent';
         this.titleElement.style.backgroundImage = 'linear-gradient(90deg, #5BCEFA, #F5A9B8, #FFFFFF, #F5A9B8, #5BCEFA)';
         this.titleElement.style.backgroundClip = 'text';
         (this.titleElement.style as unknown as Record<string, string>)['-webkit-background-clip'] = 'text';
-        // Logo: radiating trans gradient via SVG radialGradient stop cycling
-        if (this.logoElement) {
-          const svg = this.logoElement.querySelector('.panel-logo');
-          if (svg) {
-            // One-time setup: inject radialGradient with 9 stops
-            if (!svg.querySelector('#trans-grad')) {
-              const ns = 'http://www.w3.org/2000/svg';
-              const defs = document.createElementNS(ns, 'defs');
-              const grad = document.createElementNS(ns, 'radialGradient');
-              grad.id = 'trans-grad';
-              for (let i = 0; i < 9; i++) {
-                const stop = document.createElementNS(ns, 'stop');
-                stop.setAttribute('offset', `${(i / 8) * 100}%`);
-                grad.appendChild(stop);
-              }
-              defs.appendChild(grad);
-              svg.insertBefore(defs, svg.firstChild);
-              svg.querySelector('path')!.setAttribute('fill', 'url(#trans-grad)');
-            }
-            // Cycle stop colors: W(#FFF) -> P(#F5A9B8) -> B(#5BCEFA), seamless loop
-            const stops = svg.querySelectorAll('#trans-grad stop');
-            const phase = (performance.now() / 3000) % 1.0;
-            const W = [255, 255, 255], P = [245, 169, 184], B = [91, 206, 250];
-            const C = [W, P, B];
-            for (let i = 0; i < stops.length; i++) {
-              const seg = (((i / 9) - phase + 1) % 1.0) * 3;
-              const si = Math.floor(seg) % 3;
-              const sf = seg - Math.floor(seg);
-              const fr = C[si]!, to = C[(si + 1) % 3]!;
-              stops[i]!.setAttribute('stop-color',
-                `rgb(${fr[0]! + (to[0]! - fr[0]!) * sf | 0},${fr[1]! + (to[1]! - fr[1]!) * sf | 0},${fr[2]! + (to[2]! - fr[2]!) * sf | 0})`);
-            }
-          }
-        }
+        const svg = this.logoElement?.querySelector('.panel-logo');
+        if (svg) this.updateTransLogo(svg);
       } else {
-        // Rainbow: cycle hue over 60 seconds
         this.titleElement.style.backgroundImage = '';
         this.titleElement.style.backgroundClip = '';
         (this.titleElement.style as unknown as Record<string, string>)['-webkit-background-clip'] = '';
         const speed = this.state.rainbowSpeed || 1;
         const hue = ((performance.now() / (60000 / speed)) % 1.0) * 360;
         this.titleElement.style.color = `hsl(${hue}, 80%, 70%)`;
-        // Logo: same rainbow hue, tear down trans gradient if it was active
-        if (this.logoElement) {
-          const svg = this.logoElement.querySelector('.panel-logo');
-          if (svg?.querySelector('#trans-grad')) {
-            svg.querySelector('defs')?.remove();
-            svg.querySelector('path')!.setAttribute('fill', 'currentColor');
-          }
-          this.logoElement.style.color = `hsl(${hue}, 80%, 70%)`;
+        // Tear down trans gradient if it was active
+        const svg = this.logoElement?.querySelector('.panel-logo');
+        if (svg?.querySelector('#trans-grad')) {
+          svg.querySelector('defs')?.remove();
+          svg.querySelector('path')!.setAttribute('fill', 'currentColor');
         }
+        if (this.logoElement) this.logoElement.style.color = `hsl(${hue}, 80%, 70%)`;
       }
-    }, 50); // 50ms updates for smooth animation
+    }, 50);
   }
 
   /* Stop rainbow cycling, reset title + logo color */
@@ -2707,13 +3440,21 @@ export class RainyDeskPanel {
 
     // Disable OSC knobs on non-disabled tabs (Basic + Physics)
     // sheetOsc/impactPitchOsc are on Audio tab rows that already get matrix-disabled
-    for (const knobId of ['windOsc', 'splashOsc']) {
+    for (const knobId of ['windOsc']) {
       const knob = this.root.querySelector(`[data-knob-id="${knobId}"]`) as HTMLElement;
       if (knob) {
         knob.style.opacity = isMatrix ? '0.4' : '';
         knob.style.pointerEvents = isMatrix ? 'none' : '';
       }
     }
+
+    // Disable chain-link toggles in Matrix Mode (splash physics disabled)
+    const chainToggles = this.root.querySelectorAll('.chain-link-toggle');
+    chainToggles.forEach((btn) => {
+      const el = btn as HTMLElement;
+      el.style.opacity = isMatrix ? '0.4' : (this.state.splashLinked ? '1' : '0.7');
+      el.style.pointerEvents = isMatrix ? 'none' : '';
+    });
 
     // Update toggle labels that have matrix alternatives
     const toggles = this.root.querySelectorAll('[data-toggle-id]');
@@ -2792,10 +3533,10 @@ export class RainyDeskPanel {
       window.rainydesk.getVersion().then((v: string) => {
         versionBtn.textContent = `v${v}`;
       }).catch(() => {
-        versionBtn.textContent = 'v0.9.3-alpha';
+        versionBtn.textContent = 'v0.9.4-alpha';
       });
     } else {
-      versionBtn.textContent = 'v0.9.3-alpha';
+      versionBtn.textContent = 'v0.9.4-alpha';
     }
 
     // Build the popup menu (reused across toggles)
@@ -2836,7 +3577,7 @@ export class RainyDeskPanel {
     checkmark.textContent = '\u2610'; // Empty checkbox
     const autostartLabel = document.createElement('span');
     autostartLabel.style.cssText = 'flex: 1; text-align: right;';
-    autostartLabel.textContent = 'Start with Windows';
+    autostartLabel.textContent = 'Autostart';
     autostartItem.appendChild(checkmark);
     autostartItem.appendChild(autostartLabel);
 

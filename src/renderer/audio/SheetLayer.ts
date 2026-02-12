@@ -6,7 +6,7 @@
  */
 
 import * as Tone from 'tone';
-import type { SheetLayerConfig, NoiseType, FilterType } from '../../types/audio';
+import type { SheetLayerConfig, NoiseType, FilterType, SpatialConfig } from '../../types/audio';
 
 const DEFAULT_CONFIG: SheetLayerConfig = {
   noiseType: 'brown',
@@ -27,9 +27,16 @@ export class SheetLayer {
   private _config: SheetLayerConfig;
   private _noise: Tone.Noise;
   private _filter: Tone.Filter;
+  private _panner3d: Tone.Panner3D;
   private _output: Tone.Gain;
   private _currentParticleCount = 0;
   private _isPlaying = false;
+  private _spatialConfig: SpatialConfig = {
+    enabled: false,
+    panningModel: 'equalpower',
+    worldScale: 5,
+    fixedDepth: -2,
+  };
 
   constructor(config: Partial<SheetLayerConfig> = {}) {
     this._config = { ...DEFAULT_CONFIG, ...config };
@@ -45,10 +52,19 @@ export class SheetLayer {
       Q: this._config.filterQ,
     });
 
+    this._panner3d = new Tone.Panner3D({
+      panningModel: this._spatialConfig.panningModel,
+      rolloffFactor: 0,
+      positionX: 0,
+      positionY: 0,
+      positionZ: this._spatialConfig.fixedDepth,
+    });
+
     this._output = new Tone.Gain(1);
 
     this._noise.connect(this._filter);
-    this._filter.connect(this._output);
+    this._filter.connect(this._panner3d);
+    this._panner3d.connect(this._output);
   }
 
   start(): void {
@@ -136,10 +152,24 @@ export class SheetLayer {
     return this._output;
   }
 
+  setSpatialConfig(config: Partial<SpatialConfig>): void {
+    if (config.enabled !== undefined) this._spatialConfig.enabled = config.enabled;
+    if (config.panningModel !== undefined) {
+      this._spatialConfig.panningModel = config.panningModel;
+      this._panner3d.panningModel = config.panningModel;
+    }
+    if (config.worldScale !== undefined) this._spatialConfig.worldScale = config.worldScale;
+    if (config.fixedDepth !== undefined) {
+      this._spatialConfig.fixedDepth = config.fixedDepth;
+      this._panner3d.positionZ.value = config.fixedDepth;
+    }
+  }
+
   dispose(): void {
     this.stop();
     this._noise.dispose();
     this._filter.dispose();
+    this._panner3d.dispose();
     this._output.dispose();
   }
 

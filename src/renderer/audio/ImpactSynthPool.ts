@@ -7,7 +7,7 @@
 
 import * as Tone from 'tone';
 import { VoicePool } from './VoicePool';
-import type { VoicePoolConfig, AudioParams, Voice } from '../../types/audio';
+import type { VoicePoolConfig, AudioParams, Voice, SpatialConfig } from '../../types/audio';
 
 export interface ImpactSynthConfig {
   noiseType: 'white' | 'pink' | 'brown';
@@ -40,9 +40,15 @@ const DEFAULT_IMPACT_CONFIG: ImpactSynthConfig = {
 export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
   private _synthConfig: ImpactSynthConfig;
   private _filters: Map<number, Tone.Filter> = new Map();
-  private _panners: Map<number, Tone.Panner> = new Map();
+  private _panners: Map<number, Tone.Panner3D> = new Map();
   private _releaseEventIds: number[] = [];
   private _output: Tone.Gain;
+  private _spatialConfig: SpatialConfig = {
+    enabled: false,
+    panningModel: 'equalpower',
+    worldScale: 5,
+    fixedDepth: -2,
+  };
 
   constructor(
     poolConfig: Partial<VoicePoolConfig> = {},
@@ -63,7 +69,13 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
       Q: config.filterQ,
     });
 
-    const panner = new Tone.Panner(0);
+    const panner = new Tone.Panner3D({
+      panningModel: this._spatialConfig.panningModel,
+      rolloffFactor: 0,
+      positionX: 0,
+      positionY: 0,
+      positionZ: this._spatialConfig.fixedDepth,
+    });
 
     const synth = new Tone.NoiseSynth({
       noise: { type: config.noiseType },
@@ -130,9 +142,17 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
       filter.Q.value = qScale;
     }
 
-    // Apply stereo pan
+    // Apply spatial position
     if (panner) {
-      panner.pan.value = params.pan;
+      if (params.position3d) {
+        panner.positionX.value = params.position3d.x;
+        panner.positionY.value = params.position3d.y;
+        panner.positionZ.value = params.position3d.z;
+      } else {
+        panner.positionX.value = params.pan * this._spatialConfig.worldScale;
+        panner.positionY.value = 0;
+        panner.positionZ.value = this._spatialConfig.fixedDepth;
+      }
     }
 
     voice.synth.volume.value = params.volume;
@@ -173,6 +193,18 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
 
   getSynthConfig(): ImpactSynthConfig {
     return { ...this._synthConfig };
+  }
+
+  setSpatialConfig(config: Partial<SpatialConfig>): void {
+    if (config.enabled !== undefined) this._spatialConfig.enabled = config.enabled;
+    if (config.panningModel !== undefined) {
+      this._spatialConfig.panningModel = config.panningModel;
+      for (const panner of this._panners.values()) {
+        panner.panningModel = config.panningModel;
+      }
+    }
+    if (config.worldScale !== undefined) this._spatialConfig.worldScale = config.worldScale;
+    if (config.fixedDepth !== undefined) this._spatialConfig.fixedDepth = config.fixedDepth;
   }
 
   override dispose(): void {
