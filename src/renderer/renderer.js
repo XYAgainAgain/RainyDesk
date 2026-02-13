@@ -1288,8 +1288,8 @@ async function reinitializePhysics(newGridScale) {
 
 /* Resize canvas to match display */
 function resizeCanvas() {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
+  const width = virtualDesktop?.width || window.innerWidth;
+  const height = virtualDesktop?.height || window.innerHeight;
 
   canvasWidth = width;
   canvasHeight = height;
@@ -1297,7 +1297,7 @@ function resizeCanvas() {
   canvas.width = width;
   canvas.height = height;
 
-  window.rainydesk.log(`[Resize] Canvas: ${width}x${height}, dpr=${window.devicePixelRatio}, screen=${window.screen.width}x${window.screen.height}`);
+  window.rainydesk.log(`[Resize] Canvas: ${width}x${height}, display=${window.innerWidth}x${window.innerHeight}, dpr=${window.devicePixelRatio}`);
 }
 
 /* Update simulation */
@@ -2427,8 +2427,9 @@ async function init() {
   await waitForTauriAPI();
   window.rainydesk.log('Initializing RainyDesk renderer...');
 
-  // PHASE 3: Get display info and calculate
-  virtualDesktop = await window.rainydesk.getVirtualDesktop();
+  // PHASE 3: Get display info and calculate (includes phantom DPI detection)
+  const dpiResult = await window.rainydesk.detectPhantomDPI();
+  virtualDesktop = dpiResult.virtualDesktop || await window.rainydesk.getVirtualDesktop();
   resizeCanvas();
 
   // PHASE 4: Init simulation (Pixi only)

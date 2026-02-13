@@ -337,6 +337,14 @@ fn setup_application(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Err
         desktop.monitors.len()
     );
 
+    for m in &desktop.monitors {
+        log::info!(
+            "  Monitor {}: {}x{} @ {} Hz, scale {:.0}%, pos ({}, {})",
+            m.index, m.width, m.height, m.refresh_rate,
+            m.scale_factor * 100.0, m.x, m.y
+        );
+    }
+
     init_health(&BACKGROUND_HEALTH);
     if let Err(e) = create_mega_background(app.handle(), &desktop) {
         log::error!("Failed to create mega-background: {}", e);
@@ -378,6 +386,13 @@ pub fn run() {
 
     // Collect hardware specs once at startup (avoids CMD flash from wmic on every System tab open)
     let specs = commands::collect_system_specs();
+
+    log::info!(
+        "Hardware: {} | {} ({} VRAM) | {:.1} GB RAM",
+        specs.cpu_model, specs.gpu_model,
+        specs.gpu_vram_gb.map_or("? GB".to_string(), |v| format!("{:.0} GB", v)),
+        specs.total_ram_gb
+    );
 
     tauri::Builder::default()
         .manage(AppState {

@@ -164,6 +164,39 @@ window.rainydesk = {
   // Monitor hot-swap detection (Rust -> renderer)
   onMonitorConfigChanged: (callback) => {
     listen('monitor-config-changed', () => callback());
+  },
+
+  // Detect phantom DPI scaling (Intel Iris iGPU + WebView2 bug)
+  // Compares Tauri's monitor dimensions against window.screen to find phantom scaling
+  detectPhantomDPI: async () => {
+    try {
+      const vd = await invoke('get_virtual_desktop');
+      const primary = vd.monitors[vd.primaryIndex];
+      if (!primary?.width || !window.screen.width) {
+        invoke('log_message', { message: '[DPICheck] Invalid monitor data, skipping detection' }).catch(() => {});
+        return { factor: 1, correctionZoom: 1, corrected: false, virtualDesktop: vd };
+      }
+      const factor = primary.width / window.screen.width;
+      const corrected = factor > 1.05;
+      const correctionZoom = corrected ? (1 / factor) : 1;
+
+      invoke('log_message', {
+        message: `[DPICheck] Monitor=${primary.width}x${primary.height}, screen=${window.screen.width}x${window.screen.height}, factor=${factor.toFixed(3)}, Correction=${corrected ? 'YES' : 'no'}`
+      });
+
+      if (corrected) {
+        invoke('log_message', {
+          message: `[DPIFix] Phantom DPI detected (${factor.toFixed(3)}x). Applying correctionZoom=${correctionZoom.toFixed(4)}`
+        });
+      }
+
+      return { factor, correctionZoom, corrected, virtualDesktop: vd };
+    } catch (e) {
+      invoke('log_message', {
+        message: `[DPICheck] Detection failed: ${e}`
+      }).catch(() => {});
+      return { factor: 1, correctionZoom: 1, corrected: false, virtualDesktop: null };
+    }
   }
 };
 

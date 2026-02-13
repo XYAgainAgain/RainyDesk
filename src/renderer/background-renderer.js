@@ -64,21 +64,25 @@ function resizeCanvas() {
   const height = virtualDesktop?.height || window.innerHeight;
   canvas.width = width;
   canvas.height = height;
-  canvas.style.width = width + 'px';
-  canvas.style.height = height + 'px';
   if (renderer) {
     renderer.resize(width, height, 1, renderScale);
   }
+  // CSS display uses viewport dimensions (handles phantom DPI scaling)
+  // Must be set AFTER renderer.resize() since WebGLRainRenderer also sets inline styles
+  const displayW = window.innerWidth + 'px';
+  const displayH = window.innerHeight + 'px';
+  canvas.style.width = displayW;
+  canvas.style.height = displayH;
   if (matrixCanvas) {
     matrixCanvas.width = width;
     matrixCanvas.height = height;
-    matrixCanvas.style.width = width + 'px';
-    matrixCanvas.style.height = height + 'px';
+    matrixCanvas.style.width = displayW;
+    matrixCanvas.style.height = displayH;
   }
   if (matrixRenderer) {
     matrixRenderer.resize(width, height);
   }
-  window.rainydesk?.log?.(`[Background] Canvas resized to ${width}x${height}, dpr=${window.devicePixelRatio}`);
+  window.rainydesk?.log?.(`[Background] Canvas resized to ${width}x${height}, display=${window.innerWidth}x${window.innerHeight}, dpr=${window.devicePixelRatio}`);
 }
 
 /* Render loop */
@@ -366,9 +370,10 @@ async function init() {
   await waitForTauriAPI();
   window.rainydesk.log('[Background] Initializing...');
 
-  // PHASE 3: Get virtual desktop info
+  // PHASE 3: Get virtual desktop info (includes phantom DPI detection)
   try {
-    virtualDesktop = await window.rainydesk.getVirtualDesktop();
+    const dpiResult = await window.rainydesk.detectPhantomDPI();
+    virtualDesktop = dpiResult.virtualDesktop || await window.rainydesk.getVirtualDesktop();
     window.rainydesk.log(`[Background] Virtual desktop: ${virtualDesktop.width}x${virtualDesktop.height}`);
   } catch (e) {
     console.warn('[Background] getVirtualDesktop failed:', e);

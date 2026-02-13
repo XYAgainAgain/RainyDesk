@@ -446,6 +446,12 @@ async function init(): Promise<void> {
     }, 50);
   });
 
+  // Detect and correct phantom DPI scaling (Intel Iris iGPU + WebView2)
+  const dpiResult = await (window as any).rainydesk.detectPhantomDPI();
+  if (dpiResult.corrected) {
+    document.documentElement.style.zoom = String(dpiResult.correctionZoom);
+  }
+
   // Apply initial theme
   const initialTheme = localStorage.getItem('rainscaper-theme') || 'blue';
   await applyThemeToWindow(initialTheme);

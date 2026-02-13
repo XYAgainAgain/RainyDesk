@@ -321,6 +321,12 @@ export class RainyDeskPanel {
   }
 
   async init(): Promise<void> {
+    // Detect and correct phantom DPI scaling (Intel Iris iGPU + WebView2)
+    const dpiResult = await (window as any).rainydesk.detectPhantomDPI();
+    if (dpiResult.corrected) {
+      document.documentElement.style.zoom = String(dpiResult.correctionZoom);
+    }
+
     // Apply saved theme
     await applyTheme(this.state.theme);
 
