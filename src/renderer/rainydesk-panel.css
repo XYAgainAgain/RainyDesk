@@ -1952,6 +1952,32 @@ html, body {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Update notification droplet (inline SVG element, added by JS) */
+.update-droplet {
+  display: inline-block;
+  width: 16px;
+  height: 22px;
+  margin-left: 0px;
+  margin-right: -3px;
+  margin-top: -5px;
+  margin-bottom: -5px;
+  vertical-align: middle;
+  background: var(--accent-color);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12 21.5C13.8565 21.5 15.637 20.7625 16.9497 19.4497C18.2625 18.137 19 16.3565 19 14.5C19 12.5 18 10.6 16 9C14 7.4 12.5 5 12 2.5C11.5 5 10 7.4 8 9C6 10.6 5 12.5 5 14.5C5 16.3565 5.7375 18.137 7.05025 19.4497C8.36301 20.7625 10.1435 21.5 12 21.5Z' fill='black'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12 21.5C13.8565 21.5 15.637 20.7625 16.9497 19.4497C18.2625 18.137 19 16.3565 19 14.5C19 12.5 18 10.6 16 9C14 7.4 12.5 5 12 2.5C11.5 5 10 7.4 8 9C6 10.6 5 12.5 5 14.5C5 16.3565 5.7375 18.137 7.05025 19.4497C8.36301 20.7625 10.1435 21.5 12 21.5Z' fill='black'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  filter: drop-shadow(0 0 4px var(--accent-color)) drop-shadow(0 0 8px var(--accent-color));
+  animation: update-drop-pulse 2s ease-in-out infinite;
+}
+
+@keyframes update-drop-pulse {
+  0%, 100% { filter: drop-shadow(0 0 4px var(--accent-color)) drop-shadow(0 0 8px var(--accent-color)); }
+  50% { filter: drop-shadow(0 0 6px var(--accent-color)) drop-shadow(0 0 14px var(--accent-color)); }
+}
+
 .version-menu {
   position: absolute;
   bottom: calc(100% + 6px);

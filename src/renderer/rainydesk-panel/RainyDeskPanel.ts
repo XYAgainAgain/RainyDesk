@@ -3511,6 +3511,63 @@ export class RainyDeskPanel {
     return { dot: 'raining', text: 'Raining' };
   }
 
+  private async checkForUpdates(): Promise<{ name: string; url: string; tag: string } | null> {
+    const cacheKey = 'rainydesk-update-check';
+
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached === 'none') return null;
+      if (cached) return JSON.parse(cached);
+
+      const localVersion = window.rainydesk?.getVersion
+        ? await window.rainydesk.getVersion()
+        : null;
+      if (!localVersion) return null;
+
+      const localMatch = localVersion.match(/\.(\d+)-/);
+      if (!localMatch?.[1]) return null;
+      const localPatch = parseInt(localMatch[1], 10);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+
+      const res = await fetch(
+        'https://api.github.com/repos/XYAgainAgain/RainyDesk/releases',
+        { signal: controller.signal, headers: { Accept: 'application/vnd.github.v3+json' } }
+      );
+      clearTimeout(timeout);
+
+      if (!res.ok) return null;
+
+      const releases = await res.json();
+      if (!Array.isArray(releases) || releases.length === 0) return null;
+
+      const latest = releases[0];
+      const tagMatch = latest.tag_name?.match(/alpha(\d+)/);
+      if (!tagMatch) {
+        sessionStorage.setItem(cacheKey, 'none');
+        return null;
+      }
+      const remotePatch = parseInt(tagMatch[1], 10);
+
+      if (remotePatch > localPatch) {
+        const url: string = latest.html_url || '';
+        if (!url.startsWith('https://github.com/')) {
+          sessionStorage.setItem(cacheKey, 'none');
+          return null;
+        }
+        const result = { name: latest.name || latest.tag_name, url, tag: latest.tag_name };
+        sessionStorage.setItem(cacheKey, JSON.stringify(result));
+        return result;
+      }
+
+      sessionStorage.setItem(cacheKey, 'none');
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   private createFooter(): HTMLElement {
     const footer = document.createElement('div');
     footer.className = 'panel-footer';
@@ -3532,17 +3589,18 @@ export class RainyDeskPanel {
 
     const versionBtn = document.createElement('button');
     versionBtn.className = 'version-button';
-    versionBtn.textContent = 'v...';
+    const versionLabel = document.createElement('span');
+    versionLabel.textContent = 'v...';
+    versionBtn.appendChild(versionLabel);
 
-    // Load version from Tauri app config
     if (window.rainydesk?.getVersion) {
       window.rainydesk.getVersion().then((v: string) => {
-        versionBtn.textContent = `v${v}`;
+        versionLabel.textContent = `v${v}`;
       }).catch(() => {
-        versionBtn.textContent = 'v0.9.4-alpha';
+        versionLabel.textContent = 'v0.9.4-alpha';
       });
     } else {
-      versionBtn.textContent = 'v0.9.4-alpha';
+      versionLabel.textContent = 'v0.9.4-alpha';
     }
 
     // Build the popup menu (reused across toggles)
@@ -3569,11 +3627,38 @@ export class RainyDeskPanel {
     });
     menu.appendChild(githubItem);
 
-    // Check for Updates (disabled)
+    // Check for Updates
     const updatesItem = document.createElement('button');
     updatesItem.className = 'version-menu-item disabled';
     updatesItem.innerHTML = '<span class="version-menu-icon">&#8635;</span> <span style="flex: 1; text-align: right;">Update <span class="version-menu-sublabel">(soon!)</span></span>';
     menu.appendChild(updatesItem);
+
+    this.checkForUpdates().then((release) => {
+      if (!release) return;
+      updatesItem.classList.remove('disabled');
+
+      updatesItem.textContent = '';
+      const icon = document.createElement('span');
+      icon.className = 'version-menu-icon';
+      icon.textContent = '\u2191';
+      const label = document.createElement('span');
+      label.style.cssText = 'flex: 1; text-align: right;';
+      label.textContent = 'Update me? :) ';
+      const sublabel = document.createElement('span');
+      sublabel.className = 'version-menu-sublabel';
+      sublabel.textContent = release.name;
+      label.appendChild(sublabel);
+      updatesItem.appendChild(icon);
+      updatesItem.appendChild(label);
+
+      updatesItem.addEventListener('click', () => {
+        window.rainydesk.openUrl(release.url);
+        hideMenu();
+      });
+      const droplet = document.createElement('span');
+      droplet.className = 'update-droplet';
+      versionBtn.appendChild(droplet);
+    }).catch(() => {});
 
     // Start with Windows toggle
     const autostartItem = document.createElement('button');

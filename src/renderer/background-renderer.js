@@ -16,7 +16,7 @@
 import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
 
 // PHASE 1: Hide canvas (only on first load, not hot-reloads)
-const canvas = document.getElementById('rain-canvas');
+let canvas = document.getElementById('rain-canvas');
 
 // Check if we recently initialized (within last 30 seconds) - survives WebView recreation
 const lastInit = parseInt(localStorage.getItem('__RAINYDESK_BACKGROUND_INIT_TIME__') || '0', 10);
@@ -34,6 +34,7 @@ let renderer = null;
 let renderScale = 0.25;
 let virtualDesktop = null;
 let isPaused = false;
+let bgRainUserEnabled = true;
 let isFullscreenActive = false;
 let lastTime = performance.now();
 let fpsLimit = 0;
@@ -131,23 +132,24 @@ function registerEventListeners() {
 
   window.rainydesk.onToggleRain((enabled) => {
     window.rainydesk.log(`[Background] Toggle rain: enabled=${enabled}`);
-    renderer.setBackgroundRainConfig({ enabled: enabled });
+    bgRainUserEnabled = enabled;
+    renderer?.setBackgroundRainConfig({ enabled: enabled });
   });
 
   window.rainydesk.onUpdateRainscapeParam((path, value) => {
     if (path === 'physics.wind') {
       const wind = Math.max(-1, Math.min(1, value / 100));
-      renderer.setBackgroundRainConfig({ wind });
+      renderer?.setBackgroundRainConfig({ wind });
     }
 
     if (path === 'physics.intensity') {
       const normalized = value / 100;
       if (normalized < 0.01) {
-        renderer.setBackgroundRainConfig({ enabled: false });
+        renderer?.setBackgroundRainConfig({ enabled: false });
       } else {
         const layers = Math.round(1 + normalized * 4);
         const speed = 0.5 + normalized;
-        renderer.setBackgroundRainConfig({
+        renderer?.setBackgroundRainConfig({
           enabled: true,
           intensity: normalized,
           layerCount: layers,
@@ -166,24 +168,24 @@ function registerEventListeners() {
     }
 
     if (path === 'backgroundRain.enabled') {
-      renderer.setBackgroundRainConfig({ enabled: Boolean(value) });
-      // Also toggle BG matrix visibility when in Matrix Mode
+      bgRainUserEnabled = Boolean(value);
+      renderer?.setBackgroundRainConfig({ enabled: bgRainUserEnabled });
       if (matrixMode && matrixCanvas) {
-        matrixCanvas.style.display = Boolean(value) ? 'block' : 'none';
+        matrixCanvas.style.display = bgRainUserEnabled ? 'block' : 'none';
       }
     }
     if (path === 'backgroundRain.intensity') {
-      renderer.setBackgroundRainConfig({ intensity: value / 100 });
+      renderer?.setBackgroundRainConfig({ intensity: value / 100 });
       // Sync intensity to BG matrix alpha (0-100 → 0.1-0.6 alpha range)
       if (matrixRenderer) {
         matrixRenderer.setAlphaMult(0.1 + (value / 100) * 0.5);
       }
     }
     if (path === 'backgroundRain.layerCount' || path === 'backgroundRain.layers') {
-      renderer.setBackgroundRainConfig({ layerCount: Math.max(1, Math.min(5, value)) });
+      renderer?.setBackgroundRainConfig({ layerCount: Math.max(1, Math.min(5, value)) });
     }
     if (path === 'backgroundRain.speed') {
-      renderer.setBackgroundRainConfig({ speed: Math.max(0.1, Math.min(3, value)) });
+      renderer?.setBackgroundRainConfig({ speed: Math.max(0.1, Math.min(3, value)) });
     }
 
     if (path === 'system.paused') {
@@ -193,7 +195,7 @@ function registerEventListeners() {
 
     // Gay Mode / Rainbow Mode sync
     if (path === 'visual.gayMode' || path === 'visual.rainbowMode') {
-      renderer.setBackgroundRainConfig({ rainbowMode: Boolean(value) });
+      renderer?.setBackgroundRainConfig({ rainbowMode: Boolean(value) });
       // Sync Gaytrix to background matrix
       if (matrixRenderer) {
         matrixRenderer.setGaytrixMode(Boolean(value));
@@ -201,7 +203,7 @@ function registerEventListeners() {
     }
 
     if (path === 'visual.rainbowSpeed') {
-      renderer.setBackgroundRainConfig({ rainbowSpeed: Number(value) || 1 });
+      renderer?.setBackgroundRainConfig({ rainbowSpeed: Number(value) || 1 });
     }
 
     // Trans Mode sync (background matrix layer)
@@ -218,7 +220,7 @@ function registerEventListeners() {
 
     // Reverse Gravity sync (affects both normal rain shader and Matrix mode)
     if (path === 'physics.reverseGravity') {
-      renderer.setBackgroundRainConfig({ reverseGravity: Boolean(value) });
+      renderer?.setBackgroundRainConfig({ reverseGravity: Boolean(value) });
       // Sync to background matrix
       if (matrixRenderer) {
         matrixRenderer.setReverseGravity(Boolean(value));
@@ -229,10 +231,10 @@ function registerEventListeners() {
     if (path === 'visual.matrixMode') {
       matrixMode = Boolean(value);
       if (matrixMode) {
-        // Stop rain shader (matrix canvas renders on top)
-        renderer.setBackgroundRainConfig({ enabled: false });
+        renderer?.setBackgroundRainConfig({ enabled: false });
+        if (renderer) renderer.clear();
 
-        // Create separate canvas for Matrix Mode (avoids WebGL context conflicts)
+        // Separate canvas avoids WebGL context conflicts
         matrixCanvas = document.createElement('canvas');
         matrixCanvas.id = 'matrix-bg-canvas';
         matrixCanvas.style.cssText = canvas.style.cssText;
@@ -244,9 +246,17 @@ function registerEventListeners() {
         // Init background matrix
         initBackgroundMatrix(++matrixInitGeneration);
       } else {
-        // Destroy matrix and its canvas, re-enable rain shader
         destroyBackgroundMatrix();
-        renderer.setBackgroundRainConfig({ enabled: true });
+        renderer?.setBackgroundRainConfig({ enabled: bgRainUserEnabled });
+
+        // Pixi's second WebGL context can kill the rain context
+        setTimeout(() => {
+          const gl = canvas.getContext('webgl2');
+          if (!gl || gl.isContextLost()) {
+            window.rainydesk.log('[Background] Rain context lost after Matrix destroy — replacing canvas');
+            rebuildRainCanvas();
+          }
+        }, 100);
       }
     }
 
@@ -256,7 +266,7 @@ function registerEventListeners() {
       const r = parseInt(hex.substring(0, 2), 16) / 255;
       const g = parseInt(hex.substring(2, 4), 16) / 255;
       const b = parseInt(hex.substring(4, 6), 16) / 255;
-      renderer.setBackgroundRainConfig({ colorTint: [r, g, b] });
+      renderer?.setBackgroundRainConfig({ colorTint: [r, g, b] });
       // Sync to background matrix
       if (matrixRenderer) {
         matrixRenderer.setRainColor(String(value));
@@ -346,8 +356,33 @@ async function initBackgroundMatrix(gen) {
       matrixCanvas.remove();
       matrixCanvas = null;
     }
-    renderer.setBackgroundRainConfig({ enabled: true });
+    matrixMode = false;
+    renderer?.setBackgroundRainConfig({ enabled: bgRainUserEnabled });
     window.rainydesk.log('[Background] Falling back to rain shader (matrix init failed)');
+  }
+}
+
+/* Replace rain canvas + renderer after WebGL context loss */
+function rebuildRainCanvas() {
+  try {
+    const savedConfig = renderer?.getBackgroundRainConfig();
+    const oldCanvas = canvas;
+    if (renderer) renderer.dispose();
+
+    canvas = document.createElement('canvas');
+    canvas.id = 'rain-canvas';
+    canvas.style.cssText = oldCanvas.style.cssText;
+    canvas.width = oldCanvas.width;
+    canvas.height = oldCanvas.height;
+    oldCanvas.replaceWith(canvas);
+
+    renderer = new WebGLRainRenderer(canvas);
+    renderer.init();
+    renderer.setBackgroundRainConfig(savedConfig || { enabled: bgRainUserEnabled });
+    resizeCanvas();
+    window.rainydesk.log('[Background] Canvas + renderer rebuilt after context loss');
+  } catch (err) {
+    window.rainydesk.log(`[Background] Canvas rebuild failed: ${err}`);
   }
 }
 
@@ -392,7 +427,7 @@ async function init() {
   }
 
   // Set initial defaults
-  renderer.setBackgroundRainConfig({
+  renderer?.setBackgroundRainConfig({
     intensity: 0.5,
     wind: 0,
     layerCount: 3,
@@ -415,7 +450,7 @@ async function init() {
         const rain = data.rain;
         if (typeof rain.intensity === 'number') {
           const normalized = rain.intensity / 100;
-          renderer.setBackgroundRainConfig({
+          renderer?.setBackgroundRainConfig({
             intensity: normalized,
             layerCount: Math.round(1 + normalized * 4),
             speed: 0.5 + normalized
@@ -423,7 +458,7 @@ async function init() {
         }
         if (typeof rain.wind === 'number') {
           const wind = Math.max(-1, Math.min(1, rain.wind / 100));
-          renderer.setBackgroundRainConfig({ wind });
+          renderer?.setBackgroundRainConfig({ wind });
         }
       }
       // FPS limit
@@ -434,7 +469,8 @@ async function init() {
       // Matrix Mode: activate background layer if saved as active
       if (data.visual && data.visual.matrixMode) {
         matrixMode = true;
-        renderer.setBackgroundRainConfig({ enabled: false });
+        renderer?.setBackgroundRainConfig({ enabled: false });
+        if (renderer) renderer.clear();
 
         matrixCanvas = document.createElement('canvas');
         matrixCanvas.id = 'matrix-bg-canvas';

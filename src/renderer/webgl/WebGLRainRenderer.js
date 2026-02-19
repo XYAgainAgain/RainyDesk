@@ -297,17 +297,16 @@ class WebGLRainRenderer {
         this.backgroundRain = new BackgroundRainShader(gl);
         this.backgroundRain.init();
 
-        // Handle WebGL context loss (GPU driver reset, sleep/wake, etc.)
         this.canvas.addEventListener('webglcontextlost', (e) => {
-            e.preventDefault(); // Allows context restoration
+            e.preventDefault();
             this.contextLost = true;
-            console.warn('[WebGL] Context lost - halting rendering');
+            window.rainydesk?.log?.('[WebGL] Context lost');
         }, false);
 
         this.canvas.addEventListener('webglcontextrestored', () => {
-            console.log('[WebGL] Context restored - reinitializing');
             this.contextLost = false;
             this._reinitAfterContextRestore();
+            window.rainydesk?.log?.('[WebGL] Context restored');
         }, false);
 
         return true;
@@ -764,6 +763,7 @@ class WebGLRainRenderer {
      * No physics particles, minimal overhead
      */
     renderBackgroundOnly(dt) {
+        if (this.contextLost) return;
         const gl = this.gl;
 
         // Update background rain animation
