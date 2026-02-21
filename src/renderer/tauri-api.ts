@@ -3,51 +3,60 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
+import type {
+  VirtualDesktop,
+  DisplayInfo,
+  PhantomDPIResult,
+  RendererStats,
+  DebugLogEntry,
+  DebugStats,
+  UserThemesFile,
+} from './rainydesk-panel/types';
 
 window.rainydesk = {
   // Receive display info from main process (event-based)
   onDisplayInfo: (callback) => {
-    listen('display-info', (event) => callback(event.payload));
+    void listen<DisplayInfo>('display-info', (event) => callback(event.payload));
   },
 
   // Get display info via command (more reliable than event)
-  getDisplayInfo: () => invoke('get_display_info'),
+  getDisplayInfo: () => invoke<DisplayInfo>('get_display_info'),
 
   // Get all displays for multi-monitor grid calculation
-  getAllDisplays: () => invoke('get_all_displays'),
+  getAllDisplays: () => invoke<DisplayInfo>('get_all_displays'),
 
   // Get virtual desktop info (bounding box + monitor regions)
-  getVirtualDesktop: () => invoke('get_virtual_desktop'),
-  getSystemSpecs: () => invoke('get_system_specs'),
+  getVirtualDesktop: () => invoke<VirtualDesktop>('get_virtual_desktop'),
+  getSystemSpecs: () => invoke<{ cpuModel: string; gpuModel: string; gpuVramGb: number | null; totalRamGb: number }>('get_system_specs'),
 
   // Receive virtual desktop info from main process (event-based)
   onVirtualDesktop: (callback) => {
-    listen('virtual-desktop', (event) => callback(event.payload));
+    void listen<VirtualDesktop>('virtual-desktop', (event) => callback(event.payload));
   },
 
   // Receive rain toggle commands (pause/resume from tray menu)
   onToggleRain: (callback) => {
-    listen('toggle-rain', (event) => {
-      invoke('log_message', { message: `[TauriAPI] toggle-rain: ${event.payload}` });
+    listen<boolean>('toggle-rain', (event) => {
+      void invoke('log_message', { message: `[TauriAPI] toggle-rain: ${event.payload}` });
       callback(event.payload);
     }).catch((e) => {
-      invoke('log_message', { message: `[TauriAPI] FAILED to register toggle-rain listener: ${e}` });
+      void invoke('log_message', { message: `[TauriAPI] FAILED to register toggle-rain listener: ${e}` });
     });
   },
 
   // Receive audio toggle commands (pause/resume audio system)
   onToggleAudio: (callback) => {
-    listen('toggle-audio', (event) => callback(event.payload));
+    void listen<boolean>('toggle-audio', (event) => callback(event.payload));
   },
 
   // Receive volume changes (from tray menu presets)
   onSetVolume: (callback) => {
-    listen('set-volume', (event) => callback(event.payload));
+    void listen<number>('set-volume', (event) => callback(event.payload));
   },
 
   // Receive rainscape load command (from tray menu quick-select)
   onLoadRainscape: (callback) => {
-    listen('load-rainscape', (event) => callback(event.payload));
+    void listen<string>('load-rainscape', (event) => callback(event.payload));
   },
 
   // Receive window position data for exclusion zones
@@ -55,15 +64,13 @@ window.rainydesk = {
     return listen('window-data', (event) => callback(event.payload));
   },
 
-  // Get current configuration
-  getConfig: () => invoke('get_config'),
+  getConfig: () => invoke<{ rainEnabled: boolean; intensity: number; volume: number; wind: number }>('get_config'),
 
   // Notify main process of current rainscape (for tray tooltip)
   setRainscape: (name) => invoke('set_rainscape', { name }),
 
-  // Toggle Rainscaper Debug Panel
   onToggleRainscaper: (callback) => {
-    listen('toggle-rainscaper', () => {
+    void listen('toggle-rainscaper', () => {
       console.log('Tauri API: received toggle-rainscaper');
       callback();
     });
@@ -71,30 +78,30 @@ window.rainydesk = {
 
   // Control mouse transparency
   setIgnoreMouseEvents: (ignore, _options) => {
-    invoke('set_ignore_mouse_events', { ignore });
+    void invoke('set_ignore_mouse_events', { ignore });
   },
 
   // Rainscape File I/O
   saveRainscape: (filename, data) => invoke('save_rainscape', { filename, data }),
   autosaveRainscape: (data) => invoke('autosave_rainscape', { data }),
-  getStartupRainscape: () => invoke('get_startup_rainscape_cmd'),
-  loadRainscapes: () => invoke('load_rainscapes'),
-  readRainscape: (filename) => invoke('read_rainscape', { filename }),
+  getStartupRainscape: () => invoke<{ filename: string; data: Record<string, unknown> }>('get_startup_rainscape_cmd'),
+  loadRainscapes: () => invoke<{ root: string[]; custom: string[] }>('load_rainscapes'),
+  readRainscape: (filename) => invoke<Record<string, unknown>>('read_rainscape', { filename }),
 
   // Rainscape Parameter Sync
   updateRainscapeParam: (path, value) => invoke('update_rainscape_param', { path, value }),
   onUpdateRainscapeParam: (callback) => {
-    listen('update-rainscape-param', (event) => {
+    listen<{ path: string; value: unknown }>('update-rainscape-param', (event) => {
       callback(event.payload.path, event.payload.value);
     }).catch((e) => {
-      invoke('log_message', { message: `[TauriAPI] FAILED to register param listener: ${e}` });
+      void invoke('log_message', { message: `[TauriAPI] FAILED to register param listener: ${e}` });
     });
   },
 
   // Audio start synchronization across monitors
   triggerAudioStart: () => invoke('trigger_audio_start'),
   onStartAudio: (callback) => {
-    listen('start-audio', () => callback());
+    void listen('start-audio', () => callback());
   },
 
   // WebView health heartbeat (crash detection watchdog)
@@ -104,95 +111,91 @@ window.rainydesk = {
   log: (message) => invoke('log_message', { message }),
 
   // Rainscaper window control
-  // Use event instead of invoke - Rust handles it the same way as tray click
+  // Use event instead of invoke — Rust handles it the same way as tray click
   hideRainscaper: () => emit('hide-rainscaper-request'),
   showRainscaper: (trayX, trayY) => invoke('show_rainscaper', { trayX, trayY }),
   toggleRainscaper: (trayX, trayY) => invoke('toggle_rainscaper', { trayX, trayY }),
+  getPanelDetached: () => invoke<boolean>('get_panel_detached'),
+  setPanelDetached: (detached) => invoke('set_panel_detached', { detached }),
+  snapPanelToTray: () => invoke('snap_panel_to_tray'),
   resizeRainscaper: (width, height) => invoke('resize_rainscaper', { width, height }),
 
   // App version (from tauri.conf.json)
   getVersion: () => getVersion(),
 
   // System integration
-  getWindowsAccentColor: () => invoke('get_windows_accent_color'),
+  getWindowsAccentColor: () => invoke<string>('get_windows_accent_color'),
 
   // Help window
   showHelpWindow: () => invoke('show_help_window'),
   hideHelpWindow: () => invoke('hide_help_window'),
   resizeHelpWindow: (width, height) => invoke('resize_help_window', { width, height }),
   centerHelpWindow: () => invoke('center_help_window'),
-  toggleMaximizeHelpWindow: () => invoke('toggle_maximize_help_window'),
+  toggleMaximizeHelpWindow: () => invoke<boolean>('toggle_maximize_help_window'),
 
-  // Open URL in default browser
   openUrl: (url) => invoke('open_url', { url }),
-
-  // Open rainscapes folder (Documents\RainyDesk) in Explorer
   openRainscapesFolder: () => invoke('open_rainscapes_folder'),
-
-  // Open logs folder in Explorer
   openLogsFolder: () => invoke('open_logs_folder'),
 
   // Custom themes I/O (UserThemes.json in Documents\RainyDesk\)
-  loadUserThemes: () => invoke('load_user_themes'),
+  loadUserThemes: () => invoke<UserThemesFile>('load_user_themes'),
   saveUserThemes: (data) => invoke('save_user_themes', { data }),
 
   // Stats bridge (overlay → panel)
-  // Emits stats from overlay window so panel can display them
   emitStats: (stats) => emit('renderer-stats', stats),
   onStats: (callback) => {
-    listen('renderer-stats', (event) => callback(event.payload));
+    void listen<RendererStats>('renderer-stats', (event) => callback(event.payload));
   },
 
   // Reinitialization status events (overlay → panel)
-  // Used when physics system is being reinitialized with a new grid scale
   emitReinitStatus: (status) => emit('reinit-status', status),
   onReinitStatus: (callback) => {
-    listen('reinit-status', (event) => callback(event.payload));
+    void listen<'stopped' | 'initializing' | 'raining'>('reinit-status', (event) => callback(event.payload));
   },
 
-  // Per-monitor fullscreen state (overlay -> background)
+  // Per-monitor fullscreen state (overlay → background)
   emitFullscreenMonitors: (indices) => emit('fullscreen-monitors', indices),
   onFullscreenMonitors: (callback) => {
-    listen('fullscreen-monitors', (event) => callback(event.payload));
+    void listen<number[]>('fullscreen-monitors', (event) => callback(event.payload));
   },
 
-  // Help window hidden event (Rust -> panel)
+  // Help window hidden event (Rust → panel)
   onHelpWindowHidden: (callback) => {
-    listen('help-window-hidden', () => callback());
+    void listen('help-window-hidden', () => callback());
   },
 
-  // Monitor hot-swap detection (Rust -> renderer)
+  // Monitor hot-swap detection (Rust → renderer)
   onMonitorConfigChanged: (callback) => {
-    listen('monitor-config-changed', () => callback());
+    void listen('monitor-config-changed', () => callback());
   },
 
   // Detect phantom DPI scaling (Intel Iris iGPU + WebView2 bug)
   // Compares Tauri's monitor dimensions against window.screen to find phantom scaling
-  detectPhantomDPI: async () => {
+  detectPhantomDPI: async (): Promise<PhantomDPIResult> => {
     try {
-      const vd = await invoke('get_virtual_desktop');
+      const vd = await invoke<VirtualDesktop>('get_virtual_desktop');
       const primary = vd.monitors[vd.primaryIndex];
       if (!primary?.width || !window.screen.width) {
-        invoke('log_message', { message: '[DPICheck] Invalid monitor data, skipping detection' }).catch(() => {});
+        void invoke('log_message', { message: '[DPICheck] Invalid monitor data, skipping detection' }).catch(() => {});
         return { factor: 1, correctionZoom: 1, corrected: false, virtualDesktop: vd };
       }
       const factor = primary.width / window.screen.width;
       const corrected = factor > 1.05;
       const correctionZoom = corrected ? (1 / factor) : 1;
 
-      invoke('log_message', {
+      void invoke('log_message', {
         message: `[DPICheck] Monitor=${primary.width}x${primary.height}, screen=${window.screen.width}x${window.screen.height}, factor=${factor.toFixed(3)}, Correction=${corrected ? 'YES' : 'no'}`
       });
 
       if (corrected) {
-        invoke('log_message', {
+        void invoke('log_message', {
           message: `[DPIFix] Phantom DPI detected (${factor.toFixed(3)}x). Applying correctionZoom=${correctionZoom.toFixed(4)}`
         });
       }
 
       return { factor, correctionZoom, corrected, virtualDesktop: vd };
     } catch (e) {
-      invoke('log_message', {
+      void invoke('log_message', {
         message: `[DPICheck] Detection failed: ${e}`
       }).catch(() => {});
       return { factor: 1, correctionZoom: 1, corrected: false, virtualDesktop: null };
@@ -201,15 +204,17 @@ window.rainydesk = {
 };
 
 // Rainscaper panel debug log storage
-window._debugLog = [];
+window._debugLog = [] as DebugLogEntry[];
 window._debugLogMaxEntries = 100;
 window._debugStats = {
   fps: 0,
   waterCount: 0,
   activeDrops: 0,
   puddleCells: 0,
+  frameTime: 0,
+  memoryMB: 0,
   lastUpdate: Date.now(),
-};
+} satisfies DebugStats;
 
 // Add debug log entry (used by console intercept and direct calls)
 window._addDebugLog = (level, message) => {
@@ -218,7 +223,6 @@ window._addDebugLog = (level, message) => {
     level,
     message,
   });
-  // Trim to max entries
   while (window._debugLog.length > window._debugLogMaxEntries) {
     window._debugLog.shift();
   }
@@ -234,24 +238,24 @@ const originalWarn = console.warn;
 const originalError = console.error;
 const originalLog = console.log;
 
-console.log = (...args) => {
+console.log = (...args: unknown[]) => {
   originalLog.apply(console, args);
   const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
   window._addDebugLog('info', message);
 };
 
-console.warn = (...args) => {
+console.warn = (...args: unknown[]) => {
   originalWarn.apply(console, args);
   const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
   window._addDebugLog('warn', message);
-  invoke('log_message', { message: `[ConsoleWarn] ${message}` }).catch(() => {});
+  void invoke('log_message', { message: `[ConsoleWarn] ${message}` }).catch(() => {});
 };
 
-console.error = (...args) => {
+console.error = (...args: unknown[]) => {
   originalError.apply(console, args);
   const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
   window._addDebugLog('error', message);
-  invoke('log_message', { message: `[ConsoleError] ${message}` }).catch(() => {});
+  void invoke('log_message', { message: `[ConsoleError] ${message}` }).catch(() => {});
 };
 
 console.log('Tauri API shim loaded');

@@ -23,32 +23,7 @@ const TABS: TabDef[] = [
 
 // Default colors for different modes
 const DEFAULT_RAIN_COLOR = '#8aa8c0';  // Gray-blue for normal rain
-const DEFAULT_MATRIX_COLOR = '#008F11'; // Matrix green (body color from spec)
-
-// Debug log entry
-interface DebugLogEntry {
-  timestamp: Date;
-  level: 'info' | 'warn' | 'error';
-  message: string;
-}
-
-// Declare global window extensions for debug
-declare global {
-  interface Window {
-    _debugLog: DebugLogEntry[];
-    _debugStats: {
-      fps: number;
-      waterCount: number;
-      activeDrops: number;
-      puddleCells: number;
-      frameTime: number;
-      memoryMB: number;
-      lastUpdate: number;
-    };
-    _addDebugLog: (level: 'info' | 'warn' | 'error', message: string) => void;
-    _updateDebugStats: (stats: Partial<Window['_debugStats']>) => void;
-  }
-}
+const DEFAULT_MATRIX_COLOR = '#008F11'; // Matrix green
 
 // Initialize global debug storage if not already set
 if (!window._debugLog) {
@@ -89,7 +64,9 @@ interface PanelState {
   sheetVolume: number;
   ambience: number;
   bubbleSound: number;
-  thunderEnabled: boolean;
+  thunderStorminess: number;
+  thunderDistance: number;
+  thunderEnvironment: string;
   windSound: number;
   // Matrix Mode audio (E1) — percentages that map to dB via (v/100*42)-30
   matrixBassVolume: number;       // Default 50% = -9 dB
@@ -191,6 +168,48 @@ export class RainyDeskPanel {
   private themeEditorOpen = false;
   private previousThemeId: string = 'blue';
   private editingThemeId: string | null = null;
+  private detachBtn: HTMLButtonElement | null = null;
+  private isDetached: boolean = false;
+  private headerElement: HTMLElement | null = null;
+
+  // SVG factories — use DOM API + currentColor so icons follow theme colors
+  private static createSVG(viewBox: string, pathD: string, fill = 'none', stroke = 'currentColor'): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', viewBox);
+    svg.setAttribute('fill', fill);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', pathD);
+    path.setAttribute('stroke', stroke);
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  private static createLockSVG(): SVGSVGElement {
+    return RainyDeskPanel.createSVG('0 0 24 24',
+      'M12 14.5V16.5M7 10.0288C7.47142 10 8.05259 10 8.8 10H15.2C15.9474 10 16.5286 10 17 10.0288M7 10.0288C6.41168 10.0647 5.99429 10.1455 5.63803 10.327C5.07354 10.6146 4.6146 11.0735 4.32698 11.638C4 12.2798 4 13.1198 4 14.8V16.2C4 17.8802 4 18.7202 4.32698 19.362C4.6146 19.9265 5.07354 20.3854 5.63803 20.673C6.27976 21 7.11984 21 8.8 21H15.2C16.8802 21 17.7202 21 18.362 20.673C18.9265 20.3854 19.3854 19.9265 19.673 19.362C20 18.7202 20 17.8802 20 16.2V14.8C20 13.1198 20 12.2798 19.673 11.638C19.3854 11.0735 18.9265 10.6146 18.362 10.327C18.0057 10.1455 17.5883 10.0647 17 10.0288M7 10.0288V8C7 5.23858 9.23858 3 12 3C14.7614 3 17 5.23858 17 8V10.0288'
+    );
+  }
+
+  private static createUnlockSVG(): SVGSVGElement {
+    return RainyDeskPanel.createSVG('0 0 24 24',
+      'M16.584 6C15.8124 4.2341 14.0503 3 12 3C9.23858 3 7 5.23858 7 8V10.0288M12 14.5V16.5M7 10.0288C7.47142 10 8.05259 10 8.8 10H15.2C16.8802 10 17.7202 10 18.362 10.327C18.9265 10.6146 19.3854 11.0735 19.673 11.638C20 12.2798 20 13.1198 20 14.8V16.2C20 17.8802 20 18.7202 19.673 19.362C19.3854 19.9265 18.9265 20.3854 18.362 20.673C17.7202 21 16.8802 21 15.2 21H8.8C7.11984 21 6.27976 21 5.63803 20.673C5.07354 20.3854 4.6146 19.9265 4.32698 19.362C4 18.7202 4 17.8802 4 16.2V14.8C4 13.1198 4 12.2798 4.32698 11.638C4.6146 11.0735 5.07354 10.6146 5.63803 10.327C5.99429 10.1455 6.41168 10.0647 7 10.0288Z'
+    );
+  }
+
+  private static createCloudQuestionSVG(): SVGSVGElement {
+    return RainyDeskPanel.createSVG('0 0 24 24',
+      'M12.437 13C13.437 12 14.437 11.6046 14.437 10.5C14.437 9.39543 13.5416 8.5 12.437 8.5C11.5051 8.5 10.722 9.13739 10.5 10M12.437 16H12.447M8.4 19C5.41766 19 3 16.6044 3 13.6493C3 11.2001 4.8 8.9375 7.5 8.5C8.34694 6.48637 10.3514 5 12.6893 5C15.684 5 18.1317 7.32251 18.3 10.25C19.8893 10.9449 21 12.6503 21 14.4969C21 16.9839 18.9853 19 16.5 19L8.4 19Z'
+    );
+  }
+
+  private static createCloudBoltSVG(): SVGSVGElement {
+    return RainyDeskPanel.createSVG('0 0 24 24',
+      'M13 11L10 16H15L12 21M6 16.4438C4.22194 15.5683 3 13.7502 3 11.6493C3 9.20008 4.8 6.9375 7.5 6.5C8.34694 4.48637 10.3514 3 12.6893 3C15.684 3 18.1317 5.32251 18.3 8.25C19.8893 8.94488 21 10.6503 21 12.4969C21 14.0582 20.206 15.4339 19 16.2417'
+    );
+  }
 
   /* Get saved UI Scale, or auto-fit to screen on first launch */
   private static getInitialUIScale(): number {
@@ -255,7 +274,9 @@ export class RainyDeskPanel {
       sheetVolume: 35,
       ambience: 30,
       bubbleSound: 30,
-      thunderEnabled: false,
+      thunderStorminess: 0,
+      thunderDistance: 5.0,
+      thunderEnvironment: 'forest',
       windSound: 20,
       // Matrix Mode audio (E1) — percentages matching GlitchSynth default dB values
       matrixBassVolume: 50,       // -9 dB
@@ -321,7 +342,7 @@ export class RainyDeskPanel {
   }
 
   async init(): Promise<void> {
-    // Detect and correct phantom DPI scaling (Intel Iris iGPU + WebView2)
+    // Detect and correct phantom DPI scaling (Intel Iris iGPU + WebView2, thanks dad)
     const dpiResult = await (window as any).rainydesk.detectPhantomDPI();
     if (dpiResult.corrected) {
       document.documentElement.style.zoom = String(dpiResult.correctionZoom);
@@ -376,6 +397,11 @@ export class RainyDeskPanel {
       }
     }
 
+    // Load panel detach state from Rust config
+    try {
+      this.isDetached = await window.rainydesk.getPanelDetached();
+    } catch { this.isDetached = false; }
+
     // Hook param updates to flash the autosave indicator (skip non-saveable commands)
     const originalUpdateParam = window.rainydesk.updateRainscapeParam;
     window.rainydesk.updateRainscapeParam = (path: string, value: unknown) => {
@@ -408,6 +434,11 @@ export class RainyDeskPanel {
     // Listen for parameter updates from other windows
     window.rainydesk.onUpdateRainscapeParam((path, value) => {
       this.handleExternalParamUpdate(path, value);
+    });
+
+    // Listen for help window close (X button or Rust-side hide)
+    window.rainydesk.onHelpWindowHidden(() => {
+      this.state.helpWindowOpen = false;
     });
 
     // Listen for tray menu volume presets
@@ -510,7 +541,11 @@ export class RainyDeskPanel {
           impactPitch: audio.impactPitch,
           impactPitchOsc: audio.impactPitchOsc,
           windMasterGain: audio.windMasterGain,
-          thunderEnabled: audio.thunderEnabled,
+        },
+        thunder: {
+          storminess: audio.thunderStorminess,
+          distance: audio.thunderDistance,
+          environment: audio.thunderEnvironment,
         },
         matrix: {
           bass: audio.matrixBass,
@@ -598,12 +633,23 @@ export class RainyDeskPanel {
         if (typeof ar.rainIntensity === 'number') this.state.rainIntensity = ar.rainIntensity;
         if (typeof ar.impactPitch === 'number') this.state.impactPitch = ar.impactPitch;
         if (typeof ar.impactPitchOsc === 'number') this.state.impactPitchOsc = ar.impactPitchOsc;
-        if (typeof ar.thunderEnabled === 'boolean') this.state.thunderEnabled = ar.thunderEnabled;
-        // Wind: dB → slider percentage (0% = -60dB mute, 1–100% = -24dB to +12dB)
+        // Backward compat: old thunderEnabled boolean → storminess
+        if (typeof ar.thunderEnabled === 'boolean') {
+          this.state.thunderStorminess = ar.thunderEnabled ? 30 : 0;
+        }
+        // Wind: dB -> slider percentage (0% = -60dB mute, 1-100% = -24dB to +12dB)
         if (typeof ar.windMasterGain === 'number') {
           const db = ar.windMasterGain as number;
           this.state.windSound = db <= -60 ? 0 : Math.round(Math.max(0, Math.min(100, ((db + 24) / 36) * 100)));
         }
+      }
+
+      // Thunder settings (new v2 format)
+      if (audio.thunder && typeof audio.thunder === 'object') {
+        const at = audio.thunder as Record<string, unknown>;
+        if (typeof at.storminess === 'number') this.state.thunderStorminess = at.storminess;
+        if (typeof at.distance === 'number') this.state.thunderDistance = at.distance;
+        if (typeof at.environment === 'string') this.state.thunderEnvironment = at.environment;
       }
 
       if (audio.matrix && typeof audio.matrix === 'object') {
@@ -698,6 +744,9 @@ export class RainyDeskPanel {
       this.applyUIScale(1.0);
       // Sync slider display (index 2 = 1.0x in scaleSteps)
       updateSliderValue(this.root, 'uiScale', 2);
+      // Reset detach state to snapped
+      this.isDetached = false;
+      this.updateDetachButton();
     }
   }
 
@@ -785,6 +834,13 @@ export class RainyDeskPanel {
   private createHeader(): HTMLElement {
     const header = document.createElement('div');
     header.className = 'panel-header';
+    this.headerElement = header;
+
+    // Only allow dragging when detached
+    if (this.isDetached) {
+      (header.style as any).webkitAppRegion = 'drag';
+      header.style.cursor = 'move';
+    }
 
     // Logo (left anchor)
     const logo = document.createElement('div');
@@ -805,7 +861,7 @@ export class RainyDeskPanel {
 
     const helpBtn = document.createElement('button');
     helpBtn.className = 'panel-help';
-    helpBtn.textContent = '?';
+    helpBtn.appendChild(RainyDeskPanel.createCloudQuestionSVG());
     helpBtn.title = 'Help';
     helpBtn.onclick = () => {
       if (this.state.helpWindowOpen) {
@@ -817,10 +873,15 @@ export class RainyDeskPanel {
       }
     };
 
-    // Listen for help window close (X button or Rust-side hide)
-    window.rainydesk.onHelpWindowHidden(() => {
-      this.state.helpWindowOpen = false;
-    });
+    // Detach/snap toggle — locks panel position or returns it to tray
+    const detachBtn = document.createElement('button');
+    detachBtn.className = 'panel-detach';
+    const detachIcon = this.isDetached ? RainyDeskPanel.createLockSVG() : RainyDeskPanel.createUnlockSVG();
+    detachBtn.appendChild(detachIcon);
+    detachBtn.title = this.isDetached ? 'Snap to tray' : 'Detach panel';
+    if (this.isDetached) detachBtn.classList.add('active');
+    detachBtn.onclick = () => this.toggleDetach();
+    this.detachBtn = detachBtn;
 
     // Close button — folded umbrella icon
     const closeBtn = document.createElement('button');
@@ -837,9 +898,41 @@ export class RainyDeskPanel {
     header.appendChild(logo);
     header.appendChild(title);
     header.appendChild(helpBtn);
+    header.appendChild(detachBtn);
     header.appendChild(closeBtn);
 
     return header;
+  }
+
+  private async toggleDetach(): Promise<void> {
+    const newState = !this.isDetached;
+    try {
+      if (newState) {
+        await window.rainydesk.setPanelDetached(true);
+      } else {
+        await window.rainydesk.snapPanelToTray();
+      }
+      this.isDetached = newState;
+      this.updateDetachButton();
+    } catch (err) {
+      window.rainydesk.log(`[RainyDeskPanel] toggleDetach failed: ${err}`);
+    }
+  }
+
+  private updateDetachButton(): void {
+    if (this.detachBtn) {
+      const oldIcon = this.detachBtn.querySelector('svg');
+      if (oldIcon) oldIcon.remove();
+      this.detachBtn.appendChild(
+        this.isDetached ? RainyDeskPanel.createLockSVG() : RainyDeskPanel.createUnlockSVG()
+      );
+      this.detachBtn.title = this.isDetached ? 'Snap to tray' : 'Detach panel';
+      this.detachBtn.classList.toggle('active', this.isDetached);
+    }
+    if (this.headerElement) {
+      (this.headerElement.style as any).webkitAppRegion = this.isDetached ? 'drag' : 'no-drag';
+      this.headerElement.style.cursor = this.isDetached ? 'move' : 'default';
+    }
   }
 
   /* Flash autosave state through the footer status dot */
@@ -1038,11 +1131,11 @@ export class RainyDeskPanel {
       },
     });
 
-    // Wind (disabled in Matrix Mode -- Matrix uses fixed stream patterns)
+    // Wind (disabled in Matrix Mode coz Matrix uses fixed stream patterns)
     container.appendChild(
       Slider({
         id: 'wind',
-        label: 'Wind Strength',
+        label: 'Windiness',
         value: this.state.wind,
         min: -100,
         max: 100,
@@ -1060,7 +1153,7 @@ export class RainyDeskPanel {
     container.appendChild(
       Slider({
         id: 'volume',
-        label: 'Volume',
+        label: 'Master Volume',
         value: this.state.volume,
         min: 0,
         max: 100,
@@ -1480,7 +1573,7 @@ export class RainyDeskPanel {
     ftSection.appendChild(ftContent);
     editor.appendChild(ftSection);
 
-    // Font editing (TODO: implement properly later)
+    // Font editing (TODO: implement properly later so the freaks can have their Comic Sans)
     // const fontSection = document.createElement('div');
     // fontSection.className = 'theme-fonts';
     // const makeFontSelect = (label: string, current: string, onChange: (v: string) => void) => {
@@ -2133,19 +2226,114 @@ export class RainyDeskPanel {
       })
     );
 
-    // Thunder toggle (disabled - not yet implemented)
-    container.appendChild(
-      Toggle({
-        label: 'Thunder',
-        checked: this.state.thunderEnabled,
-        disabled: true,
-        disabledNote: 'rolling in soon...',
+    // Thunder section (hidden in Matrix Mode)
+    const thunderSection = document.createElement('div');
+    thunderSection.id = 'thunder-audio-section';
+    thunderSection.style.display = this.state.matrixMode ? 'none' : 'block';
+
+    const thunderDivider = document.createElement('hr');
+    thunderDivider.className = 'panel-separator';
+    thunderSection.appendChild(thunderDivider);
+
+    const thunderTitle = document.createElement('div');
+    thunderTitle.className = 'section-title';
+    thunderTitle.textContent = 'Thunder';
+    thunderSection.appendChild(thunderTitle);
+
+    // Manual trigger for tuning — fires at current distance/environment settings
+    const testStrikeBtn = document.createElement('button');
+    testStrikeBtn.className = 'thunder-test-btn';
+    testStrikeBtn.id = 'thunder-test-btn';
+    testStrikeBtn.title = 'Test Strike';
+    testStrikeBtn.appendChild(RainyDeskPanel.createCloudBoltSVG());
+    testStrikeBtn.onclick = () => {
+      window.rainydesk.updateRainscapeParam('audio.thunder.testStrike', 1);
+    };
+
+    // Storminess slider (0–100)
+    thunderSection.appendChild(
+      Slider({
+        id: 'thunderStorminess',
+        label: 'Storminess',
+        value: this.state.thunderStorminess,
+        min: 0,
+        max: 100,
+        unit: '%',
+        defaultValue: 0,
+        extraElement: testStrikeBtn,
         onChange: (v) => {
-          this.state.thunderEnabled = v;
-          window.rainydesk.updateRainscapeParam('audio.thunder.enabled', v);
+          this.state.thunderStorminess = v;
+          window.rainydesk.updateRainscapeParam('audio.thunder.storminess', v);
+          // Grey out distance + environment when storminess is 0
+          const disabled = v === 0;
+          thunderDistSlider.classList.toggle('disabled', disabled);
+          thunderEnvRow.classList.toggle('disabled', disabled);
         },
       })
     );
+
+    // Distance slider (0.5–15 km)
+    const thunderDistSlider = Slider({
+      id: 'thunderDistance',
+      label: 'Distance',
+      value: this.state.thunderDistance,
+      min: 0.5,
+      max: 15,
+      step: 0.5,
+      unit: ' km',
+      defaultValue: 5,
+      formatValue: (v: number) => v.toFixed(1),
+      onChange: (v) => {
+        this.state.thunderDistance = v;
+        window.rainydesk.updateRainscapeParam('audio.thunder.distance', v);
+      },
+    });
+    thunderDistSlider.classList.toggle('disabled', this.state.thunderStorminess === 0);
+    thunderSection.appendChild(thunderDistSlider);
+
+    // Environment dropdown
+    const thunderEnvRow = document.createElement('div');
+    thunderEnvRow.className = 'control-row';
+    thunderEnvRow.classList.toggle('disabled', this.state.thunderStorminess === 0);
+
+    const envLabelContainer = document.createElement('div');
+    envLabelContainer.className = 'control-label-container';
+    const envLabel = document.createElement('span');
+    envLabel.className = 'control-label';
+    envLabel.textContent = 'Environment';
+    envLabelContainer.appendChild(envLabel);
+
+    const envSelect = document.createElement('select');
+    envSelect.className = 'preset-select';
+    const envOptions = [
+      { label: 'Forest', value: 'forest' },
+      { label: 'Plains', value: 'plains' },
+      { label: 'Mountain', value: 'mountain' },
+      { label: 'Coastal', value: 'coastal' },
+      { label: 'Suburban', value: 'suburban' },
+      { label: 'Urban', value: 'urban' },
+    ];
+    for (const opt of envOptions) {
+      const option = document.createElement('option');
+      option.value = opt.value;
+      option.textContent = opt.label;
+      envSelect.appendChild(option);
+    }
+    envSelect.value = this.state.thunderEnvironment;
+    envSelect.onchange = () => {
+      this.state.thunderEnvironment = envSelect.value;
+      window.rainydesk.updateRainscapeParam('audio.thunder.environment', envSelect.value);
+    };
+
+    const envSelectContainer = document.createElement('div');
+    envSelectContainer.className = 'slider-container';
+    envSelectContainer.appendChild(envSelect);
+
+    thunderEnvRow.appendChild(envLabelContainer);
+    thunderEnvRow.appendChild(envSelectContainer);
+    thunderSection.appendChild(thunderEnvRow);
+
+    container.appendChild(thunderSection);
 
     // Matrix Mode audio sliders (only visible when Matrix Mode is on)
     const matrixAudioSection = document.createElement('div');
@@ -2350,7 +2538,7 @@ export class RainyDeskPanel {
     rainbowSpeedSlider.style.display = this.state.gayMode ? '' : 'none';
     container.appendChild(rainbowSpeedSlider);
 
-    // Matrix Mode toggle (digital rain) — 2s cooldown prevents async init race conditions
+    // Matrix Mode toggle — 2s cooldown prevents async init race conditions
     const matrixToggle = Toggle({
       label: 'Matrix Mode',
       sublabel: 'Digital rain with collision effects',
@@ -2727,7 +2915,7 @@ export class RainyDeskPanel {
         label: '3D Audio',
         checked: this.state.spatialAudio,
         disabled: true,
-        disabledNote: '(Soon\u2122)',
+        disabledNote: 'Soon\u2122',
         onChange: (v) => {
           this.state.spatialAudio = v;
           window.rainydesk.updateRainscapeParam('spatial.enabled', v);
@@ -3129,6 +3317,8 @@ export class RainyDeskPanel {
     const newHeight = Math.round(500 * scale);
     window.rainydesk.resizeRainscaper(newWidth, newHeight);
     this.applyUIScaleCSS(scale);
+    // Re-snap after resize
+    if (!this.isDetached) window.rainydesk.snapPanelToTray();
   }
 
   /* Inject or update SVG radialGradient for trans mode logo cycling */
@@ -3218,7 +3408,7 @@ export class RainyDeskPanel {
     }
   }
 
-  /* Easter egg: logo spin sequence on click */
+  /* Easter egg: logo spin sequence on click teehee */
   private handleLogoClick(): void {
     const now = Date.now();
     const svg = this.logoElement?.querySelector('.panel-logo') as SVGElement | null;
@@ -3486,6 +3676,12 @@ export class RainyDeskPanel {
     const matrixAudioSection = this.root.querySelector('#matrix-audio-section') as HTMLElement;
     if (matrixAudioSection) {
       matrixAudioSection.style.display = isMatrix ? 'block' : 'none';
+    }
+
+    // Hide thunder section in Matrix Mode (thunder is Rain Mode only)
+    const thunderSection = this.root.querySelector('#thunder-audio-section') as HTMLElement;
+    if (thunderSection) {
+      thunderSection.style.display = isMatrix ? 'none' : 'block';
     }
   }
 

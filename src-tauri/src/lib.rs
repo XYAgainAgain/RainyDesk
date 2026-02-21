@@ -30,6 +30,9 @@ static RAINSCAPER_MENU_ITEM: Mutex<Option<MenuItem<tauri::Wry>>> = Mutex::new(No
 // Rainscaper panel visibility state
 static RAINSCAPER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+// Last tray click position (physical coords) for snap-to-tray positioning
+pub(crate) static LAST_TRAY_POSITION: Mutex<(i32, i32)> = Mutex::new((0, 0));
+
 // WebView health tracking for crash detection
 pub(crate) static OVERLAY_HEALTH: Mutex<Option<WindowHealth>> = Mutex::new(None);
 pub(crate) static BACKGROUND_HEALTH: Mutex<Option<WindowHealth>> = Mutex::new(None);
@@ -420,6 +423,9 @@ pub fn run() {
             hide_rainscaper,
             toggle_rainscaper,
             resize_rainscaper,
+            get_panel_detached,
+            set_panel_detached,
+            snap_panel_to_tray,
             get_windows_accent_color,
             show_help_window,
             hide_help_window,

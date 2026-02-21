@@ -126,7 +126,9 @@ let isPaused = false;
 // Tracked settings for autosave (params without module getters)
 let trackedRainIntensity = 50;       // audio.rainIntensity (0-100)
 let trackedWindGainDb = -24;         // audio.wind.masterGain (dB)
-let trackedThunderEnabled = false;   // audio.thunder.enabled
+let trackedThunderStorminess = 0;    // audio.thunder.storminess (0–100)
+let trackedThunderDistance = 5.0;    // audio.thunder.distance (km)
+let trackedThunderEnvironment = 'forest'; // audio.thunder.environment
 let trackedBgEnabled = true;         // backgroundRain.enabled
 let trackedBgIntensity = 50;         // backgroundRain.intensity (0-100)
 let trackedBgLayers = 3;             // backgroundRain.layers (1-5)
@@ -860,7 +862,11 @@ function gatherPresetData() {
         impactPitch: audioSystem?.getImpactPool()?.getSynthConfig()?.pitchCenter ?? 50,
         impactPitchOsc: audioSystem?.getImpactPool()?.getSynthConfig()?.pitchOscAmount ?? 0,
         windMasterGain: trackedWindGainDb,
-        thunderEnabled: trackedThunderEnabled,
+      },
+      thunder: {
+        storminess: trackedThunderStorminess,
+        distance: trackedThunderDistance,
+        environment: trackedThunderEnvironment,
       },
       matrix: {
         bass: glitchSynth?.getBassVolume?.() ?? -12,
@@ -1022,9 +1028,26 @@ function applyRainscapeData(rawData) {
         trackedWindGainDb = data.audio.rain.windMasterGain;
         window.rainydesk.updateRainscapeParam('audio.wind.masterGain', data.audio.rain.windMasterGain);
       }
+      // Backward compat: old thunderEnabled boolean → storminess
       if (data.audio.rain.thunderEnabled !== undefined) {
-        trackedThunderEnabled = data.audio.rain.thunderEnabled;
-        window.rainydesk.updateRainscapeParam('audio.thunder.enabled', data.audio.rain.thunderEnabled);
+        const storm = data.audio.rain.thunderEnabled ? 30 : 0;
+        trackedThunderStorminess = storm;
+        window.rainydesk.updateRainscapeParam('audio.thunder.storminess', storm);
+      }
+    }
+    // Thunder settings (v2 format, sibling of audio.rain)
+    if (data.audio.thunder) {
+      if (data.audio.thunder.storminess !== undefined) {
+        trackedThunderStorminess = data.audio.thunder.storminess;
+        window.rainydesk.updateRainscapeParam('audio.thunder.storminess', data.audio.thunder.storminess);
+      }
+      if (data.audio.thunder.distance !== undefined) {
+        trackedThunderDistance = data.audio.thunder.distance;
+        window.rainydesk.updateRainscapeParam('audio.thunder.distance', data.audio.thunder.distance);
+      }
+      if (data.audio.thunder.environment !== undefined) {
+        trackedThunderEnvironment = data.audio.thunder.environment;
+        window.rainydesk.updateRainscapeParam('audio.thunder.environment', data.audio.thunder.environment);
       }
     }
     if (data.audio.matrix) {
@@ -1950,12 +1973,30 @@ function registerEventListeners() {
       if (audioSystem) {
         audioSystem.updateParam('wind.masterGain', value);
       }
+    } else if (path === 'audio.thunder.storminess') {
+      trackedThunderStorminess = Number(value);
+      if (audioSystem) {
+        audioSystem.updateParam('thunder.storminess', value);
+      }
+    } else if (path === 'audio.thunder.distance') {
+      trackedThunderDistance = Number(value);
+      if (audioSystem) {
+        audioSystem.updateParam('thunder.distance', value);
+      }
+    } else if (path === 'audio.thunder.environment') {
+      trackedThunderEnvironment = String(value);
+      if (audioSystem) {
+        audioSystem.updateParam('thunder.environment', value);
+      }
     } else if (path === 'audio.thunder.enabled') {
-      // Thunder toggle (future)
-      trackedThunderEnabled = Boolean(value);
+      // Backward compat: old boolean toggle
+      const storm = value ? 30 : 0;
+      trackedThunderStorminess = storm;
       if (audioSystem) {
         audioSystem.updateParam('thunder.enabled', value);
       }
+    } else if (path === 'audio.thunder.testStrike') {
+      if (audioSystem) audioSystem.triggerThunderStrike();
     } else if (path === 'audio.drone.volume') {
       // Matrix Mode drone volume (dB)
       if (glitchSynth) {
@@ -2023,8 +2064,9 @@ function registerEventListeners() {
           audioSystem.setMatrixMode(true);
           audioSystem.getWindModule()?.stop();
           audioSystem.getSheetLayer()?.stop();
+          audioSystem.getThunderModule()?.stopAuto();
           audioSystem.setParticleCount(0);
-          window.rainydesk.log('[Matrix] Stopped wind/sheet audio for Matrix Mode');
+          window.rainydesk.log('[Matrix] Stopped wind/sheet/thunder audio for Matrix Mode');
         }
 
         // Hide rain canvas (keep rain system intact, just hidden)
@@ -2057,12 +2099,15 @@ function registerEventListeners() {
         window.rainydesk.log('[Matrix] Switching back to Rain Mode...');
         destroyMatrixRenderer();
 
-        // Restore wind and sheet audio
+        // Restore wind, sheet, and thunder audio
         if (audioSystem) {
           audioSystem.setMatrixMode(false);
           audioSystem.getWindModule()?.start();
           audioSystem.getSheetLayer()?.start();
-          window.rainydesk.log('[Matrix] Restored wind/sheet audio for Rain Mode');
+          if (trackedThunderStorminess > 0) {
+            audioSystem.getThunderModule()?.startAuto();
+          }
+          window.rainydesk.log('[Matrix] Restored wind/sheet/thunder audio for Rain Mode');
         }
 
         // Show rain canvas again

@@ -43,9 +43,8 @@ pub(crate) fn update_rainscaper_menu_text(text: &str) {
 
 /// Calculate panel position in LOGICAL coordinates.
 /// Input tray_x/tray_y are physical (from tray click events).
-pub(crate) fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i32) -> (i32, i32) {
-    const PANEL_WIDTH: i32 = 400;
-    const PANEL_HEIGHT: i32 = 500;
+/// panel_w/panel_h are actual logical dimensions (accounts for UI scale).
+pub(crate) fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32, tray_y: i32, panel_w: i32, panel_h: i32) -> (i32, i32) {
     const MARGIN: i32 = 8;
 
     let monitors: Vec<tauri::Monitor> = app
@@ -81,17 +80,18 @@ pub(crate) fn calculate_rainscaper_position(app: &tauri::AppHandle, tray_x: i32,
     let tray_lx = (tray_x as f64 / scale) as i32;
     let tray_ly = (tray_y as f64 / scale) as i32;
 
-    let mut x = tray_lx - (PANEL_WIDTH / 2);
+    let mut x = tray_lx - (panel_w / 2);
     let mut y = if taskbar_at_top {
         tray_ly + (40.0 / scale) as i32 + MARGIN
     } else {
-        tray_ly - PANEL_HEIGHT - MARGIN
+        // Align panel bottom edge with work area bottom
+        work_y + work_h - panel_h - MARGIN
     };
 
     let x_min = work_x + MARGIN;
     let y_min = work_y + MARGIN;
-    x = x.max(x_min).min((work_x + work_w - PANEL_WIDTH - MARGIN).max(x_min));
-    y = y.max(y_min).min((work_y + work_h - PANEL_HEIGHT - MARGIN).max(y_min));
+    x = x.max(x_min).min((work_x + work_w - panel_w - MARGIN).max(x_min));
+    y = y.max(y_min).min((work_y + work_h - panel_h - MARGIN).max(y_min));
 
     (x, y)
 }
@@ -168,6 +168,7 @@ pub(crate) fn reset_panel_position(app: &tauri::AppHandle) {
     let mut config = load_panel_config(app).unwrap_or_default();
     config.x = Some(x);
     config.y = Some(y);
+    config.detached = Some(false);
     save_panel_config(app, &config);
 
     if let Some(window) = app.get_webview_window("rainscaper") {

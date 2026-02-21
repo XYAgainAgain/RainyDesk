@@ -214,6 +214,17 @@ export class AudioBus {
     this._delaySend.gain.rampTo(this._config.delaySend, 0.05);
   }
 
+  duck(amount: number, attackSec: number, releaseSec: number): void {
+    const baseGain = this._config.mute ? 0 : Tone.dbToGain(this._config.gain);
+    const duckedGain = baseGain * (1 - amount);
+    const now = Tone.now();
+    this._gain.gain.cancelScheduledValues(now);
+    this._gain.gain.setValueAtTime(this._gain.gain.value, now);
+    this._gain.gain.linearRampToValueAtTime(duckedGain, now + attackSec);
+    this._gain.gain.linearRampToValueAtTime(baseGain, now + attackSec + releaseSec);
+    console.warn(`[AudioBus:${this._name}] duck: ${baseGain.toFixed(3)} -> ${duckedGain.toFixed(3)} (amount=${amount}, attack=${attackSec}s, release=${releaseSec}s)`);
+  }
+
   /** Apply a complete config object */
   updateConfig(config: Partial<BusConfig>): void {
     if (config.gain !== undefined) this.setGain(config.gain);

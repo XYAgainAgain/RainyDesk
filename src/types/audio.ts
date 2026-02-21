@@ -384,84 +384,28 @@ export interface WindModuleConfig {
   katabatic: KatabaticConfig;
 }
 
-// v2.0 Thunder Module Types
+// v2.0 Thunder Module Types (Fineberg et al. model)
 
-/** Configuration for the initial high-frequency crack/tear */
-export interface ThunderTearingConfig {
-  enabled: boolean;
-  noiseType: 'white' | 'pink';
-  /** High-pass filter frequency (2000-8000 Hz) */
-  hpfFreq: number;
-  /** Attack time (0.001-0.05s) */
-  attackTime: number;
-  /** Decay time (0.05-0.3s) */
-  decayTime: number;
-  /** Output gain (dB) */
-  gain: number;
-}
+export type ThunderEnvironment = 'forest' | 'plains' | 'mountain' | 'coastal' | 'suburban' | 'urban';
 
-/** Configuration for the N-wave pressure spike */
-export interface ThunderCrackConfig {
-  enabled: boolean;
-  /** Base frequency (50-200 Hz) */
-  frequency: number;
-  /** Number of harmonics */
-  harmonics: number;
-  /** Attack time (seconds) */
-  attackTime: number;
-  /** Decay time (seconds) */
-  decayTime: number;
-  /** Output gain (dB) */
-  gain: number;
-}
-
-/** Configuration for the main thunder body rumble */
-export interface ThunderBodyConfig {
-  enabled: boolean;
-  noiseType: 'pink' | 'brown';
-  /** Low-pass filter frequency (200-800 Hz) */
-  lpfFreq: number;
-  /** Reverb decay time (2-8s) */
-  reverbDecay: number;
-  /** Output gain (dB) */
-  gain: number;
-}
-
-/** Configuration for sub-bass rumble tail */
-export interface ThunderRumbleConfig {
-  enabled: boolean;
-  /** Base frequency (20-60 Hz) */
-  frequency: number;
-  /** Amplitude LFO rate (0.1-1 Hz) */
-  lfoRate: number;
-  /** Duration (3-15s) */
-  duration: number;
-  /** Output gain (dB) */
-  gain: number;
-}
-
-/** Complete thunder module configuration */
 export interface ThunderModuleConfig {
-  /** Master gain for entire thunder module (dB) */
   masterGain: number;
-  /** Minimum interval between auto-strikes (seconds) */
-  minInterval: number;
-  /** Maximum interval between auto-strikes (seconds) */
-  maxInterval: number;
-  /** Distance range for strikes [min, max] in km */
-  distanceRange: [number, number];
-  /** Enable sidechain compression of other buses during thunder */
+  storminess: number;              // 0–100
+  distance: number;                // 0.5–15 km
+  environment: ThunderEnvironment;
+  strikeIntensity: number;         // 0–1
+  rumbleIntensity: number;         // 0–1
+  growlIntensity: number;          // 0–1
   sidechainEnabled: boolean;
-  /** Sidechain compressor ratio */
   sidechainRatio: number;
-  /** Sidechain attack time (seconds) */
   sidechainAttack: number;
-  /** Sidechain release time (seconds) */
   sidechainRelease: number;
-  tearing: ThunderTearingConfig;
-  crack: ThunderCrackConfig;
-  body: ThunderBodyConfig;
-  rumble: ThunderRumbleConfig;
+}
+
+export interface IRManifest {
+  pools: Record<string, { label: string; irs: string[] }>;
+  default_pool: string;
+  fallback_ir: string;
 }
 
 // v2.0 Matrix Module Types (Sci-Fi/Digital Rain)

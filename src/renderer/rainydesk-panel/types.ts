@@ -36,6 +36,79 @@ export interface UserThemesFile {
   themes: CustomTheme[];
 }
 
+// Named interfaces for IPC return types (reused across bridge + consumers)
+
+export interface MonitorInfo {
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  workX: number;
+  workY: number;
+  workWidth: number;
+  workHeight: number;
+  scaleFactor: number;
+  refreshRate: number;
+}
+
+export interface VirtualDesktop {
+  width: number;
+  height: number;
+  originX: number;
+  originY: number;
+  primaryIndex: number;
+  monitors: MonitorInfo[];
+}
+
+export interface DisplayInfo {
+  monitors: Array<{
+    width: number;
+    height: number;
+    rel_x: number;
+    rel_y: number;
+    is_primary: boolean;
+  }>;
+  virtual_desktop: {
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+  };
+}
+
+export interface PhantomDPIResult {
+  factor: number;
+  correctionZoom: number;
+  corrected: boolean;
+  virtualDesktop: VirtualDesktop | null;
+}
+
+export interface RendererStats {
+  fps: number;
+  waterCount: number;
+  activeDrops: number;
+  puddleCells: number;
+}
+
+// Debug log types
+
+export interface DebugLogEntry {
+  timestamp: Date;
+  level: 'info' | 'warn' | 'error';
+  message: string;
+}
+
+export interface DebugStats {
+  fps: number;
+  waterCount: number;
+  activeDrops: number;
+  puddleCells: number;
+  frameTime: number;
+  memoryMB: number;
+  lastUpdate: number;
+}
+
 declare global {
   interface Window {
     rainydesk: {
@@ -45,6 +118,9 @@ declare global {
       onUpdateRainscapeParam: (callback: (path: string, value: unknown) => void) => void;
       onSetVolume: (callback: (value: number) => void) => void;
       onLoadRainscape: (callback: (filename: string) => void) => void;
+      getPanelDetached: () => Promise<boolean>;
+      setPanelDetached: (detached: boolean) => Promise<void>;
+      snapPanelToTray: () => Promise<void>;
       resizeRainscaper: (width: number, height: number) => Promise<void>;
       saveRainscape: (name: string, data: unknown) => Promise<void>;
       readRainscape: (name: string) => Promise<Record<string, unknown>>;
@@ -64,62 +140,56 @@ declare global {
       openUrl: (url: string) => Promise<void>;
       openRainscapesFolder: () => Promise<void>;
       openLogsFolder: () => Promise<void>;
-      getDisplayInfo: () => Promise<{
-        monitors: Array<{
-          width: number;
-          height: number;
-          rel_x: number;
-          rel_y: number;
-          is_primary: boolean;
-        }>;
-        virtual_desktop: {
-          width: number;
-          height: number;
-          x: number;
-          y: number;
-        };
-      }>;
-      // Stats bridge (overlay -> panel)
-      emitStats: (stats: { fps: number; waterCount: number; activeDrops: number; puddleCells: number }) => void;
-      onStats: (callback: (stats: { fps: number; waterCount: number; activeDrops: number; puddleCells: number }) => void) => void;
-      // Reinitialization status events
-      emitReinitStatus: (status: 'stopped' | 'initializing' | 'raining') => void;
-      onReinitStatus: (callback: (status: 'stopped' | 'initializing' | 'raining') => void) => void;
-      // Help window hidden event
-      onHelpWindowHidden: (callback: () => void) => void;
-      // Monitor hot-swap detection
-      onMonitorConfigChanged: (callback: () => void) => void;
-      // Virtual desktop info (all monitors + bounding box)
-      getVirtualDesktop: () => Promise<{
-        width: number;
-        height: number;
-        originX: number;
-        originY: number;
-        primaryIndex: number;
-        monitors: Array<{
-          index: number;
-          x: number;
-          y: number;
-          width: number;
-          height: number;
-          workX: number;
-          workY: number;
-          workWidth: number;
-          workHeight: number;
-          scaleFactor: number;
-          refreshRate: number;
-        }>;
-      }>;
+      getDisplayInfo: () => Promise<DisplayInfo>;
+      getVirtualDesktop: () => Promise<VirtualDesktop>;
       getSystemSpecs: () => Promise<{
         cpuModel: string;
         gpuModel: string;
         gpuVramGb: number | null;
         totalRamGb: number;
       }>;
+      getAllDisplays: () => Promise<DisplayInfo>;
+      // Event listeners (from Rust backend or cross-window IPC)
+      onDisplayInfo: (callback: (info: DisplayInfo) => void) => void;
+      onVirtualDesktop: (callback: (info: VirtualDesktop) => void) => void;
+      onToggleRain: (callback: (enabled: boolean) => void) => void;
+      onToggleAudio: (callback: (enabled: boolean) => void) => void;
+      onWindowData: (callback: (data: unknown) => void) => Promise<() => void>;
+      onToggleRainscaper: (callback: () => void) => void;
+      // Rainscape management
+      setRainscape: (name: string) => Promise<void>;
+      autosaveRainscape: (data: unknown) => Promise<void>;
+      // Audio start synchronization
+      triggerAudioStart: () => Promise<void>;
+      onStartAudio: (callback: () => void) => void;
+      // WebView health heartbeat
+      heartbeat: () => Promise<void>;
+      // Stats bridge (overlay → panel) — emit() returns a promise
+      emitStats: (stats: RendererStats) => Promise<void>;
+      onStats: (callback: (stats: RendererStats) => void) => void;
+      // Reinitialization status events — emit() returns a promise
+      emitReinitStatus: (status: 'stopped' | 'initializing' | 'raining') => Promise<void>;
+      onReinitStatus: (callback: (status: 'stopped' | 'initializing' | 'raining') => void) => void;
+      // Per-monitor fullscreen state (overlay → background)
+      emitFullscreenMonitors: (indices: number[]) => Promise<void>;
+      onFullscreenMonitors: (callback: (indices: number[]) => void) => void;
+      // Help window hidden event
+      onHelpWindowHidden: (callback: () => void) => void;
+      // Monitor hot-swap detection
+      onMonitorConfigChanged: (callback: () => void) => void;
+      // Phantom DPI scaling detection
+      detectPhantomDPI: () => Promise<PhantomDPIResult>;
       // Custom themes I/O
       loadUserThemes: () => Promise<UserThemesFile>;
       saveUserThemes: (data: UserThemesFile) => Promise<void>;
     };
+
+    // Debug log storage (initialized by tauri-api, consumed by panel)
+    _debugLog: DebugLogEntry[];
+    _debugLogMaxEntries: number;
+    _debugStats: DebugStats;
+    _addDebugLog: (level: 'info' | 'warn' | 'error', message: string) => void;
+    _updateDebugStats: (stats: Partial<DebugStats>) => void;
   }
 }
 

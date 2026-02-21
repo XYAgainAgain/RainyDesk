@@ -15,6 +15,7 @@ pub(crate) struct PanelConfig {
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub ui_scale: Option<f32>,
+    pub detached: Option<bool>,
 }
 
 #[derive(Clone, serde::Serialize)]

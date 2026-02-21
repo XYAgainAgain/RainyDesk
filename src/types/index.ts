@@ -66,3 +66,11 @@ export type {
   SaveRainscapeMessage,
   RainscapeIPCChannel,
 } from './rainscape';
+
+// WebGL renderer types
+export type {
+  BackgroundRainConfig,
+  RendererRaindrop,
+  RendererSplashParticle,
+  RendererPhysicsSystem,
+} from './webgl';

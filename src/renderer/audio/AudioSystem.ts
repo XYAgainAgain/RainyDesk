@@ -131,7 +131,9 @@ export class AudioSystem {
       this.createVoicePools();
       this.createSheetLayer();
       this.createModules();
+      await this.initWorklets();
       this.connectAudioGraph();
+      await this._thunderModule?.init();
 
       // Configure 3D listener at origin, facing -Z
       Tone.Listener.positionX.value = 0;
@@ -198,7 +200,7 @@ export class AudioSystem {
 
     this._thunderBus = new AudioBus('thunder', {
       gain: 0,
-      reverbSend: 0.4,
+      reverbSend: 0.1,
       compressorEnabled: false,
     });
 
@@ -230,7 +232,24 @@ export class AudioSystem {
   private createModules(): void {
     this._windModule = new WindModule();
     this._thunderModule = new ThunderModule();
+    this._thunderModule.setDuckCallback((amount, attackSec, releaseSec) => {
+      this._rainBus?.duck(amount, attackSec, releaseSec);
+      this._windBus?.duck(amount * 0.5, attackSec, releaseSec);
+    });
     this._matrixModule = new MatrixModule();
+  }
+
+  private async initWorklets(): Promise<void> {
+    try {
+      // Path is relative to the document root, not the bundle location
+      // (esbuild flattens audio/AudioSystem.ts → audio.bundle.js at root)
+      await Tone.getContext().rawContext.audioWorklet.addModule('./audio/worklets/SampleAndHoldProcessor.js');
+      this._thunderModule?.setWorkletReady();
+      console.warn('[AudioSystem] AudioWorklet processors registered');
+    } catch (err) {
+      // Rumbler gracefully degrades (skipped) if worklet unavailable
+      console.warn('[AudioSystem] Worklet registration failed, Rumbler disabled:', err);
+    }
   }
 
   private connectAudioGraph(): void {
@@ -421,6 +440,12 @@ export class AudioSystem {
    */
   triggerThunder(distance?: number): void {
     this._thunderModule?.triggerStrike(distance);
+  }
+
+  triggerThunderStrike(): void {
+    this._thunderModule?.triggerStrike().catch(err =>
+      console.warn('[AudioSystem] Thunder test strike failed:', err)
+    );
   }
 
   /**
@@ -946,8 +971,23 @@ export class AudioSystem {
 
       case 'thunder': {
         const thunderKey = getPart(1);
-        if (thunderKey === 'masterGain') {
+        if (thunderKey === 'storminess') {
+          const storm = Number(value);
+          this._thunderModule?.setStorminess(storm);
+          if (storm > 0) this._thunderModule?.startAuto();
+          else this._thunderModule?.stopAuto();
+        } else if (thunderKey === 'distance') {
+          this._thunderModule?.setDistance(Number(value));
+        } else if (thunderKey === 'environment') {
+          this._thunderModule?.setEnvironment(String(value));
+        } else if (thunderKey === 'masterGain') {
           this._thunderModule?.setMasterGain(Number(value));
+        } else if (thunderKey === 'enabled') {
+          // Backward compat: boolean → storminess
+          const s = value ? 30 : 0;
+          this._thunderModule?.setStorminess(s);
+          if (s > 0) this._thunderModule?.startAuto();
+          else this._thunderModule?.stopAuto();
         } else if (thunderKey) {
           this._thunderModule?.updateConfig({ [thunderKey]: value } as Partial<ThunderModuleConfig>);
         }

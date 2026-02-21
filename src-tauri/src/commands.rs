@@ -8,7 +8,7 @@ use crate::platform::*;
 use crate::rainscape::*;
 use crate::types::*;
 use crate::window_mgmt::*;
-use crate::{RAIN_PAUSED, PAUSE_MENU_ITEM, RAINSCAPER_VISIBLE, OVERLAY_HEALTH, BACKGROUND_HEALTH};
+use crate::{RAIN_PAUSED, PAUSE_MENU_ITEM, RAINSCAPER_VISIBLE, OVERLAY_HEALTH, BACKGROUND_HEALTH, LAST_TRAY_POSITION};
 
 #[tauri::command]
 pub fn log_message(message: String) {
@@ -212,10 +212,17 @@ pub fn show_rainscaper(app: tauri::AppHandle, tray_x: i32, tray_y: i32) -> Resul
         })
         .unwrap_or((400, 500));
 
-    let (x, y) = load_panel_config(&app)
-        .and_then(|c| c.x.zip(c.y))
-        .map(|(sx, sy)| clamp_panel_to_work_area(&app, sx, sy, panel_w, panel_h))
-        .unwrap_or_else(|| calculate_rainscaper_position(&app, tray_x, tray_y));
+    let config = load_panel_config(&app);
+    let detached = config.as_ref().and_then(|c| c.detached).unwrap_or(false);
+
+    let (x, y) = if detached {
+        // Detached: restore saved position (fall back to tray position if none saved)
+        config.and_then(|c| c.x.zip(c.y))
+            .map(|(sx, sy)| clamp_panel_to_work_area(&app, sx, sy, panel_w, panel_h))
+            .unwrap_or_else(|| calculate_rainscaper_position(&app, tray_x, tray_y, panel_w, panel_h))
+    } else {
+        calculate_rainscaper_position(&app, tray_x, tray_y, panel_w, panel_h)
+    };
 
     let window_exists = app.get_webview_window("rainscaper").is_some();
     log::info!("[Rainscaper] Window exists: {}", window_exists);
@@ -326,6 +333,79 @@ pub fn resize_rainscaper(app: tauri::AppHandle, width: f64, height: f64) -> Resu
 
         log::info!("[Rainscaper] Resized to {}x{}", width, height);
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_panel_detached(app: tauri::AppHandle) -> bool {
+    load_panel_config(&app)
+        .and_then(|c| c.detached)
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn set_panel_detached(app: tauri::AppHandle, detached: bool) -> Result<(), String> {
+    let mut config = load_panel_config(&app).unwrap_or_default();
+    config.detached = Some(detached);
+    save_panel_config(&app, &config);
+    log::info!("[Rainscaper] Panel detached = {}", detached);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn snap_panel_to_tray(app: tauri::AppHandle) -> Result<(), String> {
+    let (tx, ty) = LAST_TRAY_POSITION.lock()
+        .map(|g| *g)
+        .unwrap_or((0, 0));
+
+    if tx == 0 && ty == 0 {
+        log::warn!("[Rainscaper] snap_panel_to_tray: no tray position recorded yet");
+    }
+
+    let (panel_w, panel_h) = app.get_webview_window("rainscaper")
+        .and_then(|w| {
+            let size = w.outer_size().ok()?;
+            let s = w.current_monitor().ok()??.scale_factor();
+            Some(((size.width as f64 / s) as i32, (size.height as f64 / s) as i32))
+        })
+        .unwrap_or((400, 500));
+
+    let (x, y) = if tx == 0 && ty == 0 {
+        // No tray click yet — fall back to saved position, then primary work area bottom-right
+        load_panel_config(&app)
+            .and_then(|c| c.x.zip(c.y))
+            .map(|(sx, sy)| clamp_panel_to_work_area(&app, sx, sy, panel_w, panel_h))
+            .unwrap_or_else(|| {
+                let monitors: Vec<tauri::Monitor> = app.available_monitors().unwrap_or_default().into_iter().collect();
+                if monitors.is_empty() { return (100, 100); }
+                let idx = get_primary_monitor_index(&monitors);
+                let mon = &monitors[idx];
+                let pos = mon.position();
+                let size = mon.size();
+                let scale = mon.scale_factor();
+                let work = get_monitor_work_area(pos.x, pos.y, size.width, size.height);
+                let wx = (work.x as f64 / scale) as i32;
+                let wy = (work.y as f64 / scale) as i32;
+                let ww = (work.width as f64 / scale) as i32;
+                let wh = (work.height as f64 / scale) as i32;
+                (wx + ww - panel_w - 12, wy + wh - panel_h - 12)
+            })
+    } else {
+        calculate_rainscaper_position(&app, tx, ty, panel_w, panel_h)
+    };
+
+    let mut config = load_panel_config(&app).unwrap_or_default();
+    config.detached = Some(false);
+    config.x = Some(x);
+    config.y = Some(y);
+    save_panel_config(&app, &config);
+
+    if let Some(window) = app.get_webview_window("rainscaper") {
+        window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x as f64, y as f64)))
+            .map_err(|e| format!("Failed to reposition: {}", e))?;
+        log::info!("[Rainscaper] Snapped to tray position ({}, {})", x, y);
+    }
+
     Ok(())
 }
 

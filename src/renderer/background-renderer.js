@@ -13,7 +13,7 @@
  * 7. 300ms stabilization delay, then fade-in
  */
 
-import WebGLRainRenderer from './webgl/WebGLRainRenderer.js';
+import { WebGLRainRenderer } from './webgl.bundle.js';
 
 // PHASE 1: Hide canvas (only on first load, not hot-reloads)
 let canvas = document.getElementById('rain-canvas');

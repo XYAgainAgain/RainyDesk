@@ -1,11 +1,12 @@
 {
   "name": "rainydesk",
-  "version": "0.9.4-alpha",
+  "version": "0.9.5-alpha",
   "private": true,
   "scripts": {
-    "build": "npm run build:types && npm run build:tauri-api && npm run build:audio && npm run build:simulation && npm run build:rainydesk-panel && npm run build:help",
+    "build": "npm run build:types && npm run build:tauri-api && npm run build:webgl && npm run build:audio && npm run build:simulation && npm run build:rainydesk-panel && npm run build:help",
     "build:types": "tsc --noEmit",
-    "build:tauri-api": "esbuild src/renderer/tauri-api.js --bundle --format=esm --outfile=src/renderer/tauri-api.bundle.js --sourcemap",
+    "build:tauri-api": "esbuild src/renderer/tauri-api.ts --bundle --format=esm --outfile=src/renderer/tauri-api.bundle.js --sourcemap",
+    "build:webgl": "esbuild src/renderer/webgl/index.ts --bundle --format=esm --outfile=src/renderer/webgl.bundle.js --sourcemap",
     "build:audio": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=src/renderer/audio.bundle.js --external:tone --sourcemap",
     "build:audio-standalone": "esbuild src/renderer/audio/index.ts --bundle --format=esm --outfile=dist/audio.standalone.bundle.js --sourcemap",
     "build:simulation": "esbuild src/renderer/simulation/index.ts --bundle --format=esm --outfile=src/renderer/simulation.bundle.js --external:pixi.js --sourcemap",
@@ -24,7 +25,7 @@
     "ambient",
     "relaxation"
   ],
-  "author": "Sam",
+  "author": "Sam Atwood",
   "license": "BUSL-1.1",
   "description": "A peaceful desktop rain simulation application",
   "devDependencies": {

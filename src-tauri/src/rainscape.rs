@@ -140,8 +140,12 @@ pub(crate) fn create_default_rainscape() -> serde_json::Value {
                 "rainIntensity": 50,
                 "impactPitch": 50,
                 "impactPitchOsc": 0,
-                "windMasterGain": -12,
-                "thunderEnabled": false
+                "windMasterGain": -12
+            },
+            "thunder": {
+                "storminess": 0,
+                "distance": 5.0,
+                "environment": "forest"
             },
             "matrix": {
                 "bass": -9,

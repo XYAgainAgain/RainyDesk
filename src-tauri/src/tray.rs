@@ -10,7 +10,7 @@ use tauri::{
 use crate::commands::{hide_rainscaper, show_rainscaper};
 use crate::platform::load_theme_icon;
 use crate::window_mgmt::reset_panel_position;
-use crate::{RAIN_PAUSED, PAUSE_MENU_ITEM, RAINSCAPER_MENU_ITEM, RAINSCAPER_VISIBLE};
+use crate::{RAIN_PAUSED, PAUSE_MENU_ITEM, RAINSCAPER_MENU_ITEM, RAINSCAPER_VISIBLE, LAST_TRAY_POSITION};
 
 fn handle_menu_event(app: &tauri::AppHandle, id: &str, pause_item: &MenuItem<tauri::Wry>) {
     match id {
@@ -32,7 +32,10 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str, pause_item: &MenuItem<tau
             if visible {
                 let _ = hide_rainscaper(app.clone());
             } else {
-                let _ = show_rainscaper(app.clone(), 1800, 1040);
+                let (tx, ty) = LAST_TRAY_POSITION.lock()
+                    .map(|g| *g)
+                    .unwrap_or((1800, 1040));
+                let _ = show_rainscaper(app.clone(), tx, ty);
             }
             log::info!("Rainscaper toggled via menu");
         }
@@ -52,6 +55,9 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str, pause_item: &MenuItem<tau
 }
 
 fn handle_tray_click(app: &tauri::AppHandle, x: i32, y: i32) {
+    if let Ok(mut guard) = LAST_TRAY_POSITION.lock() {
+        *guard = (x, y);
+    }
     let visible = RAINSCAPER_VISIBLE.load(Ordering::SeqCst);
     log::info!("[Tray] Left-click, RAINSCAPER_VISIBLE={}", visible);
     if visible {
