@@ -1,7 +1,7 @@
 /* Reusable slider, toggle, and knob components */
 
 // Custom tooltip (matches theme-tooltip styling, replaces native title)
-function showTooltip(el: HTMLElement, text: string): HTMLElement {
+export function showTooltip(el: HTMLElement, text: string): HTMLElement {
   const tip = document.createElement('div');
   tip.className = 'theme-tooltip';
   tip.textContent = text;
@@ -13,7 +13,7 @@ function showTooltip(el: HTMLElement, text: string): HTMLElement {
   return tip;
 }
 
-function hideTooltip(tip: HTMLElement | null): null {
+export function hideTooltip(tip: HTMLElement | null): null {
   if (tip) tip.remove();
   return null;
 }

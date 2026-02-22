@@ -126,7 +126,8 @@ let isPaused = false;
 // Tracked settings for autosave (params without module getters)
 let trackedRainIntensity = 50;       // audio.rainIntensity (0-100)
 let trackedWindGainDb = -24;         // audio.wind.masterGain (dB)
-let trackedThunderStorminess = 0;    // audio.thunder.storminess (0–100)
+let trackedThunderEnabled = false;   // audio.thunder.enabled
+let trackedThunderStorminess = 50;   // audio.thunder.storminess (1–100)
 let trackedThunderDistance = 5.0;    // audio.thunder.distance (km)
 let trackedThunderEnvironment = 'forest'; // audio.thunder.environment
 let trackedBgEnabled = true;         // backgroundRain.enabled
@@ -270,12 +271,35 @@ const sheetOsc = new ParamOscillator({
   minChangesPerMin: 2, maxChangesPerMin: 6
 });
 
+// Thunder oscillators — very slow drift (storms evolve over minutes)
+const thunderStorminessOsc = new ParamOscillator({
+  min: 1, max: 100, lerpRate: 0.4,
+  minAmplitude: 5, maxAmplitude: 25, roundOutput: true,
+  minChangesPerMin: 1, maxChangesPerMin: 3
+});
+const thunderDistanceOsc = new ParamOscillator({
+  min: 0.5, max: 15, lerpRate: 0.3,
+  minAmplitude: 0.5, maxAmplitude: 3.0, roundOutput: false,
+  minChangesPerMin: 0.5, maxChangesPerMin: 2
+});
+
+function applyThunderStorminess(val) {
+  trackedThunderStorminess = val;
+  if (audioSystem) audioSystem.updateParam('thunder.storminess', val);
+}
+function applyThunderDistance(val) {
+  trackedThunderDistance = val;
+  if (audioSystem) audioSystem.updateParam('thunder.distance', val);
+}
+
 // Oscillator registry: tick loop iterates this
 const oscillators = [
   { osc: windOsc, apply: applyWind, param: 'physics.wind', disableInMatrix: true },
   { osc: intensityOsc, apply: applyIntensity, param: 'physics.intensity', disableInMatrix: false },
   { osc: turbulenceOsc, apply: applyTurbulence, param: 'physics.turbulence', disableInMatrix: false },
   { osc: sheetOsc, apply: applySheet, param: 'audio.sheetVolume', disableInMatrix: true },
+  { osc: thunderStorminessOsc, apply: applyThunderStorminess, param: 'audio.thunder.storminess', disableInMatrix: true, gateOn: () => trackedThunderEnabled },
+  { osc: thunderDistanceOsc, apply: applyThunderDistance, param: 'audio.thunder.distance', disableInMatrix: true, gateOn: () => trackedThunderEnabled },
 ];
 
 // Window update state
@@ -864,9 +888,14 @@ function gatherPresetData() {
         windMasterGain: trackedWindGainDb,
       },
       thunder: {
-        storminess: trackedThunderStorminess,
-        distance: trackedThunderDistance,
+        enabled: trackedThunderEnabled,
+        storminess: thunderStorminessOsc.active ? thunderStorminessOsc.userCenter : trackedThunderStorminess,
+        distance: thunderDistanceOsc.active ? thunderDistanceOsc.userCenter : trackedThunderDistance,
         environment: trackedThunderEnvironment,
+        osc: {
+          storminess: thunderStorminessOsc.amount,
+          distance: thunderDistanceOsc.amount,
+        },
       },
       matrix: {
         bass: glitchSynth?.getBassVolume?.() ?? -12,
@@ -1030,24 +1059,49 @@ function applyRainscapeData(rawData) {
       }
       // Backward compat: old thunderEnabled boolean → storminess
       if (data.audio.rain.thunderEnabled !== undefined) {
-        const storm = data.audio.rain.thunderEnabled ? 30 : 0;
-        trackedThunderStorminess = storm;
-        window.rainydesk.updateRainscapeParam('audio.thunder.storminess', storm);
+        const enabled = Boolean(data.audio.rain.thunderEnabled);
+        trackedThunderEnabled = enabled;
+        trackedThunderStorminess = enabled ? 30 : 50;
+        window.rainydesk.updateRainscapeParam('audio.thunder.enabled', enabled);
+        window.rainydesk.updateRainscapeParam('audio.thunder.storminess', enabled ? 30 : 0);
       }
     }
     // Thunder settings (v2 format, sibling of audio.rain)
     if (data.audio.thunder) {
+      // Enabled flag (backward compat: derive from storminess > 0)
+      if (typeof data.audio.thunder.enabled === 'boolean') {
+        trackedThunderEnabled = data.audio.thunder.enabled;
+      } else if (data.audio.thunder.storminess !== undefined) {
+        trackedThunderEnabled = data.audio.thunder.storminess > 0;
+      }
+      window.rainydesk.updateRainscapeParam('audio.thunder.enabled', trackedThunderEnabled);
+
       if (data.audio.thunder.storminess !== undefined) {
         trackedThunderStorminess = data.audio.thunder.storminess;
-        window.rainydesk.updateRainscapeParam('audio.thunder.storminess', data.audio.thunder.storminess);
+        thunderStorminessOsc.setUserCenter(data.audio.thunder.storminess);
+        // Only send storminess to audio if enabled
+        const storm = trackedThunderEnabled ? data.audio.thunder.storminess : 0;
+        window.rainydesk.updateRainscapeParam('audio.thunder.storminess', storm);
       }
       if (data.audio.thunder.distance !== undefined) {
         trackedThunderDistance = data.audio.thunder.distance;
+        thunderDistanceOsc.setUserCenter(data.audio.thunder.distance);
         window.rainydesk.updateRainscapeParam('audio.thunder.distance', data.audio.thunder.distance);
       }
       if (data.audio.thunder.environment !== undefined) {
         trackedThunderEnvironment = data.audio.thunder.environment;
         window.rainydesk.updateRainscapeParam('audio.thunder.environment', data.audio.thunder.environment);
+      }
+      // OSC amounts
+      if (data.audio.thunder.osc) {
+        if (data.audio.thunder.osc.storminess !== undefined) {
+          thunderStorminessOsc.setAmount(data.audio.thunder.osc.storminess);
+          window.rainydesk.updateRainscapeParam('audio.thunder.storminessOsc', data.audio.thunder.osc.storminess);
+        }
+        if (data.audio.thunder.osc.distance !== undefined) {
+          thunderDistanceOsc.setAmount(data.audio.thunder.osc.distance);
+          window.rainydesk.updateRainscapeParam('audio.thunder.distanceOsc', data.audio.thunder.osc.distance);
+        }
       }
     }
     if (data.audio.matrix) {
@@ -1185,9 +1239,9 @@ async function reinitializePhysics(newGridScale) {
     }
     globalGridBounds = null;
 
-    // Destroy Matrix mode if active
+    // Destroy Matrix renderer but keep canvas in DOM for reuse after rebuild
     if (wasMatrixMode) {
-      destroyMatrixRenderer();
+      destroyMatrixRenderer(true);
     }
 
     // Dispose audio gracefully
@@ -1247,53 +1301,18 @@ async function reinitializePhysics(newGridScale) {
       }, 5500);
     }
 
-    // Reinit Matrix mode if it was active
+    // Reinit Matrix mode if it was active (canvas was kept in DOM by keepCanvas=true)
     if (wasMatrixMode) {
-      matrixMode = true;
-
-      // Set AudioSystem to Matrix mode before creating GlitchSynth
-      if (audioSystem) {
-        audioSystem.setMatrixMode(true);
-        audioSystem.getWindModule()?.stop();
-        audioSystem.getSheetLayer()?.stop();
-        audioSystem.setParticleCount(0);
+      // Still true from before teardown; clear so activateMode's guard doesn't short-circuit
+      matrixMode = false;
+      await activateMode('matrix');
+      // Restore Matrix-specific visual state
+      if (matrixRenderer && preservedMatrix) {
+        if (preservedMatrix.transMode) matrixRenderer.setTransMode(true);
+        if (preservedMatrix.transScrollDirection) matrixRenderer.setTransScrollDirection(preservedMatrix.transScrollDirection);
       }
-
-      // Hide rain canvas and create fresh matrix canvas
-      canvas.style.display = 'none';
-      matrixCanvas = document.createElement('canvas');
-      matrixCanvas.id = 'matrix-canvas';
-      matrixCanvas.style.cssText = canvas.style.cssText;
-      matrixCanvas.style.display = 'block';
-      matrixCanvas.style.visibility = 'visible';
-      matrixCanvas.style.opacity = '1';
-      matrixCanvas.style.transition = 'none';
-      matrixCanvas.width = canvas.width;
-      matrixCanvas.height = canvas.height;
-      document.body.appendChild(matrixCanvas);
-
-      try {
-        const gen = ++matrixInitGeneration;
-        await initMatrixRenderer(gen);
-        // Restore Matrix-specific visual state
-        if (matrixRenderer && preservedMatrix) {
-          if (preservedMatrix.transMode) matrixRenderer.setTransMode(true);
-          if (preservedMatrix.transScrollDirection) matrixRenderer.setTransScrollDirection(preservedMatrix.transScrollDirection);
-        }
-        // Apply custom rain color to Matrix renderer (gaytrix synced automatically by initMatrixRenderer)
-        if (matrixRenderer && preservedVisual?.rainColor && preservedVisual.rainColor !== '#8aa8c0') {
-          matrixRenderer.setRainColor(preservedVisual.rainColor);
-        }
-      } catch (err) {
-        window.rainydesk.log(`[Reset] Matrix re-init failed: ${err}`);
-        matrixMode = false;
-        destroyMatrixRenderer();
-        canvas.style.display = 'block';
-        if (audioSystem) {
-          audioSystem.setMatrixMode(false);
-          audioSystem.getWindModule()?.start();
-          audioSystem.getSheetLayer()?.start();
-        }
+      if (matrixRenderer && preservedVisual?.rainColor && preservedVisual.rainColor !== '#8aa8c0') {
+        matrixRenderer.setRainColor(preservedVisual.rainColor);
       }
     }
 
@@ -1319,6 +1338,15 @@ function resizeCanvas() {
 
   canvas.width = width;
   canvas.height = height;
+
+  // Keep persistent matrix canvas in sync even when hidden
+  if (matrixCanvas) {
+    matrixCanvas.width = width;
+    matrixCanvas.height = height;
+  }
+  if (matrixRenderer) {
+    matrixRenderer.resize(width, height);
+  }
 
   window.rainydesk.log(`[Resize] Canvas: ${width}x${height}, display=${window.innerWidth}x${window.innerHeight}, dpr=${window.devicePixelRatio}`);
 }
@@ -1395,6 +1423,7 @@ function gameLoop(currentTime) {
       for (const entry of oscillators) {
         if (!entry.osc.active) continue;
         if (entry.disableInMatrix && matrixMode) continue;
+        if (entry.gateOn && !entry.gateOn()) continue;
         const val = entry.osc.tick(dt, nowSec);
         if (val !== null) entry.apply(val);
         const broadcast = entry.osc.shouldBroadcast(currentTime);
@@ -1973,27 +2002,49 @@ function registerEventListeners() {
       if (audioSystem) {
         audioSystem.updateParam('wind.masterGain', value);
       }
+    } else if (path === 'audio.thunder.enabled') {
+      trackedThunderEnabled = Boolean(value);
+      if (audioSystem) {
+        if (trackedThunderEnabled) {
+          // Restore storminess
+          const storm = Math.max(1, trackedThunderStorminess);
+          audioSystem.updateParam('thunder.storminess', storm);
+        } else {
+          audioSystem.updateParam('thunder.storminess', 0);
+        }
+      }
     } else if (path === 'audio.thunder.storminess') {
       trackedThunderStorminess = Number(value);
+      thunderStorminessOsc.setUserCenter(Number(value));
+      if (thunderStorminessOsc.active) return;
       if (audioSystem) {
         audioSystem.updateParam('thunder.storminess', value);
       }
+    } else if (path === 'audio.thunder.storminessOsc') {
+      thunderStorminessOsc.setAmount(Number(value));
+      if (!thunderStorminessOsc.active) {
+        const center = thunderStorminessOsc.snapToCenter();
+        trackedThunderStorminess = center;
+        if (audioSystem) audioSystem.updateParam('thunder.storminess', center);
+      }
     } else if (path === 'audio.thunder.distance') {
       trackedThunderDistance = Number(value);
+      thunderDistanceOsc.setUserCenter(Number(value));
+      if (thunderDistanceOsc.active) return;
       if (audioSystem) {
         audioSystem.updateParam('thunder.distance', value);
+      }
+    } else if (path === 'audio.thunder.distanceOsc') {
+      thunderDistanceOsc.setAmount(Number(value));
+      if (!thunderDistanceOsc.active) {
+        const center = thunderDistanceOsc.snapToCenter();
+        trackedThunderDistance = center;
+        if (audioSystem) audioSystem.updateParam('thunder.distance', center);
       }
     } else if (path === 'audio.thunder.environment') {
       trackedThunderEnvironment = String(value);
       if (audioSystem) {
         audioSystem.updateParam('thunder.environment', value);
-      }
-    } else if (path === 'audio.thunder.enabled') {
-      // Backward compat: old boolean toggle
-      const storm = value ? 30 : 0;
-      trackedThunderStorminess = storm;
-      if (audioSystem) {
-        audioSystem.updateParam('thunder.enabled', value);
       }
     } else if (path === 'audio.thunder.testStrike') {
       if (audioSystem) audioSystem.triggerThunderStrike();
@@ -2033,11 +2084,16 @@ function registerEventListeners() {
         pendingMatrixParams['transpose'] = value;
       }
     } else if (path === 'visual.rainColor') {
-      if (pixiRenderer) {
+      const color = String(value);
+      // Each mode has its own default — only sync custom colors to both renderers.
+      // Matrix green (#008F11) stays on Matrix; rain blue (#8aa8c0) stays on rain.
+      const isRainDefault = color === '#8aa8c0';
+      const isMatrixDefault = color === '#008F11';
+      if (pixiRenderer && !isMatrixDefault) {
         pixiRenderer.setRainColor(value);
       }
-      if (matrixRenderer) {
-        matrixRenderer.setRainColor(String(value));
+      if (matrixRenderer && !isRainDefault) {
+        matrixRenderer.setRainColor(color);
       }
     } else if (path === 'visual.rainbowMode' || path === 'visual.gayMode') {
       if (pixiRenderer) {
@@ -2051,68 +2107,7 @@ function registerEventListeners() {
       trackedRainbowSpeed = speed;
       if (pixiRenderer) pixiRenderer.setRainbowSpeed(speed);
     } else if (path === 'visual.matrixMode') {
-      const newMatrixMode = Boolean(value);
-      if (newMatrixMode === matrixMode) return; // No change
-
-      matrixMode = newMatrixMode;
-      if (matrixMode) {
-        // Switching TO Matrix Mode: pause rain, create separate canvas for matrix
-        window.rainydesk.log('[Matrix] Switching to Matrix Mode...');
-
-        // Set Matrix Mode flag on AudioSystem so start()/stop() knows which layers to run
-        if (audioSystem) {
-          audioSystem.setMatrixMode(true);
-          audioSystem.getWindModule()?.stop();
-          audioSystem.getSheetLayer()?.stop();
-          audioSystem.getThunderModule()?.stopAuto();
-          audioSystem.setParticleCount(0);
-          window.rainydesk.log('[Matrix] Stopped wind/sheet/thunder audio for Matrix Mode');
-        }
-
-        // Hide rain canvas (keep rain system intact, just hidden)
-        canvas.style.display = 'none';
-
-        // Create a separate canvas for Matrix Mode (avoids WebGL context conflicts)
-        matrixCanvas = document.createElement('canvas');
-        matrixCanvas.id = 'matrix-canvas';
-        matrixCanvas.style.cssText = canvas.style.cssText; // Copy layout styles
-        matrixCanvas.style.display = 'block';
-        // Override fade-in styles that may still be hiding the rain canvas at startup
-        matrixCanvas.style.visibility = 'visible';
-        matrixCanvas.style.opacity = '1';
-        matrixCanvas.style.transition = 'none';
-        matrixCanvas.width = canvas.width;
-        matrixCanvas.height = canvas.height;
-        document.body.appendChild(matrixCanvas);
-
-        // Init with error handling - rollback on failure
-        const gen = ++matrixInitGeneration;
-        initMatrixRenderer(gen).catch(err => {
-          if (gen !== matrixInitGeneration) return; // Superseded, don't rollback
-          window.rainydesk.log(`[Matrix] Init failed, rolling back: ${err}`);
-          matrixMode = false;
-          destroyMatrixRenderer();
-          canvas.style.display = 'block';
-        });
-      } else {
-        // Switching FROM Matrix Mode: destroy matrix, show rain again
-        window.rainydesk.log('[Matrix] Switching back to Rain Mode...');
-        destroyMatrixRenderer();
-
-        // Restore wind, sheet, and thunder audio
-        if (audioSystem) {
-          audioSystem.setMatrixMode(false);
-          audioSystem.getWindModule()?.start();
-          audioSystem.getSheetLayer()?.start();
-          if (trackedThunderStorminess > 0) {
-            audioSystem.getThunderModule()?.startAuto();
-          }
-          window.rainydesk.log('[Matrix] Restored wind/sheet/thunder audio for Rain Mode');
-        }
-
-        // Show rain canvas again
-        canvas.style.display = 'block';
-      }
+      activateMode(Boolean(value) ? 'matrix' : 'rain');
     } else if (path === 'system.paused') {
       isPaused = Boolean(value);
       window.rainydesk.log(`[Pause] ${isPaused ? 'PAUSED' : 'RESUMED'} via Rainscaper panel`);
@@ -2248,6 +2243,8 @@ async function initPixiPhysics() {
   intensityOsc.setUserCenter(config.intensity);
   turbulenceOsc.setUserCenter(0.3);  // GridSimulation default
   sheetOsc.setUserCenter(35);        // 35% default sheet volume
+  thunderStorminessOsc.setUserCenter(trackedThunderStorminess);
+  thunderDistanceOsc.setUserCenter(trackedThunderDistance);
 
   // Initialize Pixi renderer
   pixiRenderer = new RainPixiRenderer({
@@ -2267,17 +2264,15 @@ async function initPixiPhysics() {
   window.rainydesk.log('[Pixi] Hybrid physics ready!');
 }
 
-/* Initialize Matrix Mode renderer */
+/* Initialize Matrix Mode renderer (visual only — GlitchSynth created separately) */
 async function initMatrixRenderer(gen) {
   if (matrixRenderer || !matrixCanvas) return;
 
   const { MatrixPixiRenderer } = await import('./simulation.bundle.js');
-  if (gen !== matrixInitGeneration) return; // Superseded by newer toggle
-  const { GlitchSynth } = await import('./audio.bundle.js');
-  if (gen !== matrixInitGeneration) return; // Superseded by newer toggle
+  if (gen !== matrixInitGeneration) return;
 
   matrixRenderer = new MatrixPixiRenderer({
-    canvas: matrixCanvas, // Use separate canvas to avoid WebGL context conflicts
+    canvas: matrixCanvas,
     width: virtualDesktop?.width || window.innerWidth,
     height: virtualDesktop?.height || window.innerHeight,
     collisionEnabled: true,
@@ -2289,12 +2284,10 @@ async function initMatrixRenderer(gen) {
     return;
   }
 
-  // Coordinate adjustment: window bounds are absolute, canvas is relative to VD origin
   const originX = virtualDesktop?.originX || 0;
   const originY = virtualDesktop?.originY || 0;
 
-  // Set up window zones from saved classified data (includes all window types)
-  // lastWindowZonesForReinit has normal/void/spawn arrays from classification
+  // Window zones from classified data
   if (lastWindowZonesForReinit) {
     const allWindows = [
       ...(lastWindowZonesForReinit.normal || []),
@@ -2309,7 +2302,6 @@ async function initMatrixRenderer(gen) {
     matrixRenderer.updateWindowZones(zones);
     window.rainydesk.log(`[Matrix] Loaded ${zones.length} window zones (origin offset: ${originX}, ${originY})`);
   } else if (lastWindowData?.length) {
-    // Fallback to raw window data if classification hasn't run yet
     const zones = lastWindowData.map(w => ({
       left: w.x - originX,
       top: w.y - originY,
@@ -2322,7 +2314,7 @@ async function initMatrixRenderer(gen) {
     window.rainydesk.log('[Matrix] WARNING: No window data available for collision detection');
   }
 
-  // Compute initial blanked regions (monitors covered by maximized/fullscreen windows)
+  // Blanked regions (monitors covered by maximized/fullscreen windows)
   if (virtualDesktop?.monitors && lastWindowData?.length) {
     const blankedMonitorIndices = new Set();
     for (const win of lastWindowData) {
@@ -2345,8 +2337,7 @@ async function initMatrixRenderer(gen) {
     }
   }
 
-  // Set floor to bottom of work area (where taskbar is)
-  // Use the minimum work area bottom from all monitors
+  // Floor at taskbar position (minimum work area bottom across monitors)
   if (virtualDesktop?.monitors?.length) {
     let minWorkBottom = Infinity;
     for (const mon of virtualDesktop.monitors) {
@@ -2361,10 +2352,22 @@ async function initMatrixRenderer(gen) {
     }
   }
 
-  // Audio: create glitch synth (beat-quantized at 102 BPM)
+  // Sync visual state from rain simulation
+  matrixRenderer.setGaytrixMode(pixiRenderer?.isGayMode?.() ?? false);
+  matrixRenderer.setReverseGravity(gridSimulation?.isReverseGravity?.() ?? false);
+
+  window.rainydesk.log('[Matrix] Renderer initialized');
+}
+
+/* Create GlitchSynth and wire collision handler (recreated on each activation) */
+async function initGlitchSynth(gen) {
+  if (glitchSynth || !matrixRenderer) return;
+
+  const { GlitchSynth } = await import('./audio.bundle.js');
+  if (gen !== matrixInitGeneration) return;
+
   glitchSynth = new GlitchSynth();
 
-  // Route GlitchSynth through AudioSystem master chain (master volume, muffle, limiter)
   if (audioSystem) {
     const masterInput = audioSystem.getMasterInput();
     if (masterInput) {
@@ -2373,7 +2376,7 @@ async function initMatrixRenderer(gen) {
     }
   }
 
-  // Apply any pending Matrix params that were queued before glitchSynth existed
+  // Apply queued params that arrived before glitchSynth existed
   if (pendingMatrixParams['transpose'] !== undefined) {
     glitchSynth.setTranspose(pendingMatrixParams['transpose']);
     window.rainydesk.log(`[Matrix] Applied pending transpose: ${pendingMatrixParams['transpose']}`);
@@ -2393,53 +2396,29 @@ async function initMatrixRenderer(gen) {
   pendingMatrixParams = {};
 
   matrixRenderer.onCollision = (x, y) => {
-    // Trigger returns { onBeat: boolean } for flash intensity
     const result = glitchSynth?.trigger() || { onBeat: false };
-    // Only log on-beat collisions to avoid spam
     if (result.onBeat) {
       window.rainydesk.log(`[Matrix] ON-BEAT collision at (${Math.round(x)}, ${Math.round(y)})`);
     }
     return result;
   };
 
-  // Start background drone (crossfade-looped ambient)
-  // NOTE: Sound file is copied to src/renderer/sounds/ for dev mode (Tauri's frontendDist
-  // is src/renderer/, so assets/ folder isn't served). Production builds use bundle resources.
-  // See tauri.conf.json "resources" and .gitignore for sounds/ exclusion.
+  // Drone audio file path differs between dev and production builds
   try {
     await glitchSynth.startDrone('./sounds/SawLoopG.ogg', 5);
     if (gen !== matrixInitGeneration) {
       glitchSynth?.dispose();
       glitchSynth = null;
-      matrixRenderer?.destroy();
-      matrixRenderer = null;
       return;
     }
     window.rainydesk.log('[Matrix] Drone audio started');
   } catch (err) {
     window.rainydesk.log(`[Matrix] Drone audio failed: ${err}`);
   }
-
-  // Final guard — mode may have been cancelled during drone startup
-  if (gen !== matrixInitGeneration || !matrixRenderer) return;
-
-  // Sync Gaytrix state from current gayMode
-  const isGaytrix = pixiRenderer?.isGayMode?.() ?? false;
-  matrixRenderer.setGaytrixMode(isGaytrix);
-
-  // Sync reverse gravity state from rain simulation
-  const isReversed = gridSimulation?.isReverseGravity?.() ?? false;
-  matrixRenderer.setReverseGravity(isReversed);
-
-  // DON'T sync rain color - Matrix Mode should default to green unless explicitly set
-  // Only apply custom color if Gaytrix is off and user has explicitly set a non-default color
-  // (Leave this for later - for now, just use default green)
-
-  window.rainydesk.log('[Matrix] Renderer initialized');
 }
 
-/* Destroy Matrix Mode renderer */
-function destroyMatrixRenderer() {
+/* Destroy Matrix Mode renderer (keepCanvas=true retains the DOM canvas for Reset) */
+function destroyMatrixRenderer(keepCanvas = false) {
   if (matrixRenderer) {
     matrixRenderer.destroy();
     matrixRenderer = null;
@@ -2448,12 +2427,106 @@ function destroyMatrixRenderer() {
     glitchSynth.dispose();
     glitchSynth = null;
   }
-  // Remove matrix canvas from DOM
-  if (matrixCanvas) {
+  if (!keepCanvas && matrixCanvas) {
     matrixCanvas.remove();
     matrixCanvas = null;
   }
-  window.rainydesk.log('[Matrix] Renderer destroyed');
+  window.rainydesk.log(`[Matrix] Renderer destroyed (keepCanvas=${keepCanvas})`);
+}
+
+/* Central mode switch — lazy-init on first use, toggle via opacity */
+async function activateMode(newMode) {
+  const enteringMatrix = newMode === 'matrix';
+  if (enteringMatrix === matrixMode) return;
+
+  matrixMode = enteringMatrix;
+
+  if (enteringMatrix) {
+    window.rainydesk.log('[Matrix] Switching to Matrix Mode...');
+
+    // Hide rain canvas + stop Pixi from painting stale sprites
+    canvas.style.opacity = '0';
+    if (pixiRenderer?.app?.stage) pixiRenderer.app.stage.visible = false;
+
+    // Audio: switch to Matrix layers
+    if (audioSystem) {
+      audioSystem.setMatrixMode(true);
+      audioSystem.getWindModule()?.stop();
+      audioSystem.getSheetLayer()?.stop();
+      audioSystem.getThunderModule()?.stopAuto();
+      audioSystem.setParticleCount(0);
+      window.rainydesk.log('[Matrix] Stopped wind/sheet/thunder audio for Matrix Mode');
+    }
+
+    // Lazy-init matrix canvas (created once, reused across toggles)
+    if (!matrixCanvas) {
+      matrixCanvas = document.createElement('canvas');
+      matrixCanvas.id = 'matrix-canvas';
+      matrixCanvas.style.cssText = canvas.style.cssText;
+      matrixCanvas.style.visibility = 'visible';
+      matrixCanvas.style.opacity = '0'; // Start hidden, reveal below
+      matrixCanvas.style.transition = 'none';
+      matrixCanvas.width = canvas.width;
+      matrixCanvas.height = canvas.height;
+      document.body.appendChild(matrixCanvas);
+    }
+
+    // Lazy-init matrix renderer (created once, reused across toggles)
+    const gen = ++matrixInitGeneration;
+    if (!matrixRenderer) {
+      try {
+        await initMatrixRenderer(gen);
+      } catch (err) {
+        if (gen !== matrixInitGeneration) return;
+        window.rainydesk.log(`[Matrix] Init failed, rolling back: ${err}`);
+        matrixMode = false;
+        destroyMatrixRenderer();
+        if (pixiRenderer?.app?.stage) pixiRenderer.app.stage.visible = true;
+        if (audioSystem) {
+          audioSystem.setMatrixMode(false);
+          audioSystem.getWindModule()?.start();
+          audioSystem.getSheetLayer()?.start();
+          if (trackedThunderStorminess > 0) audioSystem.getThunderModule()?.startAuto();
+        }
+        return;
+      }
+    }
+
+    // GlitchSynth is disposed on each deactivation, so always re-create
+    await initGlitchSynth(gen);
+    if (gen !== matrixInitGeneration) return;
+
+    // Guard: init may have failed or been superseded
+    if (!matrixMode || gen !== matrixInitGeneration) return;
+    if (matrixCanvas) matrixCanvas.style.opacity = '1';
+  } else {
+    window.rainydesk.log('[Matrix] Switching back to Rain Mode...');
+
+    // Cancel any in-flight async Matrix init
+    matrixInitGeneration++;
+
+    if (matrixCanvas) matrixCanvas.style.opacity = '0';
+
+    if (glitchSynth) {
+      glitchSynth.dispose();
+      glitchSynth = null;
+    }
+
+    // Show rain canvas + sprites again
+    canvas.style.opacity = '1';
+    if (pixiRenderer?.app?.stage) pixiRenderer.app.stage.visible = true;
+
+    // Restore wind, sheet, and thunder audio
+    if (audioSystem) {
+      audioSystem.setMatrixMode(false);
+      audioSystem.getWindModule()?.start();
+      audioSystem.getSheetLayer()?.start();
+      if (trackedThunderStorminess > 0) {
+        audioSystem.getThunderModule()?.startAuto();
+      }
+      window.rainydesk.log('[Matrix] Restored wind/sheet/thunder audio for Rain Mode');
+    }
+  }
 }
 
 /* Periodically save state to Autosave.rain */

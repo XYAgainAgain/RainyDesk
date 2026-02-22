@@ -916,6 +916,34 @@ html, body {
   opacity: 0.8;
 }
 
+/* Thunder header row — mirrors control-row so STRIKE btn aligns with OSC knobs */
+.thunder-header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.thunder-header-row .section-title { margin-bottom: 0; }
+.thunder-header-row .thunder-test-btn { margin-left: auto; }
+.thunder-toggle-area {
+  flex: 1;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Collapsible thunder content */
+.thunder-content {
+  overflow: hidden;
+  max-height: 500px;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  opacity: 1;
+}
+.thunder-content.collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* OSC-driven slider feedback: dims track/value + pulses thumb when knob > 0 */
 .control-row.osc-active .slider {
   opacity: 0.5;

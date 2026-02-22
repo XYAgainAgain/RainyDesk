@@ -1,6 +1,6 @@
 /* Main panel class — standalone Rainscaper window UI */
 
-import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, updateSliderValue } from './components';
+import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, updateSliderValue, showTooltip, hideTooltip } from './components';
 import { applyTheme, applyCustomTheme, generateRandomTheme, getRandomThemeName, DEFAULT_THEME_NAMES, clearCustomFonts, deriveThemeColors } from './themes';
 import type { CustomTheme, UserThemesFile } from './types';
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
@@ -64,9 +64,12 @@ interface PanelState {
   sheetVolume: number;
   ambience: number;
   bubbleSound: number;
+  thunderEnabled: boolean;
   thunderStorminess: number;
   thunderDistance: number;
   thunderEnvironment: string;
+  thunderStorminessOsc: number;
+  thunderDistanceOsc: number;
   windSound: number;
   // Matrix Mode audio (E1) — percentages that map to dB via (v/100*42)-30
   matrixBassVolume: number;       // Default 50% = -9 dB
@@ -274,9 +277,12 @@ export class RainyDeskPanel {
       sheetVolume: 35,
       ambience: 30,
       bubbleSound: 30,
-      thunderStorminess: 0,
+      thunderEnabled: false,
+      thunderStorminess: 50,
       thunderDistance: 5.0,
       thunderEnvironment: 'forest',
+      thunderStorminessOsc: 0,
+      thunderDistanceOsc: 0,
       windSound: 20,
       // Matrix Mode audio (E1) — percentages matching GlitchSynth default dB values
       matrixBassVolume: 50,       // -9 dB
@@ -407,7 +413,7 @@ export class RainyDeskPanel {
     window.rainydesk.updateRainscapeParam = (path: string, value: unknown) => {
       originalUpdateParam(path, value);
       // Skip autosave flash for commands and state toggles (not saveable param changes)
-      if (path !== 'physics.resetSimulation' && path !== 'system.paused' && path !== 'audio.muted') {
+      if (path !== 'physics.resetSimulation' && path !== 'system.paused' && path !== 'audio.muted' && path !== 'audio.thunder.testStrike') {
         this.flashAutosaveIndicator();
       }
     };
@@ -650,6 +656,22 @@ export class RainyDeskPanel {
         if (typeof at.storminess === 'number') this.state.thunderStorminess = at.storminess;
         if (typeof at.distance === 'number') this.state.thunderDistance = at.distance;
         if (typeof at.environment === 'string') this.state.thunderEnvironment = at.environment;
+        // Enabled flag (backward compat: derive from storminess > 0 if missing)
+        if (typeof at.enabled === 'boolean') {
+          this.state.thunderEnabled = at.enabled;
+        } else {
+          this.state.thunderEnabled = this.state.thunderStorminess > 0;
+        }
+        // OSC amounts
+        if (at.osc && typeof at.osc === 'object') {
+          const osc = at.osc as Record<string, unknown>;
+          if (typeof osc.storminess === 'number') this.state.thunderStorminessOsc = osc.storminess;
+          if (typeof osc.distance === 'number') this.state.thunderDistanceOsc = osc.distance;
+        }
+        // Ensure storminess has a sane value when enabled
+        if (this.state.thunderEnabled && this.state.thunderStorminess === 0) {
+          this.state.thunderStorminess = 50;
+        }
       }
 
       if (audio.matrix && typeof audio.matrix === 'object') {
@@ -737,6 +759,18 @@ export class RainyDeskPanel {
     } else if (path === 'audio.muted' && typeof value === 'boolean') {
       this.state.muted = value;
       this.updateMuteToggle();
+    } else if (path === 'audio.thunder.enabled' && typeof value === 'boolean') {
+      this.state.thunderEnabled = value;
+      const toggle = this.root.querySelector<HTMLInputElement>('.thunder-header-row input[type="checkbox"]');
+      if (toggle) toggle.checked = value;
+      const content = this.root.querySelector<HTMLElement>('.thunder-content');
+      if (content) content.classList.toggle('collapsed', !value);
+    } else if (path === 'audio.thunder.storminess' && typeof value === 'number') {
+      this.state.thunderStorminess = value;
+      updateSliderValue(this.root, 'thunderStorminess', value);
+    } else if (path === 'audio.thunder.distance' && typeof value === 'number') {
+      this.state.thunderDistance = value;
+      updateSliderValue(this.root, 'thunderDistance', value);
     } else if (path === 'system.resetPanel') {
       // Reset UI scale to 100% (triggered by tray "Reset Panel")
       this.state.uiScale = 1.0;
@@ -2128,8 +2162,13 @@ export class RainyDeskPanel {
       })
     );
 
-    // Impact sound (raindrop impact volume — Rain Mode only, irrelevant in Matrix)
-    container.appendChild(
+    // Rain-mode sliders (hidden in Matrix Mode — Matrix has its own controls)
+    const rainAudioSliders = document.createElement('div');
+    rainAudioSliders.id = 'rain-audio-sliders';
+    if (this.state.matrixMode) rainAudioSliders.style.display = 'none';
+
+    // Impact sound (raindrop impact volume)
+    rainAudioSliders.appendChild(
       Slider({
         id: 'impactSound',
         label: 'Impact Sound',
@@ -2158,8 +2197,8 @@ export class RainyDeskPanel {
       },
     });
 
-    // Impact pitch (filter center frequency — Rain Mode only)
-    container.appendChild(
+    // Impact pitch (filter center frequency)
+    rainAudioSliders.appendChild(
       Slider({
         id: 'impactPitch',
         label: 'Impact Pitch',
@@ -2189,8 +2228,8 @@ export class RainyDeskPanel {
       },
     });
 
-    // Rain sheet (pink/brown noise bed — Rain Mode only, shut off in Matrix)
-    container.appendChild(
+    // Rain sheet (pink/brown noise bed)
+    rainAudioSliders.appendChild(
       Slider({
         id: 'sheetVolume',
         label: 'Rain Sheet',
@@ -2207,8 +2246,8 @@ export class RainyDeskPanel {
       })
     );
 
-    // Wind volume (Rain Mode only — Matrix Mode has its own Drone slider)
-    container.appendChild(
+    // Wind volume (Matrix Mode has its own Drone slider)
+    rainAudioSliders.appendChild(
       Slider({
         id: 'windSound',
         label: 'Wind',
@@ -2226,6 +2265,8 @@ export class RainyDeskPanel {
       })
     );
 
+    container.appendChild(rainAudioSliders);
+
     // Thunder section (hidden in Matrix Mode)
     const thunderSection = document.createElement('div');
     thunderSection.id = 'thunder-audio-section';
@@ -2235,66 +2276,137 @@ export class RainyDeskPanel {
     thunderDivider.className = 'panel-separator';
     thunderSection.appendChild(thunderDivider);
 
-    const thunderTitle = document.createElement('div');
+    // Header row: mirrors control-row layout so STRIKE aligns with OSC knobs below
+    const thunderHeaderRow = document.createElement('div');
+    thunderHeaderRow.className = 'thunder-header-row';
+
+    // Left zone (140px, same as control-label-container) holds title + STRIKE btn
+    const headerLabelZone = document.createElement('div');
+    headerLabelZone.className = 'control-label-container';
+    const thunderTitle = document.createElement('span');
     thunderTitle.className = 'section-title';
     thunderTitle.textContent = 'Thunder';
-    thunderSection.appendChild(thunderTitle);
+    headerLabelZone.appendChild(thunderTitle);
 
-    // Manual trigger for tuning — fires at current distance/environment settings
+    // Test strike button — sits where OSC knobs go, aligning with knobs below
     const testStrikeBtn = document.createElement('button');
     testStrikeBtn.className = 'thunder-test-btn';
     testStrikeBtn.id = 'thunder-test-btn';
-    testStrikeBtn.title = 'Test Strike';
     testStrikeBtn.appendChild(RainyDeskPanel.createCloudBoltSVG());
     testStrikeBtn.onclick = () => {
       window.rainydesk.updateRainscapeParam('audio.thunder.testStrike', 1);
     };
+    let strikeTip: HTMLElement | null = null;
+    testStrikeBtn.onmouseenter = () => { strikeTip = showTooltip(testStrikeBtn, 'STRIKE!'); };
+    testStrikeBtn.onmouseleave = () => { strikeTip = hideTooltip(strikeTip); };
+    headerLabelZone.appendChild(testStrikeBtn);
+    thunderHeaderRow.appendChild(headerLabelZone);
 
-    // Storminess slider (0–100)
-    thunderSection.appendChild(
+    // Right zone holds the toggle, pushed to the far right
+    const toggleArea = document.createElement('div');
+    toggleArea.className = 'thunder-toggle-area';
+    const toggleLabel = document.createElement('label');
+    toggleLabel.className = 'toggle';
+    const toggleInput = document.createElement('input');
+    toggleInput.type = 'checkbox';
+    toggleInput.checked = this.state.thunderEnabled;
+    const toggleTrack = document.createElement('span');
+    toggleTrack.className = 'toggle-track';
+    const toggleThumb = document.createElement('span');
+    toggleThumb.className = 'toggle-thumb';
+    toggleLabel.appendChild(toggleInput);
+    toggleLabel.appendChild(toggleTrack);
+    toggleLabel.appendChild(toggleThumb);
+    toggleArea.appendChild(toggleLabel);
+    thunderHeaderRow.appendChild(toggleArea);
+
+    thunderSection.appendChild(thunderHeaderRow);
+
+    // Collapsible content
+    const thunderContent = document.createElement('div');
+    thunderContent.className = 'thunder-content';
+    if (!this.state.thunderEnabled) thunderContent.classList.add('collapsed');
+
+    toggleInput.onchange = () => {
+      this.state.thunderEnabled = toggleInput.checked;
+      thunderContent.classList.toggle('collapsed', !toggleInput.checked);
+      if (toggleInput.checked) {
+        // Ensure storminess is at least 1 before enabling
+        const storm = Math.max(1, this.state.thunderStorminess);
+        this.state.thunderStorminess = storm;
+        updateSliderValue(thunderContent, 'thunderStorminess', storm);
+      }
+      // Let the enabled handler in renderer.js handle silencing/restoring audio
+      window.rainydesk.updateRainscapeParam('audio.thunder.enabled', toggleInput.checked);
+    };
+
+    // Storminess OSC knob
+    const storminessOscKnob = RotaryKnob({
+      value: this.state.thunderStorminessOsc,
+      min: 0,
+      max: 100,
+      id: 'thunderStorminessOsc',
+      description: 'Storm drift (auto-varies storminess over minutes)',
+      onChange: (v) => {
+        this.state.thunderStorminessOsc = v;
+        window.rainydesk.updateRainscapeParam('audio.thunder.storminessOsc', v);
+      },
+    });
+
+    // Storminess slider (1–100, toggle handles the 0 case)
+    thunderContent.appendChild(
       Slider({
         id: 'thunderStorminess',
         label: 'Storminess',
         value: this.state.thunderStorminess,
-        min: 0,
+        min: 1,
         max: 100,
         unit: '%',
-        defaultValue: 0,
-        extraElement: testStrikeBtn,
+        defaultValue: 50,
+        extraElement: storminessOscKnob,
         onChange: (v) => {
           this.state.thunderStorminess = v;
           window.rainydesk.updateRainscapeParam('audio.thunder.storminess', v);
-          // Grey out distance + environment when storminess is 0
-          const disabled = v === 0;
-          thunderDistSlider.classList.toggle('disabled', disabled);
-          thunderEnvRow.classList.toggle('disabled', disabled);
         },
       })
     );
 
-    // Distance slider (0.5–15 km)
-    const thunderDistSlider = Slider({
-      id: 'thunderDistance',
-      label: 'Distance',
-      value: this.state.thunderDistance,
-      min: 0.5,
-      max: 15,
-      step: 0.5,
-      unit: ' km',
-      defaultValue: 5,
-      formatValue: (v: number) => v.toFixed(1),
+    // Distance OSC knob
+    const distanceOscKnob = RotaryKnob({
+      value: this.state.thunderDistanceOsc,
+      min: 0,
+      max: 100,
+      id: 'thunderDistanceOsc',
+      description: 'Distance drift (auto-varies thunder distance)',
       onChange: (v) => {
-        this.state.thunderDistance = v;
-        window.rainydesk.updateRainscapeParam('audio.thunder.distance', v);
+        this.state.thunderDistanceOsc = v;
+        window.rainydesk.updateRainscapeParam('audio.thunder.distanceOsc', v);
       },
     });
-    thunderDistSlider.classList.toggle('disabled', this.state.thunderStorminess === 0);
-    thunderSection.appendChild(thunderDistSlider);
+
+    // Distance slider (0.5–15 km)
+    thunderContent.appendChild(
+      Slider({
+        id: 'thunderDistance',
+        label: 'Distance',
+        value: this.state.thunderDistance,
+        min: 0.5,
+        max: 15,
+        step: 0.5,
+        unit: ' km',
+        defaultValue: 5,
+        extraElement: distanceOscKnob,
+        formatValue: (v: number) => v.toFixed(1),
+        onChange: (v) => {
+          this.state.thunderDistance = v;
+          window.rainydesk.updateRainscapeParam('audio.thunder.distance', v);
+        },
+      })
+    );
 
     // Environment dropdown
     const thunderEnvRow = document.createElement('div');
     thunderEnvRow.className = 'control-row';
-    thunderEnvRow.classList.toggle('disabled', this.state.thunderStorminess === 0);
 
     const envLabelContainer = document.createElement('div');
     envLabelContainer.className = 'control-label-container';
@@ -2331,8 +2443,9 @@ export class RainyDeskPanel {
 
     thunderEnvRow.appendChild(envLabelContainer);
     thunderEnvRow.appendChild(envSelectContainer);
-    thunderSection.appendChild(thunderEnvRow);
+    thunderContent.appendChild(thunderEnvRow);
 
+    thunderSection.appendChild(thunderContent);
     container.appendChild(thunderSection);
 
     // Matrix Mode audio sliders (only visible when Matrix Mode is on)
@@ -2563,6 +2676,32 @@ export class RainyDeskPanel {
     });
     container.appendChild(matrixToggle);
 
+    // Data Density (Matrix Mode only — controls column spacing)
+    const densitySteps = [42, 28, 20, 14];
+    const densityLabels = ['Noob', 'Normie', 'Nerd', 'Neo'];
+    const currentDensityIdx = densitySteps.findIndex(s => s === this.state.matrixDensity);
+    const safeDensityIdx = currentDensityIdx >= 0 ? currentDensityIdx : 1;
+
+    const densitySlider = Slider({
+      id: 'matrixDensity',
+      label: 'Data Density',
+      value: safeDensityIdx,
+      min: 0,
+      max: 3,
+      step: 1,
+      unit: '',
+      formatValue: (v: number) => densityLabels[Math.round(v)] || 'Normie',
+      onChange: (v) => {
+        const idx = Math.round(v);
+        const spacing = densitySteps[idx] ?? 20;
+        this.state.matrixDensity = spacing;
+        window.rainydesk.updateRainscapeParam('visual.matrixDensity', spacing);
+      },
+    });
+    densitySlider.style.display = this.state.matrixMode ? '' : 'none';
+    densitySlider.dataset.matrixOnly = 'true';
+    container.appendChild(densitySlider);
+
     // Gaytrix hint (appears when both Gay Mode + Matrix Mode are enabled)
     const gaytrixHint = document.createElement('div');
     gaytrixHint.className = `gaytrix-hint${this.state.transMode ? ' trans-mode' : ''}`;
@@ -2789,32 +2928,6 @@ export class RainyDeskPanel {
     scaleSection.appendChild(this.resetRainButton);
 
     perf.content.appendChild(scaleSection);
-
-    // Data Density (Matrix Mode only)
-    const densitySteps = [42, 28, 20, 14];
-    const densityLabels = ['Noob', 'Normie', 'Nerd', 'Neo'];
-    const currentDensityIdx = densitySteps.findIndex(s => s === this.state.matrixDensity);
-    const safeDensityIdx = currentDensityIdx >= 0 ? currentDensityIdx : 1;
-
-    const densitySlider = Slider({
-      id: 'matrixDensity',
-      label: 'Data Density',
-      value: safeDensityIdx,
-      min: 0,
-      max: 3,
-      step: 1,
-      unit: '',
-      formatValue: (v: number) => densityLabels[Math.round(v)] || 'Normie',
-      onChange: (v) => {
-        const idx = Math.round(v);
-        const spacing = densitySteps[idx] ?? 20;
-        this.state.matrixDensity = spacing;
-        window.rainydesk.updateRainscapeParam('visual.matrixDensity', spacing);
-      },
-    });
-    densitySlider.style.display = this.state.matrixMode ? '' : 'none';
-    densitySlider.dataset.matrixOnly = 'true';
-    perf.content.appendChild(densitySlider);
 
     container.appendChild(perf.content);
 
@@ -3617,15 +3730,12 @@ export class RainyDeskPanel {
     });
 
     // Disable sliders that have no effect in Matrix Mode
+    // (Audio tab rain sliders are handled by #rain-audio-sliders container below)
     const disabledInMatrix = [
       'wind',          // Matrix uses fixed stream patterns
       'splashSize',    // No water splashes
       'puddleDrain',  // No puddles
       'gridScale',    // Matrix uses own grid, not physics grid
-      'impactSound',  // Rain impact sounds (Rain Mode only)
-      'impactPitch',  // Impact filter pitch (Rain Mode only)
-      'sheetVolume',  // Rain sheet noise (Rain Mode only)
-      'windSound',    // Wind ambient (Rain Mode only, Matrix has Drone slider)
     ];
     for (const id of disabledInMatrix) {
       const row = this.root.querySelector(`[data-slider-id="${id}"]`) as HTMLElement;
@@ -3634,8 +3744,7 @@ export class RainyDeskPanel {
       }
     }
 
-    // Disable OSC knobs on non-disabled tabs (Basic + Physics)
-    // sheetOsc/impactPitchOsc are on Audio tab rows that already get matrix-disabled
+    // Disable OSC knobs on tabs that stay visible (Basic + Physics)
     for (const knobId of ['windOsc']) {
       const knob = this.root.querySelector(`[data-knob-id="${knobId}"]`) as HTMLElement;
       if (knob) {
@@ -3678,10 +3787,10 @@ export class RainyDeskPanel {
       matrixAudioSection.style.display = isMatrix ? 'block' : 'none';
     }
 
-    // Hide thunder section in Matrix Mode (thunder is Rain Mode only)
-    const thunderSection = this.root.querySelector('#thunder-audio-section') as HTMLElement;
-    if (thunderSection) {
-      thunderSection.style.display = isMatrix ? 'none' : 'block';
+    // Hide rain-only Audio tab sections in Matrix Mode
+    for (const id of ['rain-audio-sliders', 'thunder-audio-section']) {
+      const el = this.root.querySelector(`#${id}`) as HTMLElement;
+      if (el) el.style.display = isMatrix ? 'none' : '';
     }
   }
 

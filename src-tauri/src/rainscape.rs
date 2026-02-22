@@ -143,9 +143,14 @@ pub(crate) fn create_default_rainscape() -> serde_json::Value {
                 "windMasterGain": -12
             },
             "thunder": {
-                "storminess": 0,
+                "enabled": false,
+                "storminess": 50,
                 "distance": 5.0,
-                "environment": "forest"
+                "environment": "forest",
+                "osc": {
+                    "storminess": 0,
+                    "distance": 0
+                }
             },
             "matrix": {
                 "bass": -9,

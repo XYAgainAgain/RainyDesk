@@ -171,7 +171,7 @@ function registerEventListeners() {
       bgRainUserEnabled = Boolean(value);
       renderer?.setBackgroundRainConfig({ enabled: bgRainUserEnabled });
       if (matrixMode && matrixCanvas) {
-        matrixCanvas.style.display = bgRainUserEnabled ? 'block' : 'none';
+        matrixCanvas.style.opacity = bgRainUserEnabled ? '1' : '0';
       }
     }
     if (path === 'backgroundRain.intensity') {
@@ -229,47 +229,23 @@ function registerEventListeners() {
 
     // Matrix Mode
     if (path === 'visual.matrixMode') {
-      matrixMode = Boolean(value);
-      if (matrixMode) {
-        renderer?.setBackgroundRainConfig({ enabled: false });
-        if (renderer) renderer.clear();
-
-        // Separate canvas avoids WebGL context conflicts
-        matrixCanvas = document.createElement('canvas');
-        matrixCanvas.id = 'matrix-bg-canvas';
-        matrixCanvas.style.cssText = canvas.style.cssText;
-        matrixCanvas.style.display = 'block';
-        matrixCanvas.width = canvas.width;
-        matrixCanvas.height = canvas.height;
-        document.body.appendChild(matrixCanvas);
-
-        // Init background matrix
-        initBackgroundMatrix(++matrixInitGeneration);
-      } else {
-        destroyBackgroundMatrix();
-        renderer?.setBackgroundRainConfig({ enabled: bgRainUserEnabled });
-
-        // Pixi's second WebGL context can kill the rain context
-        setTimeout(() => {
-          const gl = canvas.getContext('webgl2');
-          if (!gl || gl.isContextLost()) {
-            window.rainydesk.log('[Background] Rain context lost after Matrix destroy — replacing canvas');
-            rebuildRainCanvas();
-          }
-        }, 100);
-      }
+      activateBackgroundMode(Boolean(value) ? 'matrix' : 'rain');
     }
 
     // Rain Color sync
     if (path === 'visual.rainColor') {
-      const hex = value.replace('#', '');
-      const r = parseInt(hex.substring(0, 2), 16) / 255;
-      const g = parseInt(hex.substring(2, 4), 16) / 255;
-      const b = parseInt(hex.substring(4, 6), 16) / 255;
-      renderer?.setBackgroundRainConfig({ colorTint: [r, g, b] });
-      // Sync to background matrix
-      if (matrixRenderer) {
-        matrixRenderer.setRainColor(String(value));
+      const color = String(value);
+      const isMatrixDefault = color === '#008F11';
+      const isRainDefault = color === '#8aa8c0';
+      if (!isMatrixDefault) {
+        const hex = color.replace('#', '');
+        const r = parseInt(hex.substring(0, 2), 16) / 255;
+        const g = parseInt(hex.substring(2, 4), 16) / 255;
+        const b = parseInt(hex.substring(4, 6), 16) / 255;
+        renderer?.setBackgroundRainConfig({ colorTint: [r, g, b] });
+      }
+      if (matrixRenderer && !isRainDefault) {
+        matrixRenderer.setRainColor(color);
       }
     }
 
@@ -285,8 +261,12 @@ function registerEventListeners() {
     } else if (status === 'raining') {
       isPaused = false;
       if (!isFullscreenActive) {
-        canvas.style.opacity = '1';
-        if (matrixCanvas) matrixCanvas.style.opacity = '1';
+        // Only show the canvas for the active mode
+        if (matrixMode && matrixCanvas) {
+          matrixCanvas.style.opacity = '1';
+        } else {
+          canvas.style.opacity = '1';
+        }
       }
       window.rainydesk.log('[Background] Reinit complete — showing');
     }
@@ -386,7 +366,7 @@ function rebuildRainCanvas() {
   }
 }
 
-/* Destroy background Matrix renderer */
+/* Destroy background Matrix renderer (error fallback only) */
 function destroyBackgroundMatrix() {
   if (matrixRenderer) {
     matrixRenderer.destroy();
@@ -397,6 +377,46 @@ function destroyBackgroundMatrix() {
     matrixCanvas = null;
   }
   window.rainydesk.log('[Background] Matrix renderer destroyed');
+}
+
+/* Central mode switch — lazy-init on first use, toggle via opacity */
+async function activateBackgroundMode(newMode) {
+  const enteringMatrix = newMode === 'matrix';
+  if (enteringMatrix === matrixMode) return;
+
+  matrixMode = enteringMatrix;
+
+  if (enteringMatrix) {
+    renderer?.setBackgroundRainConfig({ enabled: false });
+    if (renderer) renderer.clear();
+
+    // Lazy-init canvas
+    if (!matrixCanvas) {
+      matrixCanvas = document.createElement('canvas');
+      matrixCanvas.id = 'matrix-bg-canvas';
+      matrixCanvas.style.cssText = canvas.style.cssText;
+      matrixCanvas.style.visibility = 'visible';
+      matrixCanvas.style.opacity = '0';
+      matrixCanvas.style.transition = 'none';
+      matrixCanvas.width = canvas.width;
+      matrixCanvas.height = canvas.height;
+      document.body.appendChild(matrixCanvas);
+    }
+
+    // Lazy-init renderer
+    if (!matrixRenderer) {
+      await initBackgroundMatrix(++matrixInitGeneration);
+    }
+
+    // Guard: init may have failed and nulled canvas/renderer via error fallback
+    if (matrixCanvas && matrixRenderer) {
+      matrixCanvas.style.opacity = '1';
+    }
+  } else {
+    matrixInitGeneration++;
+    if (matrixCanvas) matrixCanvas.style.opacity = '0';
+    renderer?.setBackgroundRainConfig({ enabled: bgRainUserEnabled });
+  }
 }
 
 /* Main initialization */
@@ -468,21 +488,9 @@ async function init() {
 
       // Matrix Mode: activate background layer if saved as active
       if (data.visual && data.visual.matrixMode) {
-        matrixMode = true;
-        renderer?.setBackgroundRainConfig({ enabled: false });
-        if (renderer) renderer.clear();
+        await activateBackgroundMode('matrix');
 
-        matrixCanvas = document.createElement('canvas');
-        matrixCanvas.id = 'matrix-bg-canvas';
-        matrixCanvas.style.cssText = canvas.style.cssText;
-        matrixCanvas.style.display = 'block';
-        matrixCanvas.width = canvas.width;
-        matrixCanvas.height = canvas.height;
-        document.body.appendChild(matrixCanvas);
-
-        await initBackgroundMatrix(++matrixInitGeneration);
-
-        // Apply visual settings after matrix renderer is ready
+        // Apply saved visual settings (IPC from overlay hasn't fired yet at startup)
         if (matrixRenderer) {
           if (data.rain && data.rain.gayMode) {
             matrixRenderer.setGaytrixMode(true);
