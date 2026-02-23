@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(target_os = "windows")]
 use windows::{
-    core::GUID,
-    Win32::Foundation::{BOOL, HWND, LPARAM, RECT},
+    core::{BOOL, GUID},
+    Win32::Foundation::{HWND, LPARAM, RECT},
     Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS},
     Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED},
     Win32::UI::Shell::IVirtualDesktopManager,

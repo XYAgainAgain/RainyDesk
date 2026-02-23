@@ -122,6 +122,7 @@ window.rainydesk = {
 
   // App version (from tauri.conf.json)
   getVersion: () => getVersion(),
+  quitApp: () => invoke('quit_app'),
 
   // System integration
   getWindowsAccentColor: () => invoke<string>('get_windows_accent_color'),

@@ -183,10 +183,11 @@ class DeepenerModel {
     growlIntensity: number,
     distance: number,
     output: AudioNode,
+    arrivalDelay: number,
   ): number {
     const ctx = Tone.getContext().rawContext;
     const now = ctx.currentTime;
-    const delay = distance * 0.08;
+    const delay = arrivalDelay;
     const start = now + delay;
 
     const noise = new Tone.Noise('white');
@@ -259,12 +260,13 @@ class DeepenerModel {
 class AfterimageModel {
   trigger(
     strikeIntensity: number,
-    distance: number,
+    _distance: number,
     output: AudioNode,
+    arrivalDelay: number,
   ): number {
     const ctx = Tone.getContext().rawContext;
     const now = ctx.currentTime;
-    const delay = distance * 0.08;
+    const delay = arrivalDelay;
     const start = now + delay;
 
     const wn1 = new Tone.Noise('white');
@@ -354,10 +356,11 @@ class LightningModel {
     numStrikes: number,
     irBuffer: AudioBuffer | null,
     output: AudioNode,
+    arrivalDelay: number,
   ): number {
     const ctx = Tone.getContext().rawContext;
     const now = ctx.currentTime;
-    const baseDelay = distance * 0.08;
+    const baseDelay = arrivalDelay;
     let maxLifetime = 0;
 
     // Wet/dry crossfade: close = mostly dry, far = mostly wet (reverb)
@@ -410,33 +413,40 @@ class LightningModel {
       snapLP.frequency.value = clampFreq(2000);
       snapLP.Q.value = 0.7;
       const snapGain = ctx.createGain();
-      snapGain.gain.value = strikeIntensity * 6;
+      snapGain.gain.value = 0;
       Tone.connect(snapNoise, snapLP);
       snapLP.connect(snapGain);
       snapGain.connect(strikeOut);
       const snapDur = 0.025 + Math.random() * 0.035;
+      // 3ms attack/release ramps prevent the "burst of static" glitch quality
+      snapGain.gain.setValueAtTime(0, strikeTime);
+      snapGain.gain.linearRampToValueAtTime(strikeIntensity * 3, strikeTime + 0.003);
+      snapGain.gain.linearRampToValueAtTime(strikeIntensity * 3, strikeTime + snapDur - 0.003);
+      snapGain.gain.linearRampToValueAtTime(0, strikeTime + snapDur);
       snapNoise.start(strikeTime);
-      snapNoise.stop(strikeTime + snapDur);
+      snapNoise.stop(strikeTime + snapDur + 0.005);
 
       // Phase 2: Brown noise thump (800ms with extended sustain)
       const thumpNoise = new Tone.Noise('brown');
       const thumpLP = ctx.createBiquadFilter();
       thumpLP.type = 'lowpass';
       thumpLP.frequency.setValueAtTime(clampFreq(2000), strikeTime);
-      thumpLP.frequency.exponentialRampToValueAtTime(clampFreq(120), strikeTime + 0.8);
+      thumpLP.frequency.exponentialRampToValueAtTime(clampFreq(120), strikeTime + 1.0);
       thumpLP.Q.value = 0.5;
       const thumpEnv = ctx.createGain();
       thumpEnv.gain.value = 0;
-      thumpEnv.gain.setValueAtTime(strikeIntensity * 4, strikeTime);
-      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 2.5, strikeTime + 0.03);
-      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 2.0, strikeTime + 0.3);
-      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 1.0, strikeTime + 0.6);
-      thumpEnv.gain.exponentialRampToValueAtTime(0.01, strikeTime + 0.8);
+      // 300ms slow swell — builds the low-end presence gradually
+      thumpEnv.gain.setValueAtTime(0, strikeTime);
+      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 4, strikeTime + 0.3);
+      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 2.5, strikeTime + 0.4);
+      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 2.0, strikeTime + 0.6);
+      thumpEnv.gain.linearRampToValueAtTime(strikeIntensity * 1.0, strikeTime + 0.8);
+      thumpEnv.gain.exponentialRampToValueAtTime(0.001, strikeTime + 1.0);
       Tone.connect(thumpNoise, thumpLP);
       thumpLP.connect(thumpEnv);
       thumpEnv.connect(strikeOut);
       thumpNoise.start(strikeTime);
-      thumpNoise.stop(strikeTime + 0.85);
+      thumpNoise.stop(strikeTime + 1.05);
 
       // Phase 3: Concussive boom (60–300 Hz, 2s sustain)
       const boomNoise = new Tone.Noise('brown');
@@ -529,20 +539,20 @@ class LightningModel {
               const gainParam = fbm.parameters.get('gain');
               if (gainParam) gainParam.value = 0.5; // Pinkish spectrum
               fbm.connect(bp1);
-              setTimeout(() => { try { fbm.disconnect(); } catch {} }, (strikeDelay + bpOffset + maxDecay + 1) * 1000);
+              setTimeout(() => { try { fbm.disconnect(); } catch {} }, (baseDelay + strikeDelay + bpOffset + maxDecay + 1) * 1000);
             } catch {
               const noise = new Tone.Noise('white');
               Tone.connect(noise, bp1);
               noise.start(bpStart);
               noise.stop(bpStart + maxDecay + 0.1);
-              setTimeout(() => { try { noise.dispose(); } catch {} }, (strikeDelay + bpOffset + maxDecay + 1) * 1000);
+              setTimeout(() => { try { noise.dispose(); } catch {} }, (baseDelay + strikeDelay + bpOffset + maxDecay + 1) * 1000);
             }
           } else {
             const noise = new Tone.Noise('white');
             Tone.connect(noise, bp1);
             noise.start(bpStart);
             noise.stop(bpStart + maxDecay + 0.1);
-            setTimeout(() => { try { noise.dispose(); } catch {} }, (strikeDelay + bpOffset + maxDecay + 1) * 1000);
+            setTimeout(() => { try { noise.dispose(); } catch {} }, (baseDelay + strikeDelay + bpOffset + maxDecay + 1) * 1000);
           }
         } else {
           // Crackle: 20 short DC pulses that excite the bandpass filters
@@ -560,7 +570,7 @@ class LightningModel {
             for (const cs of pulseNodes) {
               try { cs.disconnect(); } catch {}
             }
-          }, (strikeDelay + bpOffset + maxDecay + 1) * 1000);
+          }, (baseDelay + strikeDelay + bpOffset + maxDecay + 1) * 1000);
         }
 
         bp1.connect(bp2);
@@ -571,7 +581,7 @@ class LightningModel {
           try {
             bp1.disconnect(); bp2.disconnect(); chGain.disconnect();
           } catch {}
-        }, (strikeDelay + maxDecay + 2) * 1000);
+        }, (baseDelay + strikeDelay + maxDecay + 2) * 1000);
       }
 
       // ~40% stochastic branch: extra overlapping channel pair
@@ -600,12 +610,12 @@ class LightningModel {
 
         setTimeout(() => {
           try { branchNoise.dispose(); branchBp.disconnect(); branchGain.disconnect(); } catch {}
-        }, (strikeDelay + branchDelay + bpDecay + 2) * 1000);
+        }, (baseDelay + strikeDelay + branchDelay + bpDecay + 2) * 1000);
 
         if (branchDelay + bpDecay > longestDecay) longestDecay = branchDelay + bpDecay;
       }
 
-      const strikeLifetime = strikeDelay + longestDecay + 2;
+      const strikeLifetime = baseDelay + strikeDelay + longestDecay + 2;
       setTimeout(() => {
         try {
           strikeOut.disconnect(); fbDelay.disconnect(); fbGain.disconnect();
@@ -642,12 +652,13 @@ class RumblerModel {
     rumbleIntensity: number,
     distance: number,
     output: AudioNode,
+    arrivalDelay: number,
   ): number {
     if (!this._workletReady) return 0;
 
     const ctx = Tone.getContext().rawContext;
     const now = ctx.currentTime;
-    const delay = distance * 0.08;
+    const delay = arrivalDelay;
     const start = now + delay;
 
     // Path A: fBm noise → LP sweep 1000→0Hz/12s → max(x,0) → envelope → +1 → phasor frequency
@@ -823,6 +834,7 @@ class PreStrikeCrackleModel {
     intensity: number,
     distance: number,
     output: AudioNode,
+    arrivalDelay: number,
   ): number {
     // High-freq crackle only survives atmospheric absorption within ~3 km
     if (distance >= 3) return 0;
@@ -831,7 +843,8 @@ class PreStrikeCrackleModel {
     const now = ctx.currentTime;
 
     const preRollDuration = 0.2 + Math.random() * 0.6;
-    const startTime = now;
+    // Crackle ends just as the main crack arrives
+    const startTime = now + Math.max(0, arrivalDelay - preRollDuration);
     const nodes: AudioNode[] = [];
 
     // Shared noise source — fBm for organic fractal texture, pink as fallback.
@@ -860,13 +873,18 @@ class PreStrikeCrackleModel {
     const addImpulse = (t: number, dur: number, amp: number) => {
       const hp = ctx.createBiquadFilter();
       hp.type = 'highpass';
-      hp.frequency.value = clampFreq(800 + Math.random() * 2200);
+      hp.frequency.value = clampFreq(800 + Math.random() * 1400);
       hp.Q.value = 2 + Math.random() * 3;
 
+      // Tiny ramps (1ms) prevent digital clicking from instant gain gates
+      const ramp = 0.001;
+      const safeDur = Math.max(dur, ramp * 3);
       const gate = ctx.createGain();
       gate.gain.value = 0;
-      gate.gain.setValueAtTime(amp, startTime + t);
-      gate.gain.setValueAtTime(0, startTime + t + dur);
+      gate.gain.setValueAtTime(0, startTime + t);
+      gate.gain.linearRampToValueAtTime(amp, startTime + t + ramp);
+      gate.gain.setValueAtTime(amp, startTime + t + safeDur - ramp);
+      gate.gain.linearRampToValueAtTime(0, startTime + t + safeDur);
 
       const panner = ctx.createStereoPanner();
       panner.pan.value = Math.random() * 2 - 1;
@@ -897,7 +915,7 @@ class PreStrikeCrackleModel {
         if (t >= preRollDuration) break;
 
         const progress = t / preRollDuration;
-        const impulseDur = 0.0005 + Math.random() * 0.0025;
+        const impulseDur = 0.003 + Math.random() * 0.004;
         addImpulse(t, impulseDur, intensity * (0.1 + 0.3 * progress));
         impulseCount++;
       }
@@ -909,7 +927,7 @@ class PreStrikeCrackleModel {
     const burstStart = preRollDuration - 0.1;
     for (let b = 0; b < burstCount; b++) {
       const bt = burstStart + Math.random() * 0.1;
-      const impulseDur = 0.0005 + Math.random() * 0.002;
+      const impulseDur = 0.003 + Math.random() * 0.003;
       addImpulse(bt, impulseDur, intensity * (0.3 + Math.random() * 0.2));
     }
 
@@ -918,7 +936,8 @@ class PreStrikeCrackleModel {
       toneNoise.stop(startTime + preRollDuration + 0.1);
     }
 
-    const lifetime = preRollDuration + 0.5;
+    // Account for the startTime offset — cleanup must wait for audio to finish
+    const lifetime = Math.max(0, arrivalDelay - preRollDuration) + preRollDuration + 0.5;
     setTimeout(() => {
       if (toneNoise) {
         try { toneNoise.dispose(); } catch {}
@@ -1054,13 +1073,7 @@ export class ThunderModule {
       this._panner3d.positionZ.value = this._spatialConfig.fixedDepth - (dist * 0.5);
     }
 
-    // Duck rain/wind buses during strike
-    if (this._config.sidechainEnabled && this._duckCallback) {
-      const duckAmount = dist < 2 ? 0.85 : dist < 5 ? 0.6 : 0.3;
-      const duckRelease = 1.5 + dist * 0.3;
-      console.warn(`[ThunderModule] Ducking: amount=${duckAmount}, attack=0.003s, release=${duckRelease.toFixed(1)}s`);
-      this._duckCallback(duckAmount, 0.003, duckRelease);
-    }
+    // Sidechain ducking is deferred until the thunder actually arrives (see below)
 
     // Strike count scales with storminess, capped by distance
     const storm = this._config.storminess;
@@ -1081,6 +1094,10 @@ export class ThunderModule {
 
     const distAtten = 1 / (1 + dist * 0.3);
 
+    // Randomized arrival delay — simulates sound traveling through air.
+    // At 5km: ~1.0–2.0s. At 15km: ~3.0–5.0s.
+    const arrivalDelay = dist * (0.15 + Math.random() * 0.15) + Math.random() * 0.5;
+
     // All sub-models feed into recOut → master LPF sweep → output
     const ctx = Tone.getContext().rawContext;
     const recOut = ctx.createGain();
@@ -1091,14 +1108,15 @@ export class ThunderModule {
     masterLPF.type = 'lowpass';
     const lpfStart = clampFreq(14000 / (1 + dist * 0.5));
     const sweepTime = dist < 2 ? 16.2 : clamp(16.2 - dist * 0.5, 8, 16.2);
-    masterLPF.frequency.setValueAtTime(lpfStart, ctx.currentTime);
-    masterLPF.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + sweepTime);
+    const sweepStart = ctx.currentTime + arrivalDelay;
+    masterLPF.frequency.setValueAtTime(lpfStart, sweepStart);
+    masterLPF.frequency.exponentialRampToValueAtTime(80, sweepStart + sweepTime);
     masterLPF.Q.value = 0.5;
 
     // Per-strike volume variation: ×0.5–1.5 for natural loudness range
     const strikeVolume = 0.5 + Math.random() * 1.0;
     const masterScale = ctx.createGain();
-    masterScale.gain.value = 3.0 * strikeVolume;
+    masterScale.gain.value = 2.0 * strikeVolume;
 
     recOut.connect(masterLPF);
     masterLPF.connect(masterScale);
@@ -1107,32 +1125,42 @@ export class ThunderModule {
     let maxLifetime = 0;
 
     // Deepener always fires (sub-bass travels farthest)
-    const deepLife = this._deepener.trigger(gi * distAtten, dist, recOut);
+    const deepLife = this._deepener.trigger(gi * distAtten, dist, recOut, arrivalDelay);
     if (deepLife > maxLifetime) maxLifetime = deepLife;
 
     // Afterimage: gain increases with distance (reflections more prominent far away)
     const afterGain = dist > 5 ? 1.0 : 0.6 + (dist / 5) * 0.4;
-    const afterLife = this._afterimage.trigger(si * distAtten * afterGain, dist, recOut);
+    const afterLife = this._afterimage.trigger(si * distAtten * afterGain, dist, recOut, arrivalDelay);
     if (afterLife > maxLifetime) maxLifetime = afterLife;
 
     // Rumbler: <= 10 km
     if (dist <= 10) {
-      const rumbLife = this._rumbler.trigger(ri * distAtten, dist, recOut);
+      const rumbLife = this._rumbler.trigger(ri * distAtten, dist, recOut, arrivalDelay);
       if (rumbLife > maxLifetime) maxLifetime = rumbLife;
     }
 
     // Pre-strike crackle: < 3 km only (high-freq content doesn't survive farther)
     if (dist < 3) {
-      this._crackle.trigger(si * distAtten, dist, recOut);
+      this._crackle.trigger(si * distAtten, dist, recOut, arrivalDelay);
     }
 
     // Lightning: <= 5 km (attenuated 2–5 km, full below 2 km, min 20%)
     if (dist <= 5) {
       const lightAtten = dist < 2 ? 1.0 : Math.max(0.2, 1.0 - (dist - 2) / 4);
       const lightLife = this._lightning.trigger(
-        si * lightAtten, dist, numStrikes, irBuffer, recOut,
+        si * lightAtten, dist, numStrikes, irBuffer, recOut, arrivalDelay,
       );
       if (lightLife > maxLifetime) maxLifetime = lightLife;
+    }
+
+    // Duck rain/wind buses when the thunder actually arrives
+    if (this._config.sidechainEnabled && this._duckCallback) {
+      const duckAmount = dist < 2 ? 0.85 : dist < 5 ? 0.6 : 0.3;
+      const duckRelease = 1.5 + dist * 0.3;
+      const duckTimer = setTimeout(() => {
+        this._duckCallback?.(duckAmount, 0.003, duckRelease);
+      }, arrivalDelay * 1000);
+      this._disposeTimeouts.push(duckTimer);
     }
 
     const cleanupTime = maxLifetime + 1;
@@ -1147,7 +1175,8 @@ export class ThunderModule {
 
     console.warn(
       `[ThunderModule] Strike: ${dist.toFixed(1)}km, ${numStrikes} strikes, ` +
-      `vol=${strikeVolume.toFixed(2)}, env=${this._config.environment}, IR=${irBuffer ? 'loaded' : 'none'}`,
+      `delay=${arrivalDelay.toFixed(1)}s, vol=${strikeVolume.toFixed(2)}, ` +
+      `env=${this._config.environment}, IR=${irBuffer ? 'loaded' : 'none'}`,
     );
   }
 

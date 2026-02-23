@@ -7,6 +7,9 @@
 
 import type * as Tone from 'tone';
 
+// Audio Channel Tiers (performance scaling)
+export type AudioChannelTier = 1 | 2 | 3; // 1=Lite, 2=Standard, 3=Full
+
 // Voice Pool Types
 
 /** Synth types that can be used in voice pools */
@@ -402,6 +405,16 @@ export interface ThunderModuleConfig {
   sidechainRelease: number;
 }
 
+// Texture Layer Types (looping studio-recorded surface samples)
+
+export interface TextureLayerConfig {
+  enabled: boolean;
+  volume: number;          // 0–100
+  intensity: number;       // 1–100
+  intensityLinked: boolean;
+  surface: string;         // e.g. 'generic', 'metal', 'forest'
+}
+
 export interface IRManifest {
   pools: Record<string, { label: string; irs: string[] }>;
   default_pool: string;
@@ -616,6 +629,8 @@ export interface AudioConfigV2 {
   wind: WindModuleConfig;
   /** Thunder module */
   thunder: ThunderModuleConfig;
+  /** Texture layer (looping surface samples) */
+  texture: TextureLayerConfig;
   /** Matrix/digital rain module */
   matrix: MatrixModuleConfig;
   /** Bus routing and SFX */

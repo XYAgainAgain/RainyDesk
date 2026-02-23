@@ -16,6 +16,12 @@ pub fn log_message(message: String) {
 }
 
 #[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    log::info!("Quit requested via panel");
+    app.exit(0);
+}
+
+#[tauri::command]
 pub fn get_config(state: tauri::State<AppState>) -> Result<serde_json::Value, String> {
     let config = state.config.lock().map_err(|e| format!("Config lock poisoned: {}", e))?;
     Ok(config.clone())

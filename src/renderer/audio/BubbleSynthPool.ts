@@ -40,6 +40,7 @@ const DEFAULT_BUBBLE_CONFIG: BubbleSynthConfig = {
 export class BubbleSynthPool extends VoicePool<Tone.Synth> {
   private _synthConfig: BubbleSynthConfig;
   private _panners: Map<number, Tone.Panner3D> = new Map();
+  private _synthToId: Map<Tone.Synth, number> = new Map();
   private _releaseEventIds: number[] = [];
   private _output: Tone.Gain;
   private _spatialConfig: SpatialConfig = {
@@ -92,7 +93,19 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
     };
 
     this._panners.set(voice.id, panner);
+    this._synthToId.set(synth, voice.id);
     return voice;
+  }
+
+  /** Clean up side-nodes (panner) when a voice is shrunk from the pool */
+  protected override disposeSynth(synth: Tone.Synth): void {
+    const id = this._synthToId.get(synth);
+    if (id !== undefined) {
+      const panner = this._panners.get(id);
+      if (panner) { panner.dispose(); this._panners.delete(id); }
+      this._synthToId.delete(synth);
+    }
+    super.disposeSynth(synth);
   }
 
   /**
@@ -189,6 +202,7 @@ export class BubbleSynthPool extends VoicePool<Tone.Synth> {
       panner.dispose();
     }
     this._panners.clear();
+    this._synthToId.clear();
     this._output.dispose();
     super.dispose();
   }

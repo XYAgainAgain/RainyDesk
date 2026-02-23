@@ -137,10 +137,10 @@ pub(crate) fn create_default_rainscape() -> serde_json::Value {
             "muted": false,
             "rain": {
                 "masterVolume": -6,
-                "rainIntensity": 50,
-                "impactPitch": 50,
-                "impactPitchOsc": 0,
-                "windMasterGain": -12
+                "rainIntensity": 100,
+                "impactPitch": 60,
+                "impactPitchOsc": 15,
+                "windMasterGain": -13.2
             },
             "thunder": {
                 "enabled": false,
@@ -156,6 +156,13 @@ pub(crate) fn create_default_rainscape() -> serde_json::Value {
                 "bass": -9,
                 "collision": -21.6,
                 "drone": -17.4
+            },
+            "texture": {
+                "enabled": false,
+                "volume": 70,
+                "intensity": 50,
+                "intensityLinked": true,
+                "surface": "generic"
             }
         },
         "visual": {
@@ -172,7 +179,8 @@ pub(crate) fn create_default_rainscape() -> serde_json::Value {
             "maximizedMuffling": false,
             "fullscreenDetection": true,
             "audioMuffling": true,
-            "windowCollision": true
+            "windowCollision": true,
+            "audioChannels": 3
         }
     })
 }

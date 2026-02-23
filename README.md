@@ -7,7 +7,7 @@
 
 Ever wish it could rain on your desktop? Now it can, and you can use windows as umbrellas. ☔
 
-**RainyDesk** is a peaceful desktop rain simulator that overlays semi-realistic pixelated rain on all your monitors. It's transparent, click-through, and never gets in your way — just some nice moist ambiance while you work, game, write, vibe, or relax.
+**RainyDesk** is a peaceful desktop rain simulator that overlays semi-realistic pixelated rain on all your monitors. It's transparent, click-through, and never gets in your way — just some nice moist ambiance while you work, game, write, relax, blaze, or just vibe.
 
 ### What does it do? ⛈
 It makes it rain on your screen! That's pretty much it! Physics-based raindrops fall across all your monitors, splash when they hit stuff, and sound like actual rain. You can adjust how heavy the rain is, how whooshy the wind is, how everything sounds, and way, waaaay more.
@@ -23,7 +23,7 @@ It makes it rain on your screen! That's pretty much it! Physics-based raindrops 
 Sometimes you just want it to rain. I know I sure do. This ~~scratches~~ splashes that itch.
 
 ### How do I use this? 🌂
-Download the installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases), double-click to install, and run it like any other app. No admin required! Windows might show a SmartScreen warning because the app isn't code-signed yet (costs mad ca$h) — just click **"More info"** then **"Run anyway."**
+Download the latest installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases), double-click to install, and run it like any other app. No admin required! Windows might show a SmartScreen warning because the app isn't code-signed yet (costs mad ca$h) — just click **"More info"** then **"Run anyway."**
 
 Once running, RainyDesk sits in your system tray. Left-click the tray icon to open the Rainscaper panel or right-click to open a small context menu:
 - Pause/Resume
@@ -34,7 +34,7 @@ Once running, RainyDesk sits in your system tray. Left-click the tray icon to op
 
 The Rainscaper panel is a little more complicated, but you'll figure it out quickly, I hope. Later on, I'll be adding a Rainscaper Studio for the real rain-heads.
 
-I've included a straightforward guide in the app itself; just click the **?** button at the top, or the version number in the bottom right of the panel to find the **Help** window. That same menu has an **Autostart** toggle so RainyDesk can launch on login, and a link to RainyDesk's GitHub repository. Auto-updates coming soon!
+I've included a straightforward guide in the app itself; just click the **?** button at the top, or the version number in the bottom right of the panel to find the **Help** window. That same menu has links to **GitHub** and **Ko-fi**, an **Autostart** toggle, an **Update** checker, and a **Quit** button. *Auto-updates coming soon!*
 
 #### Installation
 Grab the latest `.exe` installer from [Releases](https://github.com/XYAgainAgain/RainyDesk/releases) (check the Assets section at the bottom) and follow the prompts. It installs to your user profile (no admin elevation needed) and adds a Start Menu shortcut.
@@ -49,7 +49,7 @@ npm start
 #### Requirements
 - Windows 10/11 (Linux support coming eventually, X11 window manager only)
 - An audio device such as headphones, earbuds, or speakers (preferably with surround sound)
-- ~50 MB of free storage space
+- ~70 MB of free storage space
 - At least one monitor lmao
 
 ### How does this work? ☔
@@ -84,24 +84,24 @@ RainyDesk is in active development and I'm really not rushing it because it's my
 - **High refresh rate** support (15–360 Hz) with adjustable FPS limiter
 - **Window detection** so that rain flows around windows, hides on maximized/fullscreen screens, and muffles audio (all toggleable)
 - **Rainscaper control panel** with 12 default + 12 custom theme slots (with a theme editor!), 5 tabs, oscillator knobs for natural drift, performance presets, and way too many sliders
-- **Procedural audio synthesis** for impacts, wind, background noise, and more — with tunable pitch and per-mode settings
-- **Background rain sheets** — atmospheric layers behind your windows; really sells the effect!
-- **Configurable rendering** — 4 render scale tiers, 4 grid scale tiers, splash size chain-linking, and a gentle fade-in on startup
+- **Procedural audio synthesis** — raindrop impacts, wind layers, background rain sheet, and looping surface textures (5 for now, more later: generic, concrete, forest, metal, umbrella) with tunable pitch and per-mode settings
+- **Thunder!** ⛈ Relatively decent procedural storm simulation with storminess, distance, and environment controls
+- **Audio Channels** with a 3-tier performance slider (Lite/Standard/Full) so lower-end hardware can still enjoy rain without the CPU sweating
+- **Background rain sheets** are atmospheric layers behind your windows; really sells the effect!
+- **Configurable rendering** with 4 render scale tiers, 4 grid scale tiers, splash size chain-linking, and a gentle fade-in on startup
 - **Pick any rain color** you want, or turn on **Gay Mode** for rainbow cycling 🏳️‍🌈
-- **Matrix Mode** complete with a sweet synth tune that the rain plays automagically 😎
+- **Matrix Mode** (screen-accurate) with a sweet synth tune that the rain plays automagically 😎
 - **Start with Windows** toggle, monitor hot-swap detection, and a built-in help guide
 - **Per-mode settings** — Rain Mode and Matrix Mode save independent `.rain` configurations
 
 **What's Coming:**
 
-- ***Thunder synth!*** Because we *gotta* have the booms! ⛈
 - **Rainscape preset system** to save and load your perfect rainy day vibes as `.rain` files like `TinRoof.rain` & `Forest.rain`
-- **7 audio materials** which will be Glass, Metal, Wood, Concrete, Fabric, Foliage, & Water (each sounding different!)
-- **Singing wind** with Aeolian tones, formant selection, & synthesized psithurism
+- **Singing wind** with Aeolian tones, formant selection, & synthesized psithurism (Google it lol)
 - **3D spatial audio in the works!** Full 5.1/7.1 surround sound support coming soon (like Dolby Atmos for Headphones)
 - **Non-musical Matrix mode** for when you just want quiet digital rain without the synth tune
-- **Liquid glass panel UI** (with an emphasis on the liquid) frosted glass with real refraction distortion
-- More visual effects (adjustable trails, droplet styles)
+- **Liquid glass panel UI** (with an emphasis on the liquid) with proper refraction & distortion
+- More visual effects (adjustable trails, droplet styles, probably other stuff)
 - Linux support (I pinkie promise!) and maybe MacOS later if my Mac Mini behaves
 - Snow? 🌨👀
 
@@ -115,6 +115,7 @@ RainyDesk is built with **Tauri** (Rust backend + WebView2), **Pixi.js** v8 rend
 - Void mask treats gaps between/around monitors as solid walls; calculated automatically on start
 - Hybrid physics: Lagrangian particles (rain) + Eulerian grid (puddles)
 - Cellular automata for natural water flow ([Noita](https://noitagame.com/)-style!)
+- Audio performance tiers (Lite/Standard/Full) scale voice counts and module activation for different hardware
 - Spatial audio: HRTF binaural positioning wired up (temporarily disabled while being tweaked & tuned; proper 5.1/7.1 coming later, I swear)
 - The `.rain` files are just fancy `.json` files ssshh don't tell anyone :)
 

@@ -8,7 +8,9 @@ export function showTooltip(el: HTMLElement, text: string): HTMLElement {
   document.body.appendChild(tip);
   const rect = el.getBoundingClientRect();
   const tipRect = tip.getBoundingClientRect();
-  tip.style.left = `${rect.left + rect.width / 2 - tipRect.width / 2}px`;
+  // Clamp horizontally so tooltip doesn't clip outside the viewport
+  const idealLeft = rect.left + rect.width / 2 - tipRect.width / 2;
+  tip.style.left = `${Math.max(4, Math.min(idealLeft, window.innerWidth - tipRect.width - 4))}px`;
   tip.style.top = `${rect.top - tipRect.height - 6}px`;
   return tip;
 }
@@ -511,4 +513,141 @@ export function RotaryKnob(config: RotaryKnobConfig): HTMLElement {
   });
 
   return knob;
+}
+
+// Custom Dropdown (replaces native <select> for consistent theming)
+
+export interface DropdownConfig {
+  id?: string;
+  label: string;
+  options: { label: string; value: string }[];
+  value: string;
+  onChange: (value: string) => void;
+}
+
+export function Dropdown(config: DropdownConfig): HTMLElement {
+  const { id, label, options, value, onChange } = config;
+
+  const row = document.createElement('div');
+  row.className = 'control-row';
+  if (id) row.dataset.dropdownId = id;
+
+  const labelContainer = document.createElement('div');
+  labelContainer.className = 'control-label-container';
+  const labelEl = document.createElement('span');
+  labelEl.className = 'control-label';
+  labelEl.textContent = label;
+  labelContainer.appendChild(labelEl);
+
+  const dropdownContainer = document.createElement('div');
+  dropdownContainer.className = 'slider-container';
+  dropdownContainer.style.position = 'relative';
+
+  const trigger = document.createElement('button');
+  trigger.className = 'dropdown-trigger';
+  trigger.type = 'button';
+
+  let currentValue = value;
+  const currentOption = options.find(o => o.value === value);
+  trigger.textContent = currentOption?.label ?? value;
+
+  let popup: HTMLElement | null = null;
+  let selectedIndex = options.findIndex(o => o.value === value);
+  let outsideHandlerRef: ((e: MouseEvent) => void) | null = null;
+  let scrollHandlerRef: (() => void) | null = null;
+
+  const closePopup = () => {
+    if (popup) { popup.remove(); popup = null; }
+    if (outsideHandlerRef) {
+      document.removeEventListener('mousedown', outsideHandlerRef);
+      outsideHandlerRef = null;
+    }
+    if (scrollHandlerRef) {
+      const scrollParent = trigger.closest('.panel-content');
+      scrollParent?.removeEventListener('scroll', scrollHandlerRef);
+      scrollHandlerRef = null;
+    }
+    trigger.classList.remove('open');
+  };
+
+  const selectOption = (opt: { label: string; value: string }, idx: number) => {
+    currentValue = opt.value;
+    selectedIndex = idx;
+    trigger.textContent = opt.label;
+    closePopup();
+    onChange(opt.value);
+  };
+
+  const openPopup = () => {
+    if (popup) { closePopup(); return; }
+
+    trigger.classList.add('open');
+    popup = document.createElement('div');
+    popup.className = 'dropdown-popup';
+
+    options.forEach((opt, idx) => {
+      const item = document.createElement('div');
+      item.className = 'dropdown-option';
+      if (opt.value === currentValue) item.classList.add('selected');
+      item.textContent = opt.label;
+      item.onclick = (e) => { e.stopPropagation(); selectOption(opt, idx); };
+      popup!.appendChild(item);
+    });
+
+    // Portal to body to escape overflow:hidden ancestors
+    document.body.appendChild(popup);
+    const rect = trigger.getBoundingClientRect();
+    const popupHeight = popup.getBoundingClientRect().height;
+    const fitsBelow = rect.bottom + 2 + popupHeight <= window.innerHeight;
+    popup.style.position = 'fixed';
+    popup.style.left = `${rect.left}px`;
+    popup.style.top = fitsBelow ? `${rect.bottom + 2}px` : `${rect.top - popupHeight - 2}px`;
+    popup.style.width = `${rect.width}px`;
+
+    // Close on outside click or scroll (next tick to avoid immediate close)
+    requestAnimationFrame(() => {
+      outsideHandlerRef = (e: MouseEvent) => {
+        if (popup && !popup.contains(e.target as Node) && !trigger.contains(e.target as Node)) {
+          closePopup();
+        }
+      };
+      document.addEventListener('mousedown', outsideHandlerRef);
+
+      scrollHandlerRef = () => closePopup();
+      const scrollParent = trigger.closest('.panel-content');
+      scrollParent?.addEventListener('scroll', scrollHandlerRef, { passive: true });
+    });
+  };
+
+  trigger.onclick = (e) => { e.stopPropagation(); openPopup(); };
+
+  // Keyboard navigation
+  trigger.onkeydown = (e) => {
+    if (e.key === 'Escape') { closePopup(); return; }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPopup(); return; }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.min(selectedIndex + 1, options.length - 1);
+      selectOption(options[next]!, next);
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = Math.max(selectedIndex - 1, 0);
+      selectOption(options[prev]!, prev);
+    }
+  };
+
+  dropdownContainer.appendChild(trigger);
+  row.appendChild(labelContainer);
+  row.appendChild(dropdownContainer);
+
+  // External value setter (avoids firing onChange)
+  (row as unknown as { setValue: (v: string) => void }).setValue = (v: string) => {
+    currentValue = v;
+    selectedIndex = options.findIndex(o => o.value === v);
+    const opt = options.find(o => o.value === v);
+    trigger.textContent = opt?.label ?? v;
+  };
+
+  return row;
 }

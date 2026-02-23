@@ -342,7 +342,7 @@ pub(crate) fn create_mega_background(
     unsafe {
         let _ = SetWindowPos(
             HWND(hwnd.0),
-            HWND_BOTTOM,
+            Some(HWND_BOTTOM),
             0, 0, 0, 0,
             SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE
         );

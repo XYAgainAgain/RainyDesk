@@ -16,9 +16,11 @@ import { AudioBus } from './AudioBus';
 import { WindModule } from './WindModule';
 import { ThunderModule } from './ThunderModule';
 import { MatrixModule } from './MatrixModule';
+import { TextureLayer } from './TextureLayer';
 import type {
   AudioSystemState,
   AudioSystemStats,
+  AudioChannelTier,
   RainscapeConfig,
   RainscapeConfigV2,
   CollisionEvent,
@@ -63,6 +65,7 @@ export class AudioSystem {
   private _windModule: WindModule | null = null;
   private _thunderModule: ThunderModule | null = null;
   private _matrixModule: MatrixModule | null = null;
+  private _textureLayer: TextureLayer | null = null;
 
   // v2.0 Bus routing
   private _rainBus: AudioBus | null = null;
@@ -93,6 +96,9 @@ export class AudioSystem {
     worldScale: 5,
     fixedDepth: -2,
   };
+
+  // Audio channel tier (performance scaling)
+  private _audioTier: AudioChannelTier = 3;
 
   // State tracking
   private _isMuted = false;
@@ -237,6 +243,7 @@ export class AudioSystem {
       this._windBus?.duck(amount * 0.5, attackSec, releaseSec);
     });
     this._matrixModule = new MatrixModule();
+    this._textureLayer = new TextureLayer();
   }
 
   private async initWorklets(): Promise<void> {
@@ -254,7 +261,7 @@ export class AudioSystem {
 
   private connectAudioGraph(): void {
     if (!this._impactPool || !this._bubblePool || !this._sheetLayer) return;
-    if (!this._windModule || !this._thunderModule || !this._matrixModule) return;
+    if (!this._windModule || !this._thunderModule || !this._matrixModule || !this._textureLayer) return;
     if (!this._rainBus || !this._windBus || !this._thunderBus || !this._matrixBus) return;
     if (!this._masterReverb || !this._masterDelay || !this._masterLimiter) return;
     if (!this._muffleFilter || !this._muffleGain || !this._masterGain) return;
@@ -262,11 +269,10 @@ export class AudioSystem {
     // Connect rain sources to rain bus
     this._impactPool.connect(this._rainBus.input);
     this._bubblePool.connect(this._rainBus.input);
-    // SheetLayer bypasses rain bus — connects directly to master limiter.
-    // The rain bus compressor (threshold -18, ratio 3) permanently squashes
-    // continuous noise while letting transient impacts through. Bypassing
-    // gives the sheet layer its own clean signal path to the limiter.
+    // SheetLayer and TextureLayer bypass the rain bus (own volume controls, continuous audio)
     this._sheetLayer.connect(this._masterLimiter);
+    // Limiter.input → Compressor, Compressor.input → raw DynamicsCompressorNode
+    this._textureLayer.output.connect((this._masterLimiter as any).input.input);
 
     // Connect modules to their buses
     this._windModule.connect(this._windBus.input);
@@ -344,7 +350,9 @@ export class AudioSystem {
       this._sheetLayer?.stop();
     } else {
       this._sheetLayer?.start();
-      this._windModule?.start();
+      // Wind requires tier 2+
+      if (this._audioTier >= 2) this._windModule?.start();
+      else this._windModule?.stop();
       // Explicitly stop matrix-mode layers
       this._matrixModule?.stop();
     }
@@ -378,6 +386,7 @@ export class AudioSystem {
     this._windModule?.stop();
     this._thunderModule?.stopAuto();
     this._matrixModule?.stop();
+    this._textureLayer?.setEnabled(false);
   }
 
   /** Process a collision event from Matter.js. */
@@ -402,9 +411,6 @@ export class AudioSystem {
     // Trigger impact sound (always)
     const impactVoice = this._impactPool.trigger(params);
     if (!impactVoice) this._droppedCollisions++;
-
-    // Trigger bubble sound (probabilistic)
-    this._bubblePool.trigger(params);
 
     // If matrix mode is enabled, also trigger matrix drops
     if (this._matrixModeEnabled && this._matrixModule) {
@@ -499,6 +505,47 @@ export class AudioSystem {
    */
   triggerMatrixDrop(): void {
     this._matrixModule?.triggerDrop(0.5, 0.7);
+  }
+
+  // Audio Channel Tiers
+
+  /**
+   * Set audio processing tier for CPU scaling.
+   * Tier 1 (Lite): 4 impact voices, sheet + texture
+   * Tier 2 (Standard): 8 impact voices, sheet + texture + wind
+   * Tier 3 (Full): 12 impact voices, all modules including thunder
+   */
+  setAudioTier(tier: AudioChannelTier): void {
+    this._audioTier = tier;
+
+    // Resize impact pool
+    const impactSizes: Record<AudioChannelTier, number> = { 1: 4, 2: 8, 3: 12 };
+    this._impactPool?.resize(impactSizes[tier]);
+
+    // Wind module: off for Lite, on for Standard+Full
+    if (this._windModule) {
+      if (tier === 1) {
+        this._windModule.stop();
+      } else if (this._state === 'playing' && !this._matrixModeEnabled) {
+        this._windModule.start();
+      }
+    }
+
+    // Thunder: only Full tier
+    if (tier < 3) {
+      this._thunderModule?.stopAuto();
+    } else if (this._thunderModule && this._state === 'playing' && !this._matrixModeEnabled) {
+      // Re-enable thunder if storminess > 0 and we just upgraded to Full
+      if (this._thunderModule.getConfig().storminess > 0) this._thunderModule.startAuto();
+    }
+
+    // Texture layer: available on all tiers (CPU-light, fills sonic gap on Lite)
+
+    console.log(`[AudioSystem] Audio tier set to ${tier} (${['', 'Lite', 'Standard', 'Full'][tier]})`);
+  }
+
+  getAudioTier(): AudioChannelTier {
+    return this._audioTier;
   }
 
   // Bus Controls
@@ -807,6 +854,16 @@ export class AudioSystem {
       this._matrixModule?.updateConfig(config.audio.matrix);
     }
 
+    // Texture layer
+    if (config.audio.texture && this._textureLayer) {
+      const tex = config.audio.texture;
+      if (tex.surface !== undefined) this._textureLayer.setSurface(tex.surface);
+      if (tex.volume !== undefined) this._textureLayer.setVolume(tex.volume);
+      if (tex.intensity !== undefined) this._textureLayer.setIntensity(tex.intensity);
+      if (tex.intensityLinked !== undefined) this._textureLayer.setIntensityLinked(tex.intensityLinked);
+      if (tex.enabled !== undefined) this._textureLayer.setEnabled(tex.enabled);
+    }
+
     // Bus routing (SFX config)
     if (config.audio.sfx) {
       if (config.audio.sfx.rainBus) this._rainBus?.updateConfig(config.audio.sfx.rainBus);
@@ -954,6 +1011,8 @@ export class AudioSystem {
           this._config.enableVoiceStealing = enabled;
           this._impactPool?.setVoiceStealing(enabled);
           this._bubblePool?.setVoiceStealing(enabled);
+        } else if (sysKey === 'audioChannels') {
+          this.setAudioTier(Number(value) as AudioChannelTier);
         }
         break;
       }
@@ -974,7 +1033,8 @@ export class AudioSystem {
         if (thunderKey === 'storminess') {
           const storm = Number(value);
           this._thunderModule?.setStorminess(storm);
-          if (storm > 0) this._thunderModule?.startAuto();
+          // Only auto-schedule thunder on Full tier
+          if (storm > 0 && this._audioTier >= 3) this._thunderModule?.startAuto();
           else this._thunderModule?.stopAuto();
         } else if (thunderKey === 'distance') {
           this._thunderModule?.setDistance(Number(value));
@@ -986,7 +1046,7 @@ export class AudioSystem {
           // Backward compat: boolean → storminess
           const s = value ? 30 : 0;
           this._thunderModule?.setStorminess(s);
-          if (s > 0) this._thunderModule?.startAuto();
+          if (s > 0 && this._audioTier >= 3) this._thunderModule?.startAuto();
           else this._thunderModule?.stopAuto();
         } else if (thunderKey) {
           this._thunderModule?.updateConfig({ [thunderKey]: value } as Partial<ThunderModuleConfig>);
@@ -1000,6 +1060,26 @@ export class AudioSystem {
           this._matrixModule?.setMasterGain(Number(value));
         } else if (matrixKey) {
           this._matrixModule?.updateConfig({ [matrixKey]: value } as Partial<MatrixModuleConfig>);
+        }
+        break;
+      }
+
+      case 'texture': {
+        const textureKey = getPart(1);
+        if (!textureKey || !this._textureLayer) break;
+
+        if (textureKey === 'enabled') {
+          this._textureLayer.setEnabled(Boolean(value)).catch(err =>
+            console.warn('[AudioSystem] TextureLayer enable failed:', err)
+          );
+        } else if (textureKey === 'volume') {
+          this._textureLayer.setVolume(Number(value));
+        } else if (textureKey === 'intensity') {
+          this._textureLayer.setIntensity(Number(value));
+        } else if (textureKey === 'intensityLinked') {
+          this._textureLayer.setIntensityLinked(Boolean(value));
+        } else if (textureKey === 'surface') {
+          this._textureLayer.setSurface(String(value));
         }
         break;
       }
@@ -1076,6 +1156,10 @@ export class AudioSystem {
     return this._matrixModule;
   }
 
+  getTextureLayer(): TextureLayer | null {
+    return this._textureLayer;
+  }
+
   /** Get the entry point of the master chain (limiter) for external audio routing */
   getMasterInput(): Tone.ToneAudioNode | null {
     return this._masterLimiter;
@@ -1143,6 +1227,7 @@ export class AudioSystem {
     this._windModule?.dispose();
     this._thunderModule?.dispose();
     this._matrixModule?.dispose();
+    this._textureLayer?.dispose();
 
     // Dispose buses
     this._rainBus?.dispose();
@@ -1167,6 +1252,7 @@ export class AudioSystem {
     this._windModule = null;
     this._thunderModule = null;
     this._matrixModule = null;
+    this._textureLayer = null;
     this._rainBus = null;
     this._windBus = null;
     this._thunderBus = null;

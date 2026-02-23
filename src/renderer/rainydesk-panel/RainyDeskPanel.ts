@@ -1,6 +1,6 @@
 /* Main panel class — standalone Rainscaper window UI */
 
-import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, updateSliderValue, showTooltip, hideTooltip } from './components';
+import { Slider, Toggle, ColorPicker, TriToggle, RotaryKnob, Dropdown, updateSliderValue, showTooltip, hideTooltip } from './components';
 import { applyTheme, applyCustomTheme, generateRandomTheme, getRandomThemeName, DEFAULT_THEME_NAMES, clearCustomFonts, deriveThemeColors } from './themes';
 import type { CustomTheme, UserThemesFile } from './types';
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from '@tauri-apps/plugin-autostart';
@@ -62,8 +62,6 @@ interface PanelState {
   masterVolume: number;
   rainIntensity: number;
   sheetVolume: number;
-  ambience: number;
-  bubbleSound: number;
   thunderEnabled: boolean;
   thunderStorminess: number;
   thunderDistance: number;
@@ -71,6 +69,12 @@ interface PanelState {
   thunderStorminessOsc: number;
   thunderDistanceOsc: number;
   windSound: number;
+  // Texture layer
+  textureEnabled: boolean;
+  textureVolume: number;
+  textureIntensity: number;
+  textureIntensityLinked: boolean;
+  textureSurface: string;
   // Matrix Mode audio (E1) — percentages that map to dB via (v/100*42)-30
   matrixBassVolume: number;       // Default 50% = -9 dB
   matrixCollisionVolume: number;  // Default 20% = -21.6 dB
@@ -116,6 +120,8 @@ interface PanelState {
   windowCollision: boolean;
   // Spatial audio
   spatialAudio: boolean;
+  // Audio channels tier (1=Lite, 2=Standard, 3=Full)
+  audioChannels: number;
   // Help window state
   helpWindowOpen: boolean;
   // App status
@@ -273,17 +279,21 @@ export class RainyDeskPanel {
       dropSize: 4,
       // Audio
       masterVolume: 50,
-      rainIntensity: 50,
-      sheetVolume: 35,
-      ambience: 30,
-      bubbleSound: 30,
+      rainIntensity: 100,
+      sheetVolume: 30,
       thunderEnabled: false,
       thunderStorminess: 50,
       thunderDistance: 5.0,
       thunderEnvironment: 'forest',
       thunderStorminessOsc: 0,
       thunderDistanceOsc: 0,
-      windSound: 20,
+      windSound: 30,
+      // Texture layer
+      textureEnabled: false,
+      textureVolume: 70,
+      textureIntensity: 50,
+      textureIntensityLinked: true,
+      textureSurface: 'generic',
       // Matrix Mode audio (E1) — percentages matching GlitchSynth default dB values
       matrixBassVolume: 50,       // -9 dB
       matrixCollisionVolume: 20,  // -21.6 dB
@@ -305,8 +315,8 @@ export class RainyDeskPanel {
       // FPS Limiter
       fpsLimit: 0,
       // Impact pitch
-      impactPitch: 50,
-      impactPitchOsc: 0,
+      impactPitch: 60,
+      impactPitchOsc: 15,
       // Oscillation knobs
       windOsc: 0,
       intensityOsc: 0,
@@ -329,6 +339,8 @@ export class RainyDeskPanel {
       windowCollision: true,
       // Spatial audio
       spatialAudio: false,
+      // Audio channels tier
+      audioChannels: 3,
       // Help window state
       helpWindowOpen: false,
       // App status
@@ -575,6 +587,7 @@ export class RainyDeskPanel {
         audioMuffling: system.audioMuffling,
         windowCollision: system.windowCollision,
         spatialAudio: system.spatialAudio,
+        audioChannels: system.audioChannels,
       },
     };
   }
@@ -687,6 +700,16 @@ export class RainyDeskPanel {
           this.state.matrixDroneVolume = Math.round(Math.max(0, Math.min(100, ((am.drone as number) + 30) / 42 * 100)));
         }
       }
+
+      // Texture layer
+      if (audio.texture && typeof audio.texture === 'object') {
+        const tex = audio.texture as Record<string, unknown>;
+        if (typeof tex.enabled === 'boolean') this.state.textureEnabled = tex.enabled;
+        if (typeof tex.volume === 'number') this.state.textureVolume = tex.volume;
+        if (typeof tex.intensity === 'number') this.state.textureIntensity = tex.intensity;
+        if (typeof tex.intensityLinked === 'boolean') this.state.textureIntensityLinked = tex.intensityLinked;
+        if (typeof tex.surface === 'string') this.state.textureSurface = tex.surface;
+      }
     }
 
     // Visual settings (v2: only background + mode toggle)
@@ -728,6 +751,7 @@ export class RainyDeskPanel {
         this.state.renderScalePending = sys.renderScale;
       }
       if (typeof sys.spatialAudio === 'boolean') this.state.spatialAudio = sys.spatialAudio;
+      if (typeof sys.audioChannels === 'number') this.state.audioChannels = sys.audioChannels;
     }
   }
 
@@ -736,6 +760,10 @@ export class RainyDeskPanel {
     if (path === 'physics.intensity' && typeof value === 'number') {
       this.state.intensity = value;
       updateSliderValue(this.root, 'intensity', value);
+      if (this.state.textureIntensityLinked) {
+        this.state.textureIntensity = value;
+        updateSliderValue(this.root, 'textureIntensity', value);
+      }
     } else if (path === 'physics.wind' && typeof value === 'number') {
       this.state.wind = value;
       updateSliderValue(this.root, 'wind', value);
@@ -1148,6 +1176,10 @@ export class RainyDeskPanel {
           this.state.intensity = v;
           window.rainydesk.updateRainscapeParam('physics.intensity', v);
           this.updateFooterStatus();
+          if (this.state.textureIntensityLinked) {
+            this.state.textureIntensity = v;
+            updateSliderValue(this.root, 'textureIntensity', v);
+          }
         },
       })
     );
@@ -2042,7 +2074,7 @@ export class RainyDeskPanel {
     container.appendChild(
       Slider({
         id: 'dropMass',
-        label: 'Max. Drop Mass',
+        label: 'Droplet Mass',
         matrixLabel: 'String Length',
         value: this.state.dropSize,
         min: 1,
@@ -2171,12 +2203,12 @@ export class RainyDeskPanel {
     rainAudioSliders.appendChild(
       Slider({
         id: 'impactSound',
-        label: 'Impact Sound',
+        label: 'Impact Volume',
         value: this.state.rainIntensity,
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 50,
+        defaultValue: 100,
         onChange: (v) => {
           this.state.rainIntensity = v;
           window.rainydesk.updateRainscapeParam('audio.rainIntensity', v);
@@ -2206,7 +2238,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 50,
+        defaultValue: 60,
         extraElement: impactPitchOscKnob,
         onChange: (v) => {
           this.state.impactPitch = v;
@@ -2237,7 +2269,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 50,
+        defaultValue: 30,
         extraElement: sheetOscKnob,
         onChange: (v) => {
           this.state.sheetVolume = v;
@@ -2255,7 +2287,7 @@ export class RainyDeskPanel {
         min: 0,
         max: 100,
         unit: '%',
-        defaultValue: 20,
+        defaultValue: 30,
         onChange: (v) => {
           this.state.windSound = v;
           // 0% = mute (-60dB), 1-100% maps to -24dB to +12dB (36dB range)
@@ -2266,6 +2298,155 @@ export class RainyDeskPanel {
     );
 
     container.appendChild(rainAudioSliders);
+
+    // Texture section (hidden in Matrix Mode)
+    const textureSection = document.createElement('div');
+    textureSection.id = 'texture-audio-section';
+    textureSection.style.display = this.state.matrixMode ? 'none' : 'block';
+
+    const textureDivider = document.createElement('hr');
+    textureDivider.className = 'panel-separator';
+    textureSection.appendChild(textureDivider);
+
+    // Header row with title, tooltip, and toggle
+    const textureHeaderRow = document.createElement('div');
+    textureHeaderRow.className = 'thunder-header-row';
+
+    const textureHeaderLabel = document.createElement('div');
+    textureHeaderLabel.className = 'control-label-container';
+    const textureTitle = document.createElement('span');
+    textureTitle.className = 'section-title';
+    textureTitle.textContent = 'Texture';
+    let textureTitleTip: HTMLElement | null = null;
+    textureTitle.onmouseenter = () => { textureTitleTip = showTooltip(textureTitle, 'Looping recordings of rain on simulated surfaces'); };
+    textureTitle.onmouseleave = () => { textureTitleTip = hideTooltip(textureTitleTip); };
+    textureHeaderLabel.appendChild(textureTitle);
+    textureHeaderRow.appendChild(textureHeaderLabel);
+
+    // Toggle
+    const textureToggleArea = document.createElement('div');
+    textureToggleArea.className = 'thunder-toggle-area';
+    const textureToggleLabel = document.createElement('label');
+    textureToggleLabel.className = 'toggle';
+    const textureToggleInput = document.createElement('input');
+    textureToggleInput.type = 'checkbox';
+    textureToggleInput.checked = this.state.textureEnabled;
+    const textureToggleTrack = document.createElement('span');
+    textureToggleTrack.className = 'toggle-track';
+    const textureToggleThumb = document.createElement('span');
+    textureToggleThumb.className = 'toggle-thumb';
+    textureToggleLabel.appendChild(textureToggleInput);
+    textureToggleLabel.appendChild(textureToggleTrack);
+    textureToggleLabel.appendChild(textureToggleThumb);
+    textureToggleArea.appendChild(textureToggleLabel);
+    textureHeaderRow.appendChild(textureToggleArea);
+
+    textureSection.appendChild(textureHeaderRow);
+
+    // Collapsible content
+    const textureContent = document.createElement('div');
+    textureContent.className = 'collapsible-content';
+    if (!this.state.textureEnabled) textureContent.classList.add('collapsed');
+
+    textureToggleInput.onchange = () => {
+      this.state.textureEnabled = textureToggleInput.checked;
+      textureContent.classList.toggle('collapsed', !textureToggleInput.checked);
+      window.rainydesk.updateRainscapeParam('audio.texture.enabled', textureToggleInput.checked);
+    };
+
+    // Volume slider
+    textureContent.appendChild(
+      Slider({
+        id: 'textureVolume',
+        label: 'Volume',
+        value: this.state.textureVolume,
+        min: 0,
+        max: 100,
+        unit: '%',
+        defaultValue: 70,
+        onChange: (v) => {
+          this.state.textureVolume = v;
+          window.rainydesk.updateRainscapeParam('audio.texture.volume', v);
+        },
+      })
+    );
+
+    // Chain-link toggle for intensity linking (reuses established chain SVG pattern)
+    const chainSvgAttrs = 'width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"';
+    const chainLinkedD = 'M14 12C14 14.7614 11.7614 17 9 17H7C4.23858 17 2 14.7614 2 12C2 9.23858 4.23858 7 7 7H7.5M10 12C10 9.23858 12.2386 7 15 7H17C19.7614 7 22 9.23858 22 12C22 14.7614 19.7614 17 17 17H16.5';
+    const chainUnlinkedD = 'M7 7C4.23858 7 2 9.23858 2 12C2 14.7614 4.23858 17 7 17H9C11.1636 17 13.0062 15.6258 13.7026 13.7026M17 17H16.5M10 12C10 11.4021 10.1049 10.8288 10.2974 10.2974M21 21L13.7026 13.7026M3 3L10.2974 10.2974M10.2974 10.2974L13.7026 13.7026M13.0464 7.39604C13.6466 7.14106 14.3068 7 15 7H17C19.7614 7 22 9.23858 22 12C22 13.2151 21.5665 14.329 20.8458 15.1954';
+
+    const textureChainBtn = document.createElement('button');
+    textureChainBtn.className = 'chain-link-toggle';
+    textureChainBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px;color:currentColor;display:flex;align-items:center;';
+    let chainTip: HTMLElement | null = null;
+    const chainTooltipText = () =>
+      this.state.textureIntensityLinked ? 'Linked to master Intensity (click to unlink)' : 'Independent (click to link)';
+    const updateChainVisual = () => {
+      const linked = this.state.textureIntensityLinked;
+      textureChainBtn.innerHTML = `<svg ${chainSvgAttrs}><path d="${linked ? chainLinkedD : chainUnlinkedD}" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+      textureChainBtn.style.opacity = linked ? '1' : '0.7';
+    };
+    updateChainVisual();
+    textureChainBtn.onmouseenter = () => { chainTip = showTooltip(textureChainBtn, chainTooltipText()); };
+    textureChainBtn.onmouseleave = () => { chainTip = hideTooltip(chainTip); };
+
+    textureChainBtn.addEventListener('click', () => {
+      this.state.textureIntensityLinked = !this.state.textureIntensityLinked;
+      updateChainVisual();
+      textureIntensitySlider.classList.toggle('matrix-disabled', this.state.textureIntensityLinked);
+      if (this.state.textureIntensityLinked) {
+        this.state.textureIntensity = this.state.intensity;
+        updateSliderValue(this.root, 'textureIntensity', this.state.intensity);
+      }
+      window.rainydesk.updateRainscapeParam('audio.texture.intensityLinked', this.state.textureIntensityLinked);
+    });
+
+    // Intensity slider — disabled while linked (renderer drives it from rain intensity)
+    const textureIntensitySlider = Slider({
+      id: 'textureIntensity',
+      label: 'Intensity',
+      value: this.state.textureIntensity,
+      min: 1,
+      max: 100,
+      unit: '%',
+      defaultValue: 50,
+      extraElement: textureChainBtn,
+      onChange: (v) => {
+        if (this.state.textureIntensityLinked) return;
+        this.state.textureIntensity = v;
+        window.rainydesk.updateRainscapeParam('audio.texture.intensity', v);
+      },
+    });
+    if (this.state.textureIntensityLinked) {
+      textureIntensitySlider.classList.add('matrix-disabled');
+    }
+    textureContent.appendChild(textureIntensitySlider);
+
+    // Surface dropdown
+    const surfaceOptions = [
+      { label: 'Generic', value: 'generic' },
+      { label: 'Concrete', value: 'concrete' },
+      { label: 'Forest Floor', value: 'forest' },
+      { label: 'Metal', value: 'metal' },
+      { label: 'Umbrella', value: 'umbrella' },
+    ];
+
+    textureContent.appendChild(
+      Dropdown({
+        id: 'textureSurface',
+        label: 'Surface',
+        options: surfaceOptions,
+        value: this.state.textureSurface,
+        onChange: (v) => {
+          this.state.textureSurface = v;
+          window.rainydesk.updateRainscapeParam('audio.texture.surface', v);
+        },
+      })
+    );
+
+    textureSection.appendChild(textureContent);
+    container.appendChild(textureSection);
 
     // Thunder section (hidden in Matrix Mode)
     const thunderSection = document.createElement('div');
@@ -2405,45 +2586,25 @@ export class RainyDeskPanel {
     );
 
     // Environment dropdown
-    const thunderEnvRow = document.createElement('div');
-    thunderEnvRow.className = 'control-row';
-
-    const envLabelContainer = document.createElement('div');
-    envLabelContainer.className = 'control-label-container';
-    const envLabel = document.createElement('span');
-    envLabel.className = 'control-label';
-    envLabel.textContent = 'Environment';
-    envLabelContainer.appendChild(envLabel);
-
-    const envSelect = document.createElement('select');
-    envSelect.className = 'preset-select';
-    const envOptions = [
-      { label: 'Forest', value: 'forest' },
-      { label: 'Plains', value: 'plains' },
-      { label: 'Mountain', value: 'mountain' },
-      { label: 'Coastal', value: 'coastal' },
-      { label: 'Suburban', value: 'suburban' },
-      { label: 'Urban', value: 'urban' },
-    ];
-    for (const opt of envOptions) {
-      const option = document.createElement('option');
-      option.value = opt.value;
-      option.textContent = opt.label;
-      envSelect.appendChild(option);
-    }
-    envSelect.value = this.state.thunderEnvironment;
-    envSelect.onchange = () => {
-      this.state.thunderEnvironment = envSelect.value;
-      window.rainydesk.updateRainscapeParam('audio.thunder.environment', envSelect.value);
-    };
-
-    const envSelectContainer = document.createElement('div');
-    envSelectContainer.className = 'slider-container';
-    envSelectContainer.appendChild(envSelect);
-
-    thunderEnvRow.appendChild(envLabelContainer);
-    thunderEnvRow.appendChild(envSelectContainer);
-    thunderContent.appendChild(thunderEnvRow);
+    thunderContent.appendChild(
+      Dropdown({
+        id: 'thunderEnvironment',
+        label: 'Environment',
+        options: [
+          { label: 'Forest', value: 'forest' },
+          { label: 'Plains', value: 'plains' },
+          { label: 'Mountain', value: 'mountain' },
+          { label: 'Coastal', value: 'coastal' },
+          { label: 'Suburban', value: 'suburban' },
+          { label: 'Urban', value: 'urban' },
+        ],
+        value: this.state.thunderEnvironment,
+        onChange: (v) => {
+          this.state.thunderEnvironment = v;
+          window.rainydesk.updateRainscapeParam('audio.thunder.environment', v);
+        },
+      })
+    );
 
     thunderSection.appendChild(thunderContent);
     container.appendChild(thunderSection);
@@ -2463,46 +2624,24 @@ export class RainyDeskPanel {
     matrixAudioSection.appendChild(matrixTitle);
 
     // Key selector dropdown (transposes entire chord progression)
-    const keyRow = document.createElement('div');
-    keyRow.className = 'control-row';
-
-    const keyLabelContainer = document.createElement('div');
-    keyLabelContainer.className = 'control-label-container';
-    const keyLabel = document.createElement('span');
-    keyLabel.className = 'control-label';
-    keyLabel.textContent = 'Key';
-    keyLabelContainer.appendChild(keyLabel);
-
-    const keySelect = document.createElement('select');
-    keySelect.className = 'preset-select';
-    const keyOptions = [
-      { label: 'Matrix (G)', semitones: 0 },
-      { label: 'Reloaded (Bb)', semitones: -3 },
-      { label: 'Revolutions (E)', semitones: 9 },
-      { label: 'Resurrections (C#)', semitones: 6 },
-    ];
-    for (const opt of keyOptions) {
-      const option = document.createElement('option');
-      option.value = String(opt.semitones);
-      option.textContent = opt.label;
-      keySelect.appendChild(option);
-    }
-    // Set initial value from saved state
-    keySelect.value = String(this.state.matrixTranspose);
-
-    keySelect.onchange = () => {
-      const semitones = parseInt(keySelect.value, 10);
-      this.state.matrixTranspose = semitones;
-      window.rainydesk.updateRainscapeParam('audio.matrix.transpose', semitones);
-    };
-
-    const keySelectContainer = document.createElement('div');
-    keySelectContainer.className = 'slider-container';
-    keySelectContainer.appendChild(keySelect);
-
-    keyRow.appendChild(keyLabelContainer);
-    keyRow.appendChild(keySelectContainer);
-    matrixAudioSection.appendChild(keyRow);
+    matrixAudioSection.appendChild(
+      Dropdown({
+        id: 'matrixKey',
+        label: 'Key',
+        options: [
+          { label: 'Matrix (G)', value: '0' },
+          { label: 'Reloaded (Bb)', value: '-3' },
+          { label: 'Revolutions (E)', value: '9' },
+          { label: 'Resurrections (C#)', value: '6' },
+        ],
+        value: String(this.state.matrixTranspose),
+        onChange: (v) => {
+          const semitones = parseInt(v, 10);
+          this.state.matrixTranspose = semitones;
+          window.rainydesk.updateRainscapeParam('audio.matrix.transpose', semitones);
+        },
+      })
+    );
 
     // Bass volume
     matrixAudioSection.appendChild(
@@ -2865,6 +3004,32 @@ export class RainyDeskPanel {
       })
     );
 
+    // Audio Channels (3 discrete tiers)
+    const audioTierSteps = [1, 2, 3];
+    const audioTierLabels = ['Lite', 'Standard', 'Full'];
+    const currentTierIdx = audioTierSteps.indexOf(this.state.audioChannels);
+    const safeTierIdx = currentTierIdx >= 0 ? currentTierIdx : 2;
+
+    perf.content.appendChild(
+      Slider({
+        id: 'audioChannels',
+        label: 'Audio Channels',
+        sublabel: 'Sound processing load',
+        value: safeTierIdx,
+        min: 0,
+        max: 2,
+        step: 1,
+        unit: '',
+        formatValue: (v: number) => audioTierLabels[Math.round(v)] || 'Full',
+        onChange: (v) => {
+          const idx = Math.round(v);
+          const tier = audioTierSteps[idx] ?? 3;
+          this.state.audioChannels = tier;
+          window.rainydesk.updateRainscapeParam('system.audioChannels', tier);
+        },
+      })
+    );
+
     // Grid Scale + Render Scale share an Apply button
     const scaleSection = document.createElement('div');
     scaleSection.className = 'slider-with-button';
@@ -3153,10 +3318,10 @@ export class RainyDeskPanel {
     };
 
     const presets = [
-      { name: 'Potato',    gridScale: 0.0625, renderScale: 0.125, fps: 30, intensity: 15, bg: false, collision: false, volume: -30 },
-      { name: 'Light',     gridScale: 0.125,  renderScale: 0.25,  fps: 60, intensity: 30, bg: false, collision: true,  volume: -18 },
-      { name: 'Balanced',  gridScale: 0.25,   renderScale: 0.25,  fps: 60, intensity: 50, bg: true,  collision: true,  volume: -6 },
-      { name: 'Cranked',   gridScale: 0.5,    renderScale: 0.5,   fps: 0,  intensity: 70, bg: true,  collision: true,  volume: -6 },
+      { name: 'Potato',    gridScale: 0.0625, renderScale: 0.125, fps: 30, intensity: 15, bg: false, collision: false, volume: -30, audioChannels: 1 },
+      { name: 'Light',     gridScale: 0.125,  renderScale: 0.25,  fps: 60, intensity: 30, bg: false, collision: true,  volume: -18, audioChannels: 2 },
+      { name: 'Balanced',  gridScale: 0.25,   renderScale: 0.25,  fps: 60, intensity: 50, bg: true,  collision: true,  volume: -6,  audioChannels: 3 },
+      { name: 'Cranked',   gridScale: 0.5,    renderScale: 0.5,   fps: 0,  intensity: 70, bg: true,  collision: true,  volume: -6,  audioChannels: 3 },
     ];
 
     for (const preset of presets) {
@@ -3171,10 +3336,12 @@ export class RainyDeskPanel {
         update('effects.masterVolume', preset.volume);
         update('backgroundRain.enabled', preset.bg);
         update('system.windowCollision', preset.collision);
+        update('system.audioChannels', preset.audioChannels);
         update('physics.resetSimulation', { gridScale: preset.gridScale, renderScale: preset.renderScale });
 
         // Update local panel state
         this.state.intensity = preset.intensity;
+        this.state.audioChannels = preset.audioChannels;
         this.state.fpsLimit = preset.fps;
         this.state.renderScalePending = preset.renderScale;
         this.state.renderScale = preset.renderScale;
@@ -3422,6 +3589,7 @@ export class RainyDeskPanel {
       panel.style.transform = `scale(${scale})`;
       panel.style.transformOrigin = 'top left';
     }
+    document.documentElement.style.setProperty('--ui-scale', String(scale));
   }
 
   /* Full UI scale: resize Tauri window + apply CSS transform */
@@ -3788,7 +3956,7 @@ export class RainyDeskPanel {
     }
 
     // Hide rain-only Audio tab sections in Matrix Mode
-    for (const id of ['rain-audio-sliders', 'thunder-audio-section']) {
+    for (const id of ['rain-audio-sliders', 'texture-audio-section', 'thunder-audio-section']) {
       const el = this.root.querySelector(`#${id}`) as HTMLElement;
       if (el) el.style.display = isMatrix ? 'none' : '';
     }
@@ -3902,10 +4070,10 @@ export class RainyDeskPanel {
       window.rainydesk.getVersion().then((v: string) => {
         versionLabel.textContent = `v${v}`;
       }).catch(() => {
-        versionLabel.textContent = 'v0.9.4-alpha';
+        versionLabel.textContent = 'v0.9.5-alpha';
       });
     } else {
-      versionLabel.textContent = 'v0.9.4-alpha';
+      versionLabel.textContent = 'v0.9.5-alpha';
     }
 
     // Build the popup menu (reused across toggles)
@@ -3931,6 +4099,24 @@ export class RainyDeskPanel {
       hideMenu();
     });
     menu.appendChild(githubItem);
+
+    // Ko-fi support link
+    const kofiItem = document.createElement('button');
+    kofiItem.className = 'version-menu-item';
+    kofiItem.textContent = '';
+    const kofiIcon = document.createElement('span');
+    kofiIcon.className = 'version-menu-icon';
+    kofiIcon.textContent = '$';
+    const kofiLabel = document.createElement('span');
+    kofiLabel.style.cssText = 'flex: 1; text-align: right;';
+    kofiLabel.textContent = 'Ko-fi';
+    kofiItem.appendChild(kofiIcon);
+    kofiItem.appendChild(kofiLabel);
+    kofiItem.addEventListener('click', () => {
+      window.rainydesk.openUrl('https://ko-fi.com/xyagain');
+      hideMenu();
+    });
+    menu.appendChild(kofiItem);
 
     // Check for Updates
     const updatesItem = document.createElement('button');
@@ -3998,6 +4184,36 @@ export class RainyDeskPanel {
       }
     });
     menu.appendChild(autostartItem);
+
+    // Quit — uses same folded umbrella SVG as the panel close button
+    const quitItem = document.createElement('button');
+    quitItem.className = 'version-menu-item quit-item';
+    const quitIcon = document.createElement('span');
+    quitIcon.className = 'version-menu-icon quit-icon';
+    const umbrellaSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    umbrellaSvg.setAttribute('viewBox', '0 0 512 512');
+    umbrellaSvg.setAttribute('fill', 'currentColor');
+    umbrellaSvg.setAttribute('width', '12');
+    umbrellaSvg.setAttribute('height', '12');
+    const p1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p1.setAttribute('d', 'M140.797,324.832c-5.256-2.381-11.449-0.047-13.829,5.21l-2.671,5.9c-2.379,5.257-0.047,11.449,5.21,13.829c1.398,0.633,2.862,0.933,4.303,0.933c3.978,0,7.779-2.283,9.526-6.142l2.671-5.899C148.386,333.403,146.054,327.212,140.797,324.832z');
+    const p2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p2.setAttribute('d', 'M227.158,134.062c-5.255-2.38-11.449-0.047-13.829,5.21l-67.205,148.453c-2.379,5.257-0.047,11.449,5.21,13.829c1.398,0.633,2.862,0.933,4.303,0.933c3.977,0,7.779-2.284,9.526-6.142l67.204-148.453C234.749,142.634,232.415,136.442,227.158,134.062z');
+    const p3 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p3.setAttribute('d', 'M499.315,47.454l-0.577-0.577c-16.909-16.906-44.417-16.908-61.326,0L324.998,159.29c-11.905-17.292-14.589-40.639-5.574-57.021c2.241-4.073,1.521-9.139-1.766-12.426c-3.288-3.288-8.354-4.007-12.426-1.766c-7.605,4.184-16.244,6.396-24.981,6.397c-13.834,0.001-26.84-5.387-36.622-15.169c-13.845-13.843-18.684-34.034-12.627-52.69c1.713-5.275-0.994-10.969-6.165-12.971c-5.171-2.004-11.006,0.382-13.294,5.435L0.93,484.307c-1.794,3.964-0.945,8.622,2.131,11.698c2.002,2.002,4.676,3.061,7.392,3.061c1.456,0,2.924-0.305,4.306-0.931L479.99,287.524c5.052-2.286,7.437-8.121,5.435-13.293c-2.003-5.172-7.695-7.878-12.971-6.165c-5.189,1.684-10.596,2.538-16.071,2.538c-13.835,0-26.841-5.386-36.62-15.164c-16.205-16.206-19.811-41.537-8.77-61.604c2.241-4.073,1.521-9.138-1.765-12.426c-3.289-3.288-8.355-4.007-12.428-1.766c-6.32,3.478-13.988,5.315-22.173,5.316c-12.321,0.001-24.741-3.977-34.838-10.905L452.191,61.656c8.759-8.761,23.011-8.76,31.777,0.006l0.577,0.576c8.76,8.759,8.76,23.012,0,31.77c-4.081,4.081-4.081,10.697,0.001,14.778c4.079,4.081,10.697,4.081,14.778-0.001C516.228,91.878,516.228,64.368,499.315,47.454zM374.629,205.859c3.526,0,7-0.249,10.393-0.737c-4.372,23.19,2.702,47.833,19.964,65.096c7.438,7.437,16.203,13.063,25.763,16.657L31.408,467.659L212.186,68.331c3.583,9.482,9.187,18.273,16.664,25.751c13.731,13.729,31.985,21.291,51.402,21.29c4.597,0,9.176-0.438,13.668-1.296c-3.408,23.582,4.911,49.988,22.998,68.074C331.766,196.996,353.341,205.86,374.629,205.859z');
+    umbrellaSvg.appendChild(p1);
+    umbrellaSvg.appendChild(p2);
+    umbrellaSvg.appendChild(p3);
+    quitIcon.appendChild(umbrellaSvg);
+    const quitLabel = document.createElement('span');
+    quitLabel.style.cssText = 'flex: 1; text-align: right;';
+    quitLabel.textContent = 'Quit :(';
+    quitItem.appendChild(quitIcon);
+    quitItem.appendChild(quitLabel);
+    quitItem.addEventListener('click', () => {
+      window.rainydesk.quitApp();
+    });
+    menu.appendChild(quitItem);
 
     versionContainer.appendChild(menu);
     versionContainer.appendChild(versionBtn);

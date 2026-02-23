@@ -404,6 +404,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             log_message,
+            quit_app,
             get_config,
             get_display_info,
             get_all_displays,

@@ -279,6 +279,7 @@ interface PerformanceTier {
   backgroundRain: boolean;
   windowCollision: boolean;
   masterVolume: number; // dB
+  audioChannels: number; // 1=Lite, 2=Standard, 3=Full
 }
 
 const PRESET_SVG_ATTR = 'width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;margin-right:4px"';
@@ -293,7 +294,7 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Potato',
     desc: 'Integrated graphics, old hardware, or battery saving.',
-    specs: 'Potato grid, Lo-Fi render, 30 FPS, no background, no collision',
+    specs: 'Potato grid, Lo-Fi render, 30 FPS, Lite audio',
     intensity: 15,
     fpsLimit: 30,
     gridScale: 0.0625,
@@ -301,11 +302,12 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
     backgroundRain: false,
     windowCollision: false,
     masterVolume: -30,
+    audioChannels: 1,
   },
   {
     name: 'Light',
     desc: 'Entry-level dedicated GPU or a capable laptop.',
-    specs: 'Chunky grid, Pixel render, 60 FPS, no background',
+    specs: 'Chunky grid, Pixel render, 60 FPS, Standard audio',
     intensity: 30,
     fpsLimit: 60,
     gridScale: 0.125,
@@ -313,11 +315,12 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
     backgroundRain: false,
     windowCollision: true,
     masterVolume: -18,
+    audioChannels: 2,
   },
   {
     name: 'Balanced',
     desc: 'Mid-range GPU. The recommended default.',
-    specs: 'Normal grid, Pixel render, 60 FPS, background on',
+    specs: 'Normal grid, Pixel render, 60 FPS, Full audio',
     intensity: 50,
     fpsLimit: 60,
     gridScale: 0.25,
@@ -325,11 +328,12 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
     backgroundRain: true,
     windowCollision: true,
     masterVolume: -6,
+    audioChannels: 3,
   },
   {
     name: 'Cranked',
     desc: 'High-end GPU with headroom to spare. Go all out.',
-    specs: 'Detailed grid, Clean render, uncapped FPS, background on',
+    specs: 'Detailed grid, Clean render, uncapped FPS, Full audio',
     intensity: 70,
     fpsLimit: 0,
     gridScale: 0.5,
@@ -337,6 +341,7 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
     backgroundRain: true,
     windowCollision: true,
     masterVolume: -6,
+    audioChannels: 3,
   },
 ];
 
@@ -397,6 +402,22 @@ function createOnboardingOverlay(isFirstLaunch = true): HTMLElement {
   overlay.appendChild(title);
   overlay.appendChild(subtitle);
   overlay.appendChild(cards);
+
+  // Non-first-launch gets a close button (first launch forces preset choice)
+  if (!isFirstLaunch) {
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'onboarding-close';
+    closeBtn.textContent = '\u00D7';
+    closeBtn.title = 'Close';
+    closeBtn.addEventListener('click', () => {
+      overlay.classList.add('fade-out');
+      const remove = () => overlay.remove();
+      overlay.addEventListener('transitionend', remove, { once: true });
+      setTimeout(remove, 600);
+    });
+    overlay.appendChild(closeBtn);
+  }
+
   return overlay;
 }
 
@@ -416,6 +437,7 @@ async function applyPerformanceTier(tier: PerformanceTier, overlay: HTMLElement)
   update('effects.masterVolume', tier.masterVolume);
   update('backgroundRain.enabled', tier.backgroundRain);
   update('system.windowCollision', tier.windowCollision);
+  update('system.audioChannels', tier.audioChannels);
 
   // Grid scale change requires a physics reinit (sends the scale value)
   update('physics.resetSimulation', tier.gridScale);

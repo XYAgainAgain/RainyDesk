@@ -215,6 +215,7 @@ class BackgroundRainShader {
   };
 
   private time = 0;
+  private _smoothWind = 0;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -307,6 +308,8 @@ class BackgroundRainShader {
 
   update(dt: number): void {
     this.time += dt;
+    // Exponential smoothing for wind slant (frame-rate independent, ~333ms to 63%)
+    this._smoothWind += (this.config.wind - this._smoothWind) * (1 - Math.exp(-3.0 * dt));
   }
 
   render(width: number, height: number): void {
@@ -321,7 +324,7 @@ class BackgroundRainShader {
     gl.uniform1f(this.uniforms.time, this.time);
     gl.uniform1f(this.uniforms.absoluteTime, performance.now() / 1000);
     gl.uniform1f(this.uniforms.intensity, this.config.intensity);
-    gl.uniform1f(this.uniforms.wind, this.config.wind);
+    gl.uniform1f(this.uniforms.wind, this._smoothWind);
     gl.uniform2f(this.uniforms.resolution, width, height);
     gl.uniform1f(this.uniforms.layerCount, this.config.layerCount);
     gl.uniform1f(this.uniforms.speed, this.config.speed);

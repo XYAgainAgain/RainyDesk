@@ -1,10 +1,10 @@
 {
-  "version": "0.9.4-alpha",
-  "notes": "Background Matrix layer, race condition fixes, custom theme wipe, panel UX improvements, audio stability",
-  "pub_date": "2026-02-12T00:00:00Z",
+  "version": "0.9.5-alpha",
+  "notes": "Audio Channels slider, texture layer, thunder synth, smooth wind rotation, help page rewrite, Ko-fi + Quit menu, voice pool leak fix",
+  "pub_date": "2026-02-23T00:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/XYAgainAgain/RainyDesk/releases/download/v0.9.4-alpha/RainyDesk_0.9.4-alpha_x64-setup.nsis.zip",
+      "url": "https://github.com/XYAgainAgain/RainyDesk/releases/download/v0.9.5-alpha/RainyDesk_0.9.5-alpha_x64-setup.nsis.zip",
       "signature": ""
     }
   }

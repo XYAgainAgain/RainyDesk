@@ -41,6 +41,7 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
   private _synthConfig: ImpactSynthConfig;
   private _filters: Map<number, Tone.Filter> = new Map();
   private _panners: Map<number, Tone.Panner3D> = new Map();
+  private _synthToId: Map<Tone.NoiseSynth, number> = new Map();
   private _releaseEventIds: number[] = [];
   private _output: Tone.Gain;
   private _spatialConfig: SpatialConfig = {
@@ -101,7 +102,21 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
 
     this._filters.set(voice.id, filter);
     this._panners.set(voice.id, panner);
+    this._synthToId.set(synth, voice.id);
     return voice;
+  }
+
+  /** Clean up side-nodes (filter + panner) when a voice is shrunk from the pool */
+  protected override disposeSynth(synth: Tone.NoiseSynth): void {
+    const id = this._synthToId.get(synth);
+    if (id !== undefined) {
+      const filter = this._filters.get(id);
+      const panner = this._panners.get(id);
+      if (filter) { filter.dispose(); this._filters.delete(id); }
+      if (panner) { panner.dispose(); this._panners.delete(id); }
+      this._synthToId.delete(synth);
+    }
+    super.disposeSynth(synth);
   }
 
   /** Trigger an impact sound. Returns the voice used, or null if pool exhausted. */
@@ -221,6 +236,7 @@ export class ImpactSynthPool extends VoicePool<Tone.NoiseSynth> {
     }
     this._filters.clear();
     this._panners.clear();
+    this._synthToId.clear();
     this._output.dispose();
     super.dispose();
   }

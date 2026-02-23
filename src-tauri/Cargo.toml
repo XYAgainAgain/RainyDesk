@@ -1,6 +1,6 @@
 [package]
 name = "rainydesk"
-version = "0.9.4-alpha"
+version = "0.9.5-alpha"
 description = "A peaceful desktop rain simulation"
 authors = ["Sam Atwood"]
 license = "BUSL-1.1"
@@ -27,13 +27,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 chrono = "0.4"
-dirs = "5"
+dirs = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
-sysinfo = "0.30"
+sysinfo = "0.38"
 
 # Windows-specific dependencies for window enumeration
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",

@@ -14,7 +14,7 @@ fn read_registry_dword(subkey: &str, value_name: &str) -> Option<u32> {
         let mut hkey = std::mem::zeroed();
         let subkey_wide: Vec<u16> = format!("{}\0", subkey).encode_utf16().collect();
 
-        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey_wide.as_ptr()), 0, KEY_READ, &mut hkey).is_err() {
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey_wide.as_ptr()), Some(0), KEY_READ, &mut hkey).is_err() {
             return None;
         }
 
@@ -249,7 +249,7 @@ pub(crate) fn get_gpu_vram_gb() -> Option<f64> {
 
         unsafe {
             let mut hkey = std::mem::zeroed();
-            if RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut hkey).is_err() {
+            if RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr()), Some(0), KEY_READ, &mut hkey).is_err() {
                 continue;
             }
 

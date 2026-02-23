@@ -138,6 +138,7 @@ declare global {
       centerHelpWindow: () => Promise<void>;
       toggleMaximizeHelpWindow: () => Promise<boolean>;
       openUrl: (url: string) => Promise<void>;
+      quitApp: () => Promise<void>;
       openRainscapesFolder: () => Promise<void>;
       openLogsFolder: () => Promise<void>;
       getDisplayInfo: () => Promise<DisplayInfo>;

@@ -25,8 +25,8 @@ export interface PhysicsMapperConfig {
 const DEFAULT_CONFIG: PhysicsMapperConfig = {
   velocityMin: 0.5,
   velocityMax: 20,
-  volumeMin: -40,
-  volumeMax: -6,
+  volumeMin: -34,
+  volumeMax: 0,
   minnaertBase: 3000,
   freqMin: 200,
   freqMax: 4000,

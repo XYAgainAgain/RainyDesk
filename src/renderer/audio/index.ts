@@ -13,6 +13,7 @@ export type {
   SynthType,
   CollisionEvent,
   AudioParams,
+  AudioChannelTier,
   RainscapeConfig,
   MaterialConfig,
   SheetLayerConfig,
@@ -33,6 +34,9 @@ export { MaterialManager } from './MaterialManager';
 
 // Export main orchestrator
 export { AudioSystem, type AudioSystemConfig } from './AudioSystem';
+
+// Export texture layer
+export { TextureLayer } from './TextureLayer';
 
 // Export Matrix Mode audio
 export { GlitchSynth } from './GlitchSynth';
