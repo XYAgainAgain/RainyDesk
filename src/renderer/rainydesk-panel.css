@@ -917,15 +917,18 @@ html, body {
 }
 
 /* Thunder header row — mirrors control-row so STRIKE btn aligns with OSC knobs */
-.thunder-header-row {
+.thunder-header-row,
+.texture-header-row {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 8px;
 }
-.thunder-header-row .section-title { margin-bottom: 0; }
+.thunder-header-row .section-title,
+.texture-header-row .section-title { margin-bottom: 0; }
 .thunder-header-row .thunder-test-btn { margin-left: auto; }
-.thunder-toggle-area {
+.thunder-toggle-area,
+.texture-toggle-area {
   flex: 1;
   display: flex;
   justify-content: flex-end;

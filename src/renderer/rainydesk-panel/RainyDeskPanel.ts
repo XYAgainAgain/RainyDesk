@@ -793,6 +793,12 @@ export class RainyDeskPanel {
       if (toggle) toggle.checked = value;
       const content = this.root.querySelector<HTMLElement>('.thunder-content');
       if (content) content.classList.toggle('collapsed', !value);
+    } else if (path === 'audio.texture.enabled' && typeof value === 'boolean') {
+      this.state.textureEnabled = value;
+      const toggle = this.root.querySelector<HTMLInputElement>('.texture-header-row input[type="checkbox"]');
+      if (toggle) toggle.checked = value;
+      const content = toggle?.closest('.audio-section')?.querySelector<HTMLElement>('.collapsible-content');
+      if (content) content.classList.toggle('collapsed', !value);
     } else if (path === 'audio.thunder.storminess' && typeof value === 'number') {
       this.state.thunderStorminess = value;
       updateSliderValue(this.root, 'thunderStorminess', value);
@@ -2310,7 +2316,7 @@ export class RainyDeskPanel {
 
     // Header row with title, tooltip, and toggle
     const textureHeaderRow = document.createElement('div');
-    textureHeaderRow.className = 'thunder-header-row';
+    textureHeaderRow.className = 'texture-header-row';
 
     const textureHeaderLabel = document.createElement('div');
     textureHeaderLabel.className = 'control-label-container';
@@ -2325,7 +2331,7 @@ export class RainyDeskPanel {
 
     // Toggle
     const textureToggleArea = document.createElement('div');
-    textureToggleArea.className = 'thunder-toggle-area';
+    textureToggleArea.className = 'texture-toggle-area';
     const textureToggleLabel = document.createElement('label');
     textureToggleLabel.className = 'toggle';
     const textureToggleInput = document.createElement('input');

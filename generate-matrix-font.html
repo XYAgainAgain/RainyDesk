@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Matrix BitmapFont Atlas Generator</title>
+<style>
+  @font-face {
+    font-family: 'Matrix Code';
+    src: url('/src/renderer/fonts/Matrix-Code.woff2') format('woff2');
+    font-display: block;
+  }
+  @font-face {
+    font-family: 'Nimbus Mono';
+    src: url('/src/renderer/fonts/NimbusMono-Bold.woff2') format('woff2');
+    font-display: block;
+  }
+  body {
+    font-family: system-ui;
+    padding: 24px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+  }
+  h1 { color: #00ff41; }
+  #status { margin: 16px 0; padding: 12px; background: #0d0d1a; border-radius: 6px; white-space: pre-line; }
+  #preview { border: 1px solid #333; margin-top: 16px; background: #000; max-width: 100%; }
+  button {
+    margin-top: 12px;
+    padding: 8px 16px;
+    background: #00ff41;
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+</style>
+</head>
+<body>
+<h1>Matrix BitmapFont Atlas Generator</h1>
+<p>Renders a BMFont atlas (.fnt + .png) directly via Canvas 2D. No Pixi dependency.</p>
+<div id="status">Waiting for fonts to load...</div>
+<canvas id="preview"></canvas>
+<br>
+<button id="downloadBtn" disabled>Download .fnt + .png</button>
+
+<script>
+// Same glyph set as MatrixPixiRenderer.ts
+const KATAKANA = '\u30A2\u30A6\u30A8\u30AA\u30AB\u30AD\u30B1\u30B3\u30B5\u30B7\u30B9\u30BB\u30BD\u30BF\u30C4\u30C6\u30CA\u30CB\u30CC\u30CD\u30CF\u30D2\u30DB\u30DE\u30DF\u30E0\u30E1\u30E2\u30E4\u30E8\u30E9\u30EA\u30EF\u30FC';
+const LATIN = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const DIGITS = '012345789';
+const EXTRA = '\u65E5*+:';
+const GLYPHS = KATAKANA + LATIN + DIGITS + EXTRA;
+const FONT_SIZE = 28;
+// Padding around each glyph cell to prevent bleeding during texture sampling
+const PADDING = 2;
+
+const status = document.getElementById('status');
+const preview = document.getElementById('preview');
+const downloadBtn = document.getElementById('downloadBtn');
+
+let atlasCanvas = null;
+let charData = []; // { id, letter, x, y, width, height, xoffset, yoffset, xadvance }
+
+async function generate() {
+  status.textContent = 'Loading fonts...';
+
+  const results = await Promise.allSettled([
+    document.fonts.load('28px "Matrix Code"'),
+    document.fonts.load('28px "Nimbus Mono"'),
+  ]);
+
+  const matrixLoaded = results[0].status === 'fulfilled' && results[0].value.length > 0;
+  const nimbusLoaded = results[1].status === 'fulfilled' && results[1].value.length > 0;
+
+  if (!matrixLoaded && !nimbusLoaded) {
+    status.textContent = 'ERROR: No fonts loaded. Make sure WOFF2 files are accessible.';
+    return;
+  }
+
+  // Matrix Code for katakana/digits, Nimbus Mono Bold for Latin
+  const fontFamily = matrixLoaded
+    ? "'Matrix Code', 'Nimbus Mono', monospace"
+    : "'Nimbus Mono', monospace";
+  const fontSpec = `bold ${FONT_SIZE}px ${fontFamily}`;
+
+  status.textContent = `Fonts: Matrix Code=${matrixLoaded}, Nimbus Mono=${nimbusLoaded}\nMeasuring glyphs...`;
+
+  // Measure each glyph to determine cell sizes
+  const measureCanvas = document.createElement('canvas');
+  measureCanvas.width = 256;
+  measureCanvas.height = 256;
+  const mCtx = measureCanvas.getContext('2d');
+  mCtx.font = fontSpec;
+  mCtx.textBaseline = 'alphabetic';
+
+  const glyphMetrics = [];
+  for (const ch of GLYPHS) {
+    const m = mCtx.measureText(ch);
+    // actualBounding* gives the real ink extents
+    const left = Math.ceil(m.actualBoundingBoxLeft);
+    const right = Math.ceil(m.actualBoundingBoxRight);
+    const ascent = Math.ceil(m.actualBoundingBoxAscent);
+    const descent = Math.ceil(m.actualBoundingBoxDescent);
+    const inkW = left + right;
+    const inkH = ascent + descent;
+    glyphMetrics.push({
+      char: ch,
+      id: ch.codePointAt(0),
+      inkW, inkH,
+      left, right, ascent, descent,
+      advance: Math.ceil(m.width),
+    });
+  }
+
+  // Use uniform cell size (max ink dimensions + padding) for clean grid packing
+  const cellW = Math.max(...glyphMetrics.map(g => g.inkW)) + PADDING * 2;
+  const cellH = Math.max(...glyphMetrics.map(g => g.inkH)) + PADDING * 2;
+
+  // Grid layout: find smallest power-of-2 atlas that fits all glyphs
+  const count = glyphMetrics.length;
+  let cols, atlasW, atlasH;
+  for (let tryW = 256; tryW <= 4096; tryW *= 2) {
+    cols = Math.floor(tryW / cellW);
+    if (cols < 1) continue;
+    const rows = Math.ceil(count / cols);
+    atlasH = rows * cellH;
+    // Round atlas height up to next power of 2
+    let h2 = 256;
+    while (h2 < atlasH) h2 *= 2;
+    atlasW = tryW;
+    atlasH = h2;
+    if (cols * Math.floor(atlasH / cellH) >= count) break;
+  }
+
+  status.textContent += `\nCell size: ${cellW} x ${cellH}, Grid: ${cols} cols, Atlas: ${atlasW} x ${atlasH}`;
+
+  // Render atlas
+  atlasCanvas = document.createElement('canvas');
+  atlasCanvas.width = atlasW;
+  atlasCanvas.height = atlasH;
+  const ctx = atlasCanvas.getContext('2d');
+  ctx.clearRect(0, 0, atlasW, atlasH);
+  ctx.font = fontSpec;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#ffffff';
+
+  charData = [];
+  for (let i = 0; i < count; i++) {
+    const g = glyphMetrics[i];
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cellX = col * cellW;
+    const cellY = row * cellH;
+
+    // Draw glyph centered in cell: baseline at (cellX + PADDING + left, cellY + PADDING + ascent)
+    const drawX = cellX + PADDING + g.left;
+    const drawY = cellY + PADDING + g.ascent;
+    ctx.fillText(g.char, drawX, drawY);
+
+    charData.push({
+      id: g.id,
+      letter: g.char,
+      x: cellX,
+      y: cellY,
+      width: cellW,
+      height: cellH,
+      // Offset so Pixi positions the glyph correctly relative to the text cursor
+      xoffset: -PADDING - g.left,
+      yoffset: -PADDING - g.ascent,
+      xadvance: g.advance,
+    });
+  }
+
+  // Preview
+  const previewCtx = preview.getContext('2d');
+  preview.width = atlasW;
+  preview.height = atlasH;
+  previewCtx.drawImage(atlasCanvas, 0, 0);
+
+  status.textContent += `\nGenerated ${count} chars on ${atlasW} x ${atlasH} atlas. Ready to download.`;
+  downloadBtn.disabled = false;
+}
+
+function buildFntString() {
+  const w = atlasCanvas.width;
+  const h = atlasCanvas.height;
+  // lineHeight = cellH so Pixi can compute line metrics
+  const cellH = charData.length > 0 ? charData[0].height : FONT_SIZE;
+
+  let fnt = '';
+  fnt += `info face="MatrixBitmapFont" size=${FONT_SIZE} bold=1 italic=0 charset="" unicode=1 stretchH=100 smooth=1 aa=1 padding=0,0,0,0 spacing=0,0\n`;
+  fnt += `common lineHeight=${cellH} base=${cellH} scaleW=${w} scaleH=${h} pages=1 packed=0\n`;
+  fnt += `page id=0 file="MatrixBitmapFont_0.png"\n`;
+  fnt += `chars count=${charData.length}\n`;
+
+  for (const c of charData) {
+    const letterStr = c.letter === '"' ? '&quot;' : c.letter;
+    fnt += `char id=${c.id} x=${c.x} y=${c.y} width=${c.width} height=${c.height} xoffset=${c.xoffset} yoffset=${c.yoffset} xadvance=${c.xadvance} page=0 chnl=0 letter="${letterStr}"\n`;
+  }
+  return fnt;
+}
+
+function downloadFile(filename, content, mimeType) {
+  const blob = (content instanceof Blob) ? content : new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+downloadBtn.addEventListener('click', async () => {
+  const fntContent = buildFntString();
+  downloadFile('MatrixBitmapFont.fnt', fntContent, 'text/plain');
+
+  const pngBlob = await new Promise(resolve => atlasCanvas.toBlob(resolve, 'image/png'));
+  downloadFile('MatrixBitmapFont_0.png', pngBlob, 'image/png');
+
+  status.textContent += '\nFiles downloaded!';
+});
+
+generate().catch(err => {
+  status.textContent = `ERROR: ${err.message}`;
+  console.error(err);
+});
+</script>
+</body>
+</html>
