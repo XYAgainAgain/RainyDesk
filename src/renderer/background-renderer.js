@@ -37,7 +37,7 @@ let isPaused = false;
 let bgRainUserEnabled = true;
 let isFullscreenActive = false;
 let lastTime = performance.now();
-let fpsLimit = 0;
+let fpsLimit = 60; // Safe default; overwritten by native Hz detection and autosave
 let lastFrameTime = 0;
 
 // Matrix Mode (background layer)
@@ -430,6 +430,12 @@ async function init() {
     const dpiResult = await window.rainydesk.detectPhantomDPI();
     virtualDesktop = dpiResult.virtualDesktop || await window.rainydesk.getVirtualDesktop();
     window.rainydesk.log(`[Background] Virtual desktop: ${virtualDesktop.width}x${virtualDesktop.height}`);
+
+    // Default FPS limit to primary monitor's native refresh rate (overridden by autosave if present)
+    const nativeHz = virtualDesktop?.monitors?.[virtualDesktop.primaryIndex]?.refreshRate || 60;
+    const fpsSteps = [15, 30, 60, 90, 120, 144, 165, 240, 360];
+    fpsLimit = fpsSteps.reduce((best, step) => step <= nativeHz ? step : best, 15);
+    window.rainydesk.log(`[Background] Native Hz: ${nativeHz}, default FPS limit: ${fpsLimit}`);
   } catch (e) {
     console.warn('[Background] getVirtualDesktop failed:', e);
     virtualDesktop = { width: window.innerWidth, height: window.innerHeight };

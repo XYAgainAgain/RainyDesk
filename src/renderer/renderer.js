@@ -2649,6 +2649,13 @@ async function init() {
   // PHASE 3: Get display info and calculate (includes phantom DPI detection)
   const dpiResult = await window.rainydesk.detectPhantomDPI();
   virtualDesktop = dpiResult.virtualDesktop || await window.rainydesk.getVirtualDesktop();
+
+  // Default FPS limit to primary monitor's native refresh rate (overridden by autosave if present)
+  const nativeHz = virtualDesktop?.monitors?.[virtualDesktop.primaryIndex]?.refreshRate || 60;
+  const fpsSteps = [15, 30, 60, 90, 120, 144, 165, 240, 360];
+  config.fpsLimit = fpsSteps.reduce((best, step) => step <= nativeHz ? step : best, 15);
+  window.rainydesk.log(`[Init] Native Hz: ${nativeHz}, default FPS limit: ${config.fpsLimit}`);
+
   resizeCanvas();
 
   // PHASE 4: Init simulation (Pixi only)
@@ -2661,8 +2668,9 @@ async function init() {
   window.rainydesk.updateRainscapeParam('physics.intensity', config.intensity);
   window.rainydesk.updateRainscapeParam('physics.wind', config.wind || 0);
   window.rainydesk.updateRainscapeParam('physics.renderScale', renderScale);
+  window.rainydesk.updateRainscapeParam('physics.fpsLimit', config.fpsLimit);
   window.rainydesk.updateRainscapeParam('backgroundRain.enabled', true);
-  window.rainydesk.log(`[Init] Broadcast initial values: intensity=${config.intensity}, wind=${config.wind}, renderScale=${renderScale}`);
+  window.rainydesk.log(`[Init] Broadcast initial values: intensity=${config.intensity}, wind=${config.wind}, renderScale=${renderScale}, fpsLimit=${config.fpsLimit}`);
 
   // Load autosave config (new format: Autosave.rain with rain.* keys)
   try {

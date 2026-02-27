@@ -268,12 +268,20 @@ function setupWindowControls(): void {
 
 // ── Onboarding Performance Preset Picker ──
 
+const FPS_STEPS = [15, 30, 60, 90, 120, 144, 165, 240, 360];
+function snapToNativeHz(hz: number): number {
+  return FPS_STEPS.reduce((best, step) => step <= hz ? step : best, 15);
+}
+
+// Resolved once in init(), used by presets and onboarding cards
+let resolvedNativeFps = 60;
+
 interface PerformanceTier {
   name: string;
   desc: string;
-  specs: string;
+  specs: (nativeFps: number) => string; // dynamic — resolves native Hz at render time
   intensity: number;
-  fpsLimit: number;
+  fpsLimit: number; // -1 = use native Hz
   gridScale: number;
   renderScale: number;
   backgroundRain: boolean;
@@ -294,7 +302,7 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Potato',
     desc: 'Integrated graphics, old hardware, or battery saving.',
-    specs: 'Potato grid, Lo-Fi render, 30 FPS, Lite audio',
+    specs: () => 'Potato grid, Lo-Fi render, 30 FPS, Lite audio',
     intensity: 15,
     fpsLimit: 30,
     gridScale: 0.0625,
@@ -307,9 +315,9 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Light',
     desc: 'Entry-level dedicated GPU or a capable laptop.',
-    specs: 'Chunky grid, Pixel render, 60 FPS, Standard audio',
+    specs: (fps) => `Chunky grid, Pixel render, ${fps} FPS, Standard audio`,
     intensity: 30,
-    fpsLimit: 60,
+    fpsLimit: -1,
     gridScale: 0.125,
     renderScale: 0.25,
     backgroundRain: false,
@@ -320,9 +328,9 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Balanced',
     desc: 'Mid-range GPU. The recommended default.',
-    specs: 'Normal grid, Pixel render, 60 FPS, Full audio',
+    specs: (fps) => `Normal grid, Pixel render, ${fps} FPS, Full audio`,
     intensity: 50,
-    fpsLimit: 60,
+    fpsLimit: -1,
     gridScale: 0.25,
     renderScale: 0.25,
     backgroundRain: true,
@@ -333,7 +341,7 @@ const PERFORMANCE_TIERS: PerformanceTier[] = [
   {
     name: 'Cranked',
     desc: 'High-end GPU with headroom to spare. Go all out.',
-    specs: 'Detailed grid, Clean render, uncapped FPS, Full audio',
+    specs: () => 'Detailed grid, Clean render, uncapped FPS, Full audio',
     intensity: 70,
     fpsLimit: 0,
     gridScale: 0.5,
@@ -389,7 +397,7 @@ function createOnboardingOverlay(isFirstLaunch = true): HTMLElement {
 
     const specs = document.createElement('div');
     specs.className = 'onboarding-card-specs';
-    specs.textContent = tier.specs;
+    specs.textContent = tier.specs(resolvedNativeFps);
 
     card.appendChild(name);
     card.appendChild(desc);
@@ -430,9 +438,12 @@ async function applyPerformanceTier(tier: PerformanceTier, overlay: HTMLElement)
   const update = window.rainydesk?.updateRainscapeParam;
   if (!update) return;
 
+  // Resolve -1 sentinel to native Hz
+  const resolvedFps = tier.fpsLimit === -1 ? resolvedNativeFps : tier.fpsLimit;
+
   // Send params in sequence -- each goes through Rust IPC to all windows
   update('physics.intensity', tier.intensity);
-  update('physics.fpsLimit', tier.fpsLimit);
+  update('physics.fpsLimit', resolvedFps);
   update('physics.renderScale', tier.renderScale);
   update('effects.masterVolume', tier.masterVolume);
   update('backgroundRain.enabled', tier.backgroundRain);
@@ -505,6 +516,13 @@ async function init(): Promise<void> {
       try { applyCustomTheme(JSON.parse(e.newValue)); } catch { /* ignore */ }
     }
   });
+
+  // Resolve native Hz for performance presets
+  try {
+    const vd = await (window as any).rainydesk.getVirtualDesktop();
+    const nativeHz = vd?.monitors?.[vd.primaryIndex]?.refreshRate || 60;
+    resolvedNativeFps = snapToNativeHz(nativeHz);
+  } catch { /* keep default 60 */ }
 
   // Show onboarding overlay on first launch (covers help-body area)
   if (needsOnboarding()) {

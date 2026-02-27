@@ -805,6 +805,11 @@ export class RainyDeskPanel {
     } else if (path === 'audio.thunder.distance' && typeof value === 'number') {
       this.state.thunderDistance = value;
       updateSliderValue(this.root, 'thunderDistance', value);
+    } else if (path === 'physics.fpsLimit' && typeof value === 'number') {
+      this.state.fpsLimit = value;
+      const fpsSteps = [15, 30, 60, 90, 120, 144, 165, 240, 360, 0];
+      const idx = fpsSteps.indexOf(value);
+      updateSliderValue(this.root, 'fpsLimit', idx >= 0 ? idx : fpsSteps.length - 1);
     } else if (path === 'system.resetPanel') {
       // Reset UI scale to 100% (triggered by tray "Reset Panel")
       this.state.uiScale = 1.0;
@@ -3325,8 +3330,8 @@ export class RainyDeskPanel {
 
     const presets = [
       { name: 'Potato',    gridScale: 0.0625, renderScale: 0.125, fps: 30, intensity: 15, bg: false, collision: false, volume: -30, audioChannels: 1 },
-      { name: 'Light',     gridScale: 0.125,  renderScale: 0.25,  fps: 60, intensity: 30, bg: false, collision: true,  volume: -18, audioChannels: 2 },
-      { name: 'Balanced',  gridScale: 0.25,   renderScale: 0.25,  fps: 60, intensity: 50, bg: true,  collision: true,  volume: -6,  audioChannels: 3 },
+      { name: 'Light',     gridScale: 0.125,  renderScale: 0.25,  fps: -1, intensity: 30, bg: false, collision: true,  volume: -18, audioChannels: 2 },
+      { name: 'Balanced',  gridScale: 0.25,   renderScale: 0.25,  fps: -1, intensity: 50, bg: true,  collision: true,  volume: -6,  audioChannels: 3 },
       { name: 'Cranked',   gridScale: 0.5,    renderScale: 0.5,   fps: 0,  intensity: 70, bg: true,  collision: true,  volume: -6,  audioChannels: 3 },
     ];
 
@@ -3334,10 +3339,21 @@ export class RainyDeskPanel {
       const btn = document.createElement('button');
       btn.className = 'preset-button';
       btn.innerHTML = `${presetIcons[preset.name] || ''}${preset.name}`;
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
+        // Resolve -1 sentinel to primary monitor's native Hz
+        let resolvedFps = preset.fps;
+        if (preset.fps === -1) {
+          try {
+            const vd = await window.rainydesk.getVirtualDesktop();
+            const nativeHz = vd?.monitors?.[vd.primaryIndex]?.refreshRate || 60;
+            const fpsSteps = [15, 30, 60, 90, 120, 144, 165, 240, 360];
+            resolvedFps = fpsSteps.reduce((best: number, step: number) => step <= nativeHz ? step : best, 15);
+          } catch { resolvedFps = 60; }
+        }
+
         const update = window.rainydesk.updateRainscapeParam;
         update('physics.intensity', preset.intensity);
-        update('physics.fpsLimit', preset.fps);
+        update('physics.fpsLimit', resolvedFps);
         update('physics.renderScale', preset.renderScale);
         update('effects.masterVolume', preset.volume);
         update('backgroundRain.enabled', preset.bg);
@@ -3348,7 +3364,7 @@ export class RainyDeskPanel {
         // Update local panel state
         this.state.intensity = preset.intensity;
         this.state.audioChannels = preset.audioChannels;
-        this.state.fpsLimit = preset.fps;
+        this.state.fpsLimit = resolvedFps;
         this.state.renderScalePending = preset.renderScale;
         this.state.renderScale = preset.renderScale;
         this.state.gridScalePending = preset.gridScale;
