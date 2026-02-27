@@ -748,11 +748,117 @@ function windowsChanged(oldWindows, newWindows) {
   return false;
 }
 
-/* Initialize audio system with gentle fade-in */
+/* Audio splash — resolves true (clicked) or false (15s timeout) */
+function showAudioSplash() {
+  return new Promise((resolve) => {
+    const splash = document.createElement('div');
+    splash.id = 'audio-splash';
+
+    const card = document.createElement('div');
+    card.className = 'splash-card';
+
+    // Position card on primary monitor center (mega-window coordinates)
+    if (virtualDesktop && virtualDesktop.monitors) {
+      const primary = virtualDesktop.monitors[virtualDesktop.primaryIndex] || virtualDesktop.monitors[0];
+      if (primary) {
+        const ox = virtualDesktop.originX || 0;
+        const oy = virtualDesktop.originY || 0;
+        const cx = (primary.x - ox) + primary.width / 2;
+        const cy = (primary.y - oy) + primary.height / 2;
+        card.style.position = 'absolute';
+        card.style.left = cx + 'px';
+        card.style.top = cy + 'px';
+        card.style.transform = 'translate(-50%, -50%)';
+      }
+    }
+
+    // open-umbrella.svg (CC0)
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'splash-icon';
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', 'M8 19C8 20.1046 8.89543 21 10 21C11.1046 21 12 20.1046 12 19V11M12 11C13.1256 11 14.1643 11.3719 15 11.9996C15.8357 11.3719 16.8744 11 18 11C19.1258 11 20.1643 11.3721 21 12C21 7.02944 16.9706 3 12 3C7.02944 3 3 7.02944 3 12C3.83566 11.3723 4.87439 11 6 11C7.12561 11 8.16434 11.3719 9 11.9996C9.83566 11.3719 10.8744 11 12 11Z');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+    iconWrap.appendChild(svg);
+
+    const text = document.createElement('div');
+    text.className = 'splash-text';
+    text.textContent = 'Click anywhere to start the rain sounds';
+
+    const subtext = document.createElement('div');
+    subtext.className = 'splash-subtext';
+    subtext.textContent = 'or wait a moment for silent rain';
+
+    card.appendChild(iconWrap);
+    card.appendChild(text);
+    card.appendChild(subtext);
+    splash.appendChild(card);
+    document.body.appendChild(splash);
+
+    let resolved = false;
+    const cleanup = (userClicked) => {
+      if (resolved) return;
+      resolved = true;
+      splash.classList.remove('splash-visible');
+      splash.classList.add('splash-exit');
+
+      const remove = () => { splash.remove(); };
+      splash.addEventListener('transitionend', remove, { once: true });
+      setTimeout(remove, 1000); // fallback if transitionend doesn't fire
+
+      resolve(userClicked);
+    };
+
+    requestAnimationFrame(() => {
+      splash.classList.add('splash-visible');
+    });
+
+    const onClick = () => { cleanup(true); };
+    splash.addEventListener('click', onClick, { once: true });
+    splash.addEventListener('touchend', onClick, { once: true });
+
+    setTimeout(() => { cleanup(false); }, 15000);
+  });
+}
+
+/* Initialize audio — shows click splash if WebView2 autoplay policy blocks the context */
 async function initAudio() {
   if (audioInitialized) return;
 
   try {
+    const Tone = await import('tone'); // same singleton the audio bundle uses
+    await Tone.start();
+
+    if (Tone.context.state === 'suspended') {
+      window.rainydesk.log('[Audio] Context suspended, showing splash');
+
+      window.rainydesk.setIgnoreMouseEvents(false); // let splash receive the gesture
+
+      const userClicked = await showAudioSplash();
+
+      if (userClicked) {
+        await Tone.start();
+        window.rainydesk.log(`[Audio] Post-click context state: ${Tone.context.state}`);
+      }
+
+      window.rainydesk.setIgnoreMouseEvents(true, { forward: true });
+
+      if (Tone.context.state === 'suspended') {
+        window.rainydesk.log('[Audio] Context still suspended after splash, deferring audio');
+        window.__audioDeferred = true;
+        return;
+      }
+    }
+
+    window.rainydesk.log(`[Audio] Context running (state: ${Tone.context.state})`);
+
     const { AudioSystem } = await import('./audio.bundle.js');
     audioSystem = new AudioSystem({
       impactPoolSize: 12,
@@ -761,11 +867,9 @@ async function initAudio() {
     await audioSystem.init();
     window.rainydesk.log('[Audio] Initialized');
 
-    // Start with fade-in
     await audioSystem.start(true);
     window.rainydesk.log('[Audio] Started with fade-in');
 
-    // Connect to Pixi physics for collision events
     if (gridSimulation) {
       gridSimulation.onCollision = (event) => {
         audioSystem.handleCollision(event);
@@ -774,10 +878,23 @@ async function initAudio() {
     }
 
     audioInitialized = true;
+
+    // Sync stored volume (matters when recovery creates AudioSystem after a tray volume change)
+    if (config.volume !== undefined) {
+      const db = config.volume <= 0 ? -Infinity : (config.volume / 100 * 60) - 60;
+      audioSystem.setMasterVolume(db);
+    }
   } catch (error) {
     window.rainydesk.log(`Audio init error: ${error.message}`);
     console.error('[Audio] Error:', error);
   }
+}
+
+/* Re-attempt audio init when user signals intent via tray (volume, unpause) */
+async function tryRecoverAudio() {
+  if (audioInitialized || !window.__audioDeferred) return;
+  window.__audioDeferred = false;
+  await initAudio();
 }
 
 /* Migrate old .rain format (no version field) to v2 structure */
@@ -1451,23 +1568,19 @@ function registerEventListeners() {
   window.rainydesk.onToggleRain((enabled) => {
     config.enabled = enabled;
     if (audioSystem) {
-      if (enabled) {
-        audioSystem.start();
-      } else {
-        audioSystem.stop();
-      }
+      if (enabled) audioSystem.start();
+      else audioSystem.stop();
+    } else if (enabled) {
+      tryRecoverAudio();
     }
   });
 
   window.rainydesk.onToggleAudio((enabled) => {
     if (audioSystem) {
-      if (enabled) {
-        audioSystem.start();
-        window.rainydesk.log('Audio resumed');
-      } else {
-        audioSystem.stop();
-        window.rainydesk.log('Audio paused');
-      }
+      if (enabled) { audioSystem.start(); window.rainydesk.log('Audio resumed'); }
+      else { audioSystem.stop(); window.rainydesk.log('Audio paused'); }
+    } else if (enabled) {
+      tryRecoverAudio();
     }
   });
 
@@ -1476,6 +1589,8 @@ function registerEventListeners() {
     if (audioInitialized && audioSystem) {
       const db = value <= 0 ? -Infinity : (value / 100 * 60) - 60;
       audioSystem.setMasterVolume(db);
+    } else if (value > 0) {
+      tryRecoverAudio();
     }
     window.rainydesk.log(`Volume set to ${value}%`);
   });
@@ -2591,14 +2706,9 @@ async function init() {
   requestAnimationFrame(gameLoop);
   window.rainydesk.log('[Init] Game loop started (hidden)');
 
-  // PHASE 9: Start audio and fade-in (no cross-window coordination needed)
-  window.rainydesk.log('[Init] Starting audio and fade-in...');
+  // PHASE 9: Fade-in first so rain is visible behind the audio splash if it appears
+  window.rainydesk.log('[Init] Starting fade-in and audio...');
 
-  // Start audio with fade-in
-  await initAudio();
-  window.rainydesk.log('[Init] Audio init complete');
-
-  // Start visual fade FIRST (before applying rainscape which may fail)
   setTimeout(() => {
     window.rainydesk.log('[FadeIn] Starting overlay fade-in');
     canvas.style.visibility = 'visible';
@@ -2612,6 +2722,9 @@ async function init() {
       canvas.style.transition = 'none';
     }, 5000);
   }, 300);
+
+  await initAudio();
+  window.rainydesk.log('[Init] Audio init complete');
 
   // Apply pending autosave after fade-in is scheduled
   if (pendingAutosave) {
