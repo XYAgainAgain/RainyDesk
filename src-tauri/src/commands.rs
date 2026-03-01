@@ -514,6 +514,15 @@ pub fn center_help_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn minimize_help_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("help")
+        .ok_or_else(|| "Help window not found".to_string())?;
+    window.minimize().map_err(|e| format!("Failed to minimize help: {}", e))?;
+    log::info!("[Help] Minimized");
+    Ok(())
+}
+
+#[tauri::command]
 pub fn toggle_maximize_help_window(app: tauri::AppHandle) -> Result<bool, String> {
     let window = app.get_webview_window("help")
         .ok_or_else(|| "Help window not found".to_string())?;

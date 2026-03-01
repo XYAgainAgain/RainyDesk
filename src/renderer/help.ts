@@ -259,6 +259,10 @@ function setupWindowControls(): void {
     window.rainydesk?.hideHelpWindow?.();
   });
 
+  document.getElementById('help-minimize-btn')?.addEventListener('click', () => {
+    void window.rainydesk?.minimizeHelpWindow?.();
+  });
+
   const maxBtn = document.getElementById('help-maximize-btn');
   maxBtn?.addEventListener('click', async () => {
     const isNowMaximized = await window.rainydesk?.toggleMaximizeHelpWindow?.();

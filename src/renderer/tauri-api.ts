@@ -130,6 +130,7 @@ window.rainydesk = {
   // Help window
   showHelpWindow: () => invoke('show_help_window'),
   hideHelpWindow: () => invoke('hide_help_window'),
+  minimizeHelpWindow: () => invoke('minimize_help_window'),
   resizeHelpWindow: (width, height) => invoke('resize_help_window', { width, height }),
   centerHelpWindow: () => invoke('center_help_window'),
   toggleMaximizeHelpWindow: () => invoke<boolean>('toggle_maximize_help_window'),

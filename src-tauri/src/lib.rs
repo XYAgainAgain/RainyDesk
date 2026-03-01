@@ -430,6 +430,7 @@ pub fn run() {
             get_windows_accent_color,
             show_help_window,
             hide_help_window,
+            minimize_help_window,
             resize_help_window,
             center_help_window,
             toggle_maximize_help_window,

@@ -134,6 +134,7 @@ declare global {
       getWindowsAccentColor: () => Promise<string>;
       showHelpWindow: () => Promise<void>;
       hideHelpWindow: () => Promise<void>;
+      minimizeHelpWindow: () => Promise<void>;
       resizeHelpWindow: (width: number, height: number) => Promise<void>;
       centerHelpWindow: () => Promise<void>;
       toggleMaximizeHelpWindow: () => Promise<boolean>;
